@@ -111,7 +111,27 @@ This simplification is **valid for timing benchmarks** because:
 
 For **prediction accuracy** benchmarks, real-world datasets would be required.
 
-### 2.4 Environment
+### 2.4 Real-World Datasets
+
+To validate performance findings with realistic data characteristics, we also benchmark against four publicly available datasets:
+
+| Dataset | Source | Points | Characteristics |
+|---------|--------|--------|-----------------|
+| SPY Stock Prices | Yahoo Finance | 1,259 | Trends, volatility clustering, fat tails |
+| Melbourne Temperature | Bureau of Meteorology | 3,650 | Strong annual seasonality |
+| Monthly Sunspots | SIDC | 2,820 | ~11 year cyclical patterns |
+| Airline Passengers | Box-Jenkins (1976) | 144 | Trend + seasonality |
+
+These datasets exhibit properties absent from synthetic data:
+
+1. **Stock data**: Fat-tailed return distribution, volatility clustering, regime changes (COVID crash visible in 2020)
+2. **Weather data**: Strong annual seasonality with temperature varying from 0°C to 25°C
+3. **Sunspot data**: Well-documented 11-year solar cycle with variable amplitude
+4. **Airline data**: Classic example of multiplicative seasonality with upward trend
+
+**Dataset availability**: All datasets are included in the repository at `ts/benchmark/datasets/` with source attribution.
+
+### 2.5 Environment
 
 - **Runtime:** Node.js v20.x with tsx
 - **Platform:** Linux (WSL2)
@@ -173,6 +193,44 @@ Data Size    Pure TS (ms)    WASM (ms)    Speedup
 
 Observation: WASM advantage increases with data size
 ```
+
+### 3.4 Real-World Dataset Results
+
+To validate findings with realistic data characteristics, we benchmarked WASM implementations against four public datasets:
+
+| Benchmark | Dataset | Points | Avg (ms) |
+|-----------|---------|--------|----------|
+| **Financial Risk (Stock Data)** ||||
+| sharpeRatio (SPY) | Yahoo Finance | 1,256 | 0.0271 |
+| sortinoRatio (SPY) | Yahoo Finance | 1,256 | 0.0246 |
+| maxDrawdown (SPY) | Yahoo Finance | 1,256 | 0.0173 |
+| varHistorical (SPY) | Yahoo Finance | 1,256 | 0.0603 |
+| **Anomaly Detection (Weather)** ||||
+| ZScoreDetector.fit | Melbourne Temp | 3,650 | 0.0367 |
+| ZScoreDetector.detect | Melbourne Temp | 3,650 | 0.4861 |
+| IQRDetector.fit | Melbourne Temp | 3,650 | 0.1426 |
+| IQRDetector.detect | Melbourne Temp | 3,650 | 0.4707 |
+| **Forecasting (Cyclical Data)** ||||
+| Arima.fit (Sunspots) | SIDC | 2,820 | 0.1658 |
+| Arima.predict (Sunspots) | SIDC | 2,820 | 0.0147 |
+| SES.fit (Sunspots) | SIDC | 2,820 | 0.0242 |
+| **Forecasting (Seasonal Data)** ||||
+| Arima.fit (Airline) | Box-Jenkins | 144 | 0.0110 |
+| SES.fit (Airline) | Box-Jenkins | 144 | 0.0054 |
+| **Ensemble Methods** ||||
+| combinePredictions Average | 5 models | 24 pts | 0.0260 |
+| combinePredictions Median | 5 models | 24 pts | 0.0171 |
+| combinePredictions Weighted | 5 models | 24 pts | 0.0142 |
+
+**Key Observations:**
+
+1. **Performance scales consistently**: Financial metrics on real stock data (1,256 points) show similar performance to synthetic data of comparable size.
+
+2. **Large datasets perform well**: Weather data (3,650 points) processes efficiently with `fit()` operations under 0.15ms.
+
+3. **Detection overhead persists**: `detect()` operations on weather data show ~0.48ms overhead, consistent with synthetic benchmarks.
+
+4. **Real data characteristics don't impact timing**: Despite seasonality, trends, and volatility in real data, execution times remain comparable to synthetic equivalents.
 
 ---
 
@@ -305,8 +363,17 @@ cd ../..
 ### 7.4 Benchmark Scripts
 
 The benchmark scripts are available in the repository:
-- [time-series-analytics-wasm.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-wasm.ts) - WASM version benchmark
-- [time-series-analytics-pure.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-pure.ts) - Pure TypeScript benchmark
+- [time-series-analytics-wasm.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-wasm.ts) - WASM benchmark (synthetic data)
+- [time-series-analytics-pure.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-pure.ts) - Pure TypeScript benchmark (synthetic data)
+- [time-series-analytics-realdata.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-realdata.ts) - WASM benchmark (real-world datasets)
+
+### 7.5 Datasets
+
+Real-world datasets are included in the repository at `ts/benchmark/datasets/`:
+- `stock-spy-daily.csv` - S&P 500 ETF daily prices (Yahoo Finance)
+- `weather-melbourne-daily-temp.csv` - Melbourne temperature (Bureau of Meteorology)
+- `sensor-sunspots.csv` - Monthly sunspot observations (SIDC)
+- `sensor-airline-passengers.csv` - Airline passengers (Box-Jenkins)
 
 ---
 
@@ -399,6 +466,41 @@ async function benchmark(
     {"name": "combinePredictions Average (10x100)", "avgMs": 0.0826},
     {"name": "combinePredictions Median (10x100)", "avgMs": 0.2130},
     {"name": "combinePredictions Weighted (10x100)", "avgMs": 0.0870}
+  ]
+}
+```
+
+### B.3 Real-World Dataset Results
+
+```json
+{
+  "timestamp": "2025-12-27T08:17:11.210Z",
+  "wasmReady": true,
+  "datasets": {
+    "stock": {"name": "SPY Daily Prices", "points": 1256, "source": "Yahoo Finance"},
+    "weather": {"name": "Melbourne Daily Temp", "points": 3650, "source": "BoM"},
+    "sunspots": {"name": "Monthly Sunspots", "points": 2820, "source": "SIDC"},
+    "airline": {"name": "Monthly Passengers", "points": 144, "source": "Box-Jenkins"}
+  },
+  "results": [
+    {"name": "sharpeRatio (SPY)", "dataset": "stock", "avgMs": 0.0271},
+    {"name": "sortinoRatio (SPY)", "dataset": "stock", "avgMs": 0.0246},
+    {"name": "maxDrawdown (SPY)", "dataset": "stock", "avgMs": 0.0173},
+    {"name": "varHistorical (SPY)", "dataset": "stock", "avgMs": 0.0603},
+    {"name": "ZScoreDetector.fit (Weather)", "dataset": "weather", "avgMs": 0.0367},
+    {"name": "ZScoreDetector.detect (Weather)", "dataset": "weather", "avgMs": 0.4861},
+    {"name": "IQRDetector.fit (Weather)", "dataset": "weather", "avgMs": 0.1426},
+    {"name": "IQRDetector.detect (Weather)", "dataset": "weather", "avgMs": 0.4707},
+    {"name": "Arima.fit (Sunspots)", "dataset": "sunspots", "avgMs": 0.1658},
+    {"name": "Arima.predict (Sunspots)", "dataset": "sunspots", "avgMs": 0.0147},
+    {"name": "SES.fit (Sunspots)", "dataset": "sunspots", "avgMs": 0.0242},
+    {"name": "SES.predict (Sunspots)", "dataset": "sunspots", "avgMs": 0.0046},
+    {"name": "Arima.fit (Airline)", "dataset": "airline", "avgMs": 0.0110},
+    {"name": "Arima.predict (Airline)", "dataset": "airline", "avgMs": 0.0044},
+    {"name": "SES.fit (Airline)", "dataset": "airline", "avgMs": 0.0054},
+    {"name": "combinePredictions Average", "dataset": "ensemble", "avgMs": 0.0260},
+    {"name": "combinePredictions Median", "dataset": "ensemble", "avgMs": 0.0171},
+    {"name": "combinePredictions Weighted", "dataset": "ensemble", "avgMs": 0.0142}
   ]
 }
 ```

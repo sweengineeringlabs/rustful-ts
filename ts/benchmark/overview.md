@@ -14,23 +14,48 @@ Key finding: WASM provides **up to 8.5x speedup** for compute-intensive operatio
 
 | File | Description |
 |------|-------------|
-| `time-series-analytics-wasm.ts` | Benchmarks WASM-backed implementations |
-| `time-series-analytics-pure.ts` | Benchmarks pure TypeScript implementations |
+| `time-series-analytics-wasm.ts` | WASM benchmarks with synthetic data |
+| `time-series-analytics-pure.ts` | Pure TypeScript benchmarks with synthetic data |
+| `time-series-analytics-realdata.ts` | WASM benchmarks with real-world datasets |
+
+## Datasets
+
+Real-world datasets are in the `datasets/` folder:
+
+| Dataset | Source | Points | Characteristics |
+|---------|--------|--------|-----------------|
+| SPY Stock Prices | Yahoo Finance | 1,259 | Trends, volatility, fat tails |
+| Melbourne Temperature | BoM | 3,650 | Strong seasonality |
+| Sunspots | SIDC | 2,820 | ~11 year cycles |
+| Airline Passengers | Box-Jenkins | 144 | Trend + seasonality |
+
+See [datasets/README.md](datasets/README.md) for details.
 
 ## Running Benchmarks
 
-### WASM Version (Current)
+### Prerequisites
 
 ```bash
 # From repository root
 wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
+cd ts && npm install
+```
 
-# Run benchmark
+### WASM with Synthetic Data
+
+```bash
 cd ts/benchmark
 npx tsx time-series-analytics-wasm.ts
 ```
 
-### Pure TypeScript Version (Historical)
+### WASM with Real-World Data
+
+```bash
+cd ts/benchmark
+npx tsx time-series-analytics-realdata.ts
+```
+
+### Pure TypeScript (Historical Comparison)
 
 ```bash
 # Checkout the pure TS commit
