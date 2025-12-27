@@ -21,6 +21,8 @@ members = [
     "crates/signal/signal-core",
     "crates/signal/signal-api",
     "crates/signal/signal-facade",
+    # Utilities
+    "crates/bench-harness",
     # Legacy (to be migrated)
     "crates/algorithm",
     "crates/data",
@@ -93,6 +95,9 @@ signal-spi = { path = "crates/signal/signal-spi" }
 signal-core = { path = "crates/signal/signal-core" }
 signal-api = { path = "crates/signal/signal-api" }
 signal-facade = { path = "crates/signal/signal-facade" }
+
+# Internal crates - Utilities
+bench-harness = { path = "crates/bench-harness" }
 
 # Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }

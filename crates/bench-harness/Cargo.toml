@@ -1,0 +1,6 @@
+[package]
+name = "bench-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightweight benchmark harness with black_box optimization barrier"
