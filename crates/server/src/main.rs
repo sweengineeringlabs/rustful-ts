@@ -8,6 +8,7 @@ use axum::{
     Json, Router,
 };
 use rustboot_health::{AlwaysHealthyCheck, CheckResult, FunctionCheck, HealthAggregator};
+use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
@@ -100,8 +101,16 @@ async fn main() {
         .layer(cors)
         .with_state(state);
 
-    // Server configuration
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    // Server configuration from environment
+    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let port: u16 = env::var("PORT")
+        .unwrap_or_else(|_| "8080".to_string())
+        .parse()
+        .expect("PORT must be a valid number");
+    let addr: SocketAddr = format!("{}:{}", host, port)
+        .parse()
+        .expect("Invalid HOST:PORT configuration");
+
     tracing::info!("rustful-server v{} listening on {}", env!("CARGO_PKG_VERSION"), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
