@@ -2,7 +2,7 @@
 
 use axum::Json;
 use serde::{Deserialize, Serialize};
-use rustful_core::algorithms::{Predictor, arima::Arima};
+use algorithm::algorithm::{Predictor, arima::Arima};
 use rustful_anomaly::{ZScoreDetector, AnomalyDetector};
 
 #[derive(Debug, Deserialize)]

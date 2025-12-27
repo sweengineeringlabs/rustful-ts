@@ -4,13 +4,14 @@
 //! This crate exposes all core algorithms to JavaScript/TypeScript through WASM.
 
 use wasm_bindgen::prelude::*;
-use rustful_core::algorithms::{
+use algorithm::{
+    ml::{DistanceMetric, TimeSeriesKNN},
+    regression::{Arima, LinearRegression},
+    smoothing::{
+        DoubleExponentialSmoothing, HoltWinters, SeasonalType, SimpleExponentialSmoothing,
+        SimpleMovingAverage,
+    },
     Predictor,
-    arima::Arima,
-    exponential_smoothing::*,
-    moving_average::*,
-    linear_regression::*,
-    knn::*,
 };
 
 /// Initialize panic hook for better error messages in WASM
@@ -302,37 +303,37 @@ impl WasmKNN {
 /// Compute Mean Absolute Error
 #[wasm_bindgen]
 pub fn compute_mae(actual: &[f64], predicted: &[f64]) -> f64 {
-    rustful_core::utils::metrics::mae(actual, predicted)
+    algorithm::utils::metrics::mae(actual, predicted)
 }
 
 /// Compute Root Mean Squared Error
 #[wasm_bindgen]
 pub fn compute_rmse(actual: &[f64], predicted: &[f64]) -> f64 {
-    rustful_core::utils::metrics::rmse(actual, predicted)
+    algorithm::utils::metrics::rmse(actual, predicted)
 }
 
 /// Compute Mean Absolute Percentage Error
 #[wasm_bindgen]
 pub fn compute_mape(actual: &[f64], predicted: &[f64]) -> f64 {
-    rustful_core::utils::metrics::mape(actual, predicted)
+    algorithm::utils::metrics::mape(actual, predicted)
 }
 
 /// Normalize data to [0, 1]
 #[wasm_bindgen]
 pub fn normalize_data(data: &[f64]) -> Vec<f64> {
-    rustful_core::utils::preprocessing::normalize(data).0
+    algorithm::utils::preprocessing::normalize(data).0
 }
 
 /// Standardize data to zero mean, unit variance
 #[wasm_bindgen]
 pub fn standardize_data(data: &[f64]) -> Vec<f64> {
-    rustful_core::utils::preprocessing::standardize(data).0
+    algorithm::utils::preprocessing::standardize(data).0
 }
 
 /// Compute first-order differences
 #[wasm_bindgen]
 pub fn difference_data(data: &[f64], order: usize) -> Vec<f64> {
-    rustful_core::utils::preprocessing::difference(data, order)
+    algorithm::utils::preprocessing::difference(data, order)
 }
 
 // ============================================================================

@@ -97,7 +97,7 @@ rustful-anomaly = { git = "https://github.com/sweengineeringlabs/rustful-ts.git"
 ### Rust Usage
 
 ```rust
-use rustful_core::algorithms::{Arima, Predictor};
+use rustful_core::algorithm::{Arima, Predictor};
 
 fn main() {
     let data = vec![10.0, 12.0, 14.0, 16.0, 18.0, 20.0];

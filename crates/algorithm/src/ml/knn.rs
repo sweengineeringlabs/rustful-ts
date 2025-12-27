@@ -14,8 +14,8 @@
 //! - Euclidean distance (default)
 //! - Dynamic Time Warping (DTW) for time-shifted patterns
 
-use crate::algorithms::Predictor;
-use crate::error::{Result, TsError};
+use crate::Predictor;
+use crate::{Result, TsError};
 use serde::{Deserialize, Serialize};
 
 /// Distance metric for comparing time series subsequences
@@ -29,11 +29,17 @@ pub enum DistanceMetric {
 
 /// K-Nearest Neighbors time series predictor
 ///
+/// @algorithm KNN
+/// @category MachineLearning
+/// @complexity O(n*k*w) fit, O(n*k) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::knn::{TimeSeriesKNN, DistanceMetric};
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::ml::{TimeSeriesKNN, DistanceMetric};
+/// use algorithm::Predictor;
 ///
 /// let data: Vec<f64> = (0..100).map(|i| (i as f64 * 0.1).sin() * 10.0 + 50.0).collect();
 ///
@@ -42,6 +48,7 @@ pub enum DistanceMetric {
 /// let forecast = knn.predict(5).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct TimeSeriesKNN {
     /// Number of neighbors
     k: usize,

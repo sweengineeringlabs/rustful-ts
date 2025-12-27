@@ -9,8 +9,8 @@
 //! - **Weighted Moving Average (WMA)**: Custom weights, typically more recent = higher weight
 //! - **Exponential Moving Average**: See `exponential_smoothing` module
 
-use crate::algorithms::Predictor;
-use crate::error::{Result, TsError};
+use crate::Predictor;
+use crate::{Result, TsError};
 use serde::{Deserialize, Serialize};
 
 /// Simple Moving Average (SMA)
@@ -18,11 +18,17 @@ use serde::{Deserialize, Serialize};
 /// Computes the unweighted mean of the previous `window` observations.
 /// Useful for smoothing noisy data and identifying trends.
 ///
+/// @algorithm SMA
+/// @category SmoothingMethod
+/// @complexity O(n) fit, O(1) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::moving_average::SimpleMovingAverage;
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::smoothing::SimpleMovingAverage;
+/// use algorithm::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 11.0, 13.0, 15.0, 14.0, 16.0, 18.0];
 /// let mut sma = SimpleMovingAverage::new(3).unwrap();
@@ -35,6 +41,7 @@ use serde::{Deserialize, Serialize};
 /// let forecast = sma.predict(3).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SimpleMovingAverage {
     /// Window size for averaging
     window: usize,
@@ -136,11 +143,17 @@ impl Predictor for SimpleMovingAverage {
 /// Like SMA but with custom weights for each position in the window.
 /// Typically used with linearly decreasing weights (most recent has highest weight).
 ///
+/// @algorithm WMA
+/// @category SmoothingMethod
+/// @complexity O(n*w) fit, O(1) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::moving_average::WeightedMovingAverage;
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::smoothing::WeightedMovingAverage;
+/// use algorithm::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 11.0, 13.0, 15.0, 14.0, 16.0, 18.0];
 ///
@@ -151,6 +164,7 @@ impl Predictor for SimpleMovingAverage {
 /// let forecast = wma.predict(3).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WeightedMovingAverage {
     /// Weights for each position (normalized internally)
     weights: Vec<f64>,

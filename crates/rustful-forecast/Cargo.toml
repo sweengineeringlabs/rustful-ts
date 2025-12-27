@@ -6,6 +6,6 @@ license.workspace = true
 description = "Forecasting pipelines: decomposition, seasonality detection, confidence intervals"
 
 [dependencies]
-rustful-core = { workspace = true }
+algorithm = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

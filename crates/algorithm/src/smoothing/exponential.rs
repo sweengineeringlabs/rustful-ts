@@ -13,8 +13,8 @@
 //! - `beta` (trend): Controls trend smoothing (0.1-0.2 typical)
 //! - `gamma` (seasonal): Controls seasonal smoothing (0.1-0.3 typical)
 
-use crate::algorithms::Predictor;
-use crate::error::{Result, TsError};
+use crate::Predictor;
+use crate::{Result, TsError};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -27,11 +27,17 @@ use serde::{Deserialize, Serialize};
 ///
 /// Formula: `S_t = α * Y_t + (1 - α) * S_{t-1}`
 ///
+/// @algorithm SES
+/// @category ExponentialSmoothing
+/// @complexity O(n) fit, O(1) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::exponential_smoothing::SimpleExponentialSmoothing;
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::smoothing::SimpleExponentialSmoothing;
+/// use algorithm::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 11.0, 13.0, 12.0, 14.0, 13.0, 15.0];
 /// let mut model = SimpleExponentialSmoothing::new(0.3).unwrap();
@@ -39,6 +45,7 @@ use serde::{Deserialize, Serialize};
 /// let forecast = model.predict(3).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SimpleExponentialSmoothing {
     /// Smoothing parameter (0 < alpha < 1)
     alpha: f64,
@@ -161,11 +168,17 @@ impl Predictor for SimpleExponentialSmoothing {
 ///
 /// Best for: Data with trend but no seasonality
 ///
+/// @algorithm Holt
+/// @category ExponentialSmoothing
+/// @complexity O(n) fit, O(h) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::exponential_smoothing::DoubleExponentialSmoothing;
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::smoothing::DoubleExponentialSmoothing;
+/// use algorithm::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0];
 /// let mut model = DoubleExponentialSmoothing::new(0.3, 0.1).unwrap();
@@ -173,6 +186,7 @@ impl Predictor for SimpleExponentialSmoothing {
 /// let forecast = model.predict(3).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DoubleExponentialSmoothing {
     /// Level smoothing parameter
     alpha: f64,
@@ -283,11 +297,17 @@ pub enum SeasonalType {
 ///
 /// Best for: Data with both trend and seasonal patterns
 ///
+/// @algorithm HoltWinters
+/// @category ExponentialSmoothing
+/// @complexity O(n) fit, O(h) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::exponential_smoothing::{HoltWinters, SeasonalType};
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::smoothing::{HoltWinters, SeasonalType};
+/// use algorithm::Predictor;
 ///
 /// // Monthly data with yearly seasonality
 /// let data: Vec<f64> = (0..36).map(|i| {
@@ -299,6 +319,7 @@ pub enum SeasonalType {
 /// let forecast = model.predict(12).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct HoltWinters {
     /// Level smoothing parameter
     alpha: f64,

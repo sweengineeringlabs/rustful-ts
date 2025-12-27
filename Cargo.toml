@@ -1,7 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/rustful-core",
+    "crates/algorithm",
+    "crates/data",
     "crates/rustful-financial",
     "crates/rustful-automl",
     "crates/rustful-forecast",
@@ -49,7 +50,8 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 clap = { version = "4", features = ["derive"] }
 
 # Internal crates
-rustful-core = { path = "crates/rustful-core" }
+algorithm = { path = "crates/algorithm" }
+data = { path = "crates/data" }
 rustful-financial = { path = "crates/rustful-financial" }
 rustful-automl = { path = "crates/rustful-automl" }
 rustful-forecast = { path = "crates/rustful-forecast" }

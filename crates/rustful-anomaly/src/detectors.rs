@@ -1,6 +1,6 @@
 //! Anomaly detectors
 
-use rustful_core::Result;
+use algorithm::Result;
 use serde::{Deserialize, Serialize};
 
 /// Anomaly detection result

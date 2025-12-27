@@ -1,24 +1,22 @@
 //! Basic example demonstrating core time series algorithms
 //!
-//! Run with: cargo run --example basic -p rustful-core
+//! Run with: cargo run --example basic -p algorithm
 
-use rustful_core::algorithms::{
-    arima::Arima,
-    exponential_smoothing::{SimpleExponentialSmoothing, HoltWinters, SeasonalType},
-    moving_average::SimpleMovingAverage,
-    linear_regression::LinearRegression,
-    knn::{TimeSeriesKNN, DistanceMetric},
+use algorithm::{
+    ml::{DistanceMetric, TimeSeriesKNN},
+    regression::{Arima, LinearRegression},
+    smoothing::{HoltWinters, SeasonalType, SimpleExponentialSmoothing, SimpleMovingAverage},
     Predictor,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Sample time series data
     let data = vec![
-        10.0, 12.0, 13.0, 15.0, 14.0, 16.0, 18.0, 17.0, 19.0, 21.0,
-        20.0, 22.0, 24.0, 23.0, 25.0, 27.0, 26.0, 28.0, 30.0, 29.0,
+        10.0, 12.0, 13.0, 15.0, 14.0, 16.0, 18.0, 17.0, 19.0, 21.0, 20.0, 22.0, 24.0, 23.0, 25.0,
+        27.0, 26.0, 28.0, 30.0, 29.0,
     ];
 
-    println!("=== rustful-core Basic Examples ===\n");
+    println!("=== Algorithm Crate Examples ===\n");
     println!("Input data: {:?}\n", &data[..10]);
 
     // 1. Simple Exponential Smoothing
@@ -47,7 +45,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut lr = LinearRegression::new();
     lr.fit(&data)?;
     let lr_forecast = lr.predict(5)?;
-    println!("   Slope: {:.4}, Intercept: {:.4}", lr.slope(), lr.intercept());
+    println!(
+        "   Slope: {:.4}, Intercept: {:.4}",
+        lr.slope(),
+        lr.intercept()
+    );
     println!("   Forecast: {:?}\n", lr_forecast);
 
     // 5. K-Nearest Neighbors

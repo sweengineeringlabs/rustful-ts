@@ -2,7 +2,7 @@
 
 use super::detectors::{AnomalyDetector, AnomalyResult};
 use super::alerting::Alert;
-use rustful_core::Result;
+use algorithm::Result;
 
 /// Real-time monitor for streaming data
 pub struct Monitor<D: AnomalyDetector> {

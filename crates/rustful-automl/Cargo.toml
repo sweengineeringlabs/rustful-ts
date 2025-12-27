@@ -6,6 +6,6 @@ license.workspace = true
 description = "AutoML for time series: model selection, hyperparameter optimization, ensembles"
 
 [dependencies]
-rustful-core = { workspace = true }
+algorithm = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

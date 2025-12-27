@@ -6,6 +6,6 @@ license.workspace = true
 description = "Financial analytics for time series: portfolio, backtesting, risk metrics"
 
 [dependencies]
-rustful-core = { workspace = true }
+algorithm = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

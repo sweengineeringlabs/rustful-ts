@@ -1,6 +1,6 @@
 //! Forecasting pipeline
 
-use rustful_core::Result;
+use algorithm::Result;
 
 /// Pipeline step trait
 pub trait PipelineStep: Send + Sync {
@@ -81,7 +81,7 @@ impl PipelineStep for DifferenceStep {
     }
 
     fn transform(&self, data: &[f64]) -> Result<Vec<f64>> {
-        Ok(rustful_core::utils::preprocessing::difference(data, self.order))
+        Ok(algorithm::utils::preprocessing::difference(data, self.order))
     }
 
     fn inverse_transform(&self, data: &[f64]) -> Result<Vec<f64>> {

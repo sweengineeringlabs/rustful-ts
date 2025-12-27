@@ -16,7 +16,7 @@ crate-type = ["cdylib", "rlib"]
 default = []
 
 [dependencies]
-rustful-core = { workspace = true }
+algorithm = { workspace = true }
 rustful-financial = { workspace = true }
 rustful-anomaly = { workspace = true }
 rustful-automl = { workspace = true }

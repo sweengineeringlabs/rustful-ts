@@ -16,7 +16,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use rustful_core::algorithms::{arima::Arima, Predictor};
+//! use algorithm::{regression::Arima, Predictor};
 //!
 //! let data: Vec<f64> = (1..=20).map(|x| x as f64).collect();
 //! let mut model = Arima::new(1, 1, 0).unwrap();
@@ -25,12 +25,19 @@
 //! assert_eq!(forecast.len(), 3);
 //! ```
 
-use crate::error::{Result, TsError};
-use crate::algorithms::Predictor;
+use crate::{Result, TsError};
+use crate::Predictor;
 use serde::{Deserialize, Serialize};
 
 /// ARIMA model for time series forecasting
+///
+/// @algorithm ARIMA
+/// @category StatisticalMethod
+/// @complexity O(n²) fit, O(h) predict
+/// @thread_safe false
+/// @since 0.1.0
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Arima {
     /// AR order (p)
     p: usize,

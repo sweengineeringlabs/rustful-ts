@@ -1,0 +1,19 @@
+[package]
+name = "algorithm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Time series prediction algorithms"
+keywords = ["time-series", "forecasting", "prediction", "algorithms"]
+categories = ["algorithms", "science"]
+
+[lib]
+name = "algorithm"
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]

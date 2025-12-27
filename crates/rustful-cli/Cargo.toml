@@ -10,7 +10,7 @@ name = "rustful"
 path = "src/main.rs"
 
 [dependencies]
-rustful-core = { workspace = true }
+algorithm = { workspace = true }
 rustful-forecast = { path = "../rustful-forecast" }
 rustful-financial = { path = "../rustful-financial" }
 rustful-automl = { path = "../rustful-automl" }

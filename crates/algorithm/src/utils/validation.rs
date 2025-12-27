@@ -2,7 +2,7 @@
 //!
 //! Time series require special validation strategies that respect temporal order.
 
-use crate::algorithms::Predictor;
+use crate::Predictor;
 use crate::utils::metrics;
 
 /// Time series cross-validation using expanding window

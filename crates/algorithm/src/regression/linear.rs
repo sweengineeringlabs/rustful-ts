@@ -9,19 +9,25 @@
 //! - Quick baseline model
 //! - When interpretability is important
 
-use crate::algorithms::Predictor;
-use crate::error::{Result, TsError};
+use crate::Predictor;
+use crate::{Result, TsError};
 use serde::{Deserialize, Serialize};
 
 /// Linear Regression model for time series
 ///
 /// Fits y = intercept + slope * t where t is the time index.
 ///
+/// @algorithm LinearRegression
+/// @category RegressionMethod
+/// @complexity O(n) fit, O(h) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::linear_regression::LinearRegression;
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::regression::LinearRegression;
+/// use algorithm::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 14.0, 16.0, 18.0, 20.0];
 /// let mut model = LinearRegression::new();
@@ -31,6 +37,7 @@ use serde::{Deserialize, Serialize};
 /// // Should predict approximately [22, 24, 26]
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LinearRegression {
     /// Y-intercept
     intercept: f64,
@@ -172,11 +179,17 @@ impl Predictor for LinearRegression {
 ///
 /// Extends basic linear regression to capture seasonal patterns.
 ///
+/// @algorithm SeasonalLinearRegression
+/// @category RegressionMethod
+/// @complexity O(n) fit, O(h) predict
+/// @thread_safe false
+/// @since 0.1.0
+///
 /// # Example
 ///
 /// ```rust
-/// use rustful_core::algorithms::linear_regression::SeasonalLinearRegression;
-/// use rustful_core::algorithms::Predictor;
+/// use algorithm::regression::SeasonalLinearRegression;
+/// use algorithm::Predictor;
 ///
 /// // Monthly data with yearly seasonality
 /// let data: Vec<f64> = (0..36).map(|i| {
@@ -188,6 +201,7 @@ impl Predictor for LinearRegression {
 /// let forecast = model.predict(12).unwrap();
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct SeasonalLinearRegression {
     /// Seasonal period
     period: usize,

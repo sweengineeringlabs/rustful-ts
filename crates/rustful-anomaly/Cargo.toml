@@ -6,6 +6,6 @@ license.workspace = true
 description = "Anomaly detection for time series: detectors, monitoring, alerting"
 
 [dependencies]
-rustful-core = { workspace = true }
+algorithm = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }

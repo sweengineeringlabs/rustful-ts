@@ -42,7 +42,7 @@ cargo test -p rustful-forecast
 
 ```rust
 use rustful_forecast::pipeline::{PipelineBuilder, NormalizeStep, DifferenceStep};
-use rustful_core::algorithms::Arima;
+use rustful_core::algorithm::Arima;
 
 let pipeline = PipelineBuilder::new()
     .add_step(NormalizeStep::new())
