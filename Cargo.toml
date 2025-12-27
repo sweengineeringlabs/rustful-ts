@@ -45,6 +45,10 @@ repository = "https://github.com/yourusername/rustful-ts"
 # Core dependencies
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nalgebra = { version = "0.32", default-features = false, features = ["std"] }
 ndarray = "0.15"
 thiserror = "1.0"
@@ -98,6 +102,11 @@ signal-facade = { path = "crates/signal/signal-facade" }
 
 # Internal crates - Utilities
 bench-harness = { path = "crates/bench-harness" }
+
+# Rustboot framework (infrastructure) - local path for development
+rustboot-health = { path = "../rustboot/crates/rustboot-health", package = "dev-engineeringlabs-rustboot-health" }
+rustboot-middleware = { path = "../rustboot/crates/rustboot-middleware", package = "dev-engineeringlabs-rustboot-middleware" }
+rustboot-error = { path = "../rustboot/crates/rustboot-error" }
 
 # Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }
