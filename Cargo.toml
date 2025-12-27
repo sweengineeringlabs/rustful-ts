@@ -108,6 +108,7 @@ rustboot-error = { path = "../rustboot/crates/rustboot-error" }
 bench = { path = "../rustboot/crates/bench" }
 loc-core = { path = "../rustboot/crates/loc/loc-core" }
 load = { path = "../rustboot/crates/load" }
+mem = { path = "../rustboot/crates/mem" }
 
 # Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }
