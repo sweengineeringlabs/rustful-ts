@@ -161,6 +161,68 @@ rustful-forecast  rustful-financial  rustful-anomaly
      rustful-wasm  rustful-server   rustful-cli
 ```
 
+### WASM Build Pipeline
+
+How Rust becomes callable from TypeScript:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        BUILD TIME                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Rust Source (rustful-core, rustful-wasm)                      │
+│   ├── src/algorithms/arima.rs                                   │
+│   └── src/lib.rs (#[wasm_bindgen] annotations)                  │
+│                         │                                        │
+│                         ▼                                        │
+│                    wasm-pack build                               │
+│                    (invokes rustc → wasm32-unknown-unknown)      │
+│                         │                                        │
+│                         ▼                                        │
+│              ┌─────────────────────┐                            │
+│              │  wasm-bindgen       │                            │
+│              │  (generates glue)   │                            │
+│              └──────────┬──────────┘                            │
+│                         │                                        │
+│                         ▼                                        │
+│              ┌─────────────────────┐                            │
+│              │  wasm-opt           │                            │
+│              │  (optimizes binary) │                            │
+│              └──────────┬──────────┘                            │
+│                         │                                        │
+│                         ▼                                        │
+│   Output (ts/pkg/)                                              │
+│   ├── rustful_wasm_bg.wasm    ← Compiled Rust algorithms        │
+│   ├── rustful_wasm.js         ← JS glue code                    │
+│   └── rustful_wasm.d.ts       ← TypeScript type definitions     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                        RUNTIME                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   TypeScript Application                                         │
+│   │                                                              │
+│   │  import { initWasm, Arima } from 'rustful-ts';              │
+│   │  await initWasm();  // Loads .wasm binary                   │
+│   │                                                              │
+│   │  const model = new Arima(1, 1, 1);                          │
+│   │  await model.fit(data);        // ──┐                       │
+│   │  const forecast = model.predict(10);│                       │
+│   │                                     │                       │
+│   └─────────────────────────────────────┼───────────────────────│
+│                                         │                        │
+│                                         ▼                        │
+│   WASM Runtime (in JS engine)                                   │
+│   │                                                              │
+│   │  Float64Array ──► Rust memory ──► Algorithm ──► Result      │
+│   │                                                              │
+│   └──────────────────────────────────────────────────────────────│
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ### Interface Layers
 
 #### TypeScript/WASM

@@ -1,7 +1,7 @@
 {
   "name": "rustful-ts",
   "version": "0.2.0",
-  "description": "High-performance time series prediction framework powered by Rust/WASM",
+  "description": "TypeScript time series library with Rust/WASM performance optimization",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",

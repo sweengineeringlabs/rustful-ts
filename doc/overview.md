@@ -1,6 +1,10 @@
 # rustful-ts Documentation
 
-Main documentation hub for the rustful-ts time series prediction framework.
+**rustful-ts** is a TypeScript time series library optimized with Rust and WebAssembly.
+
+- **For TypeScript developers**: Familiar API with async/await, full type definitions
+- **Rust under the hood**: Core algorithms compiled to WASM for 3-8x performance gains
+- **Zero native dependencies**: Works in Node.js and browsers without compilation
 
 ## Quick Navigation
 

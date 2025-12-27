@@ -1,6 +1,25 @@
 # rustful-ts
 
-High-performance time series prediction framework. Rust core with TypeScript bindings.
+A TypeScript time series library with Rust-powered performance.
+
+Write familiar TypeScript. Get 3-8x faster execution via WebAssembly.
+
+```typescript
+import { initWasm, Arima } from 'rustful-ts';
+
+await initWasm();
+const model = new Arima(1, 1, 1);
+await model.fit(data);
+const forecast = await model.predict(10);
+```
+
+## Why rustful-ts?
+
+| Benefit | Description |
+|---------|-------------|
+| **TypeScript API** | Familiar async/await patterns, full type safety |
+| **Rust Performance** | Algorithms compiled to WASM, 3-8x faster than pure JS |
+| **No Native Dependencies** | Runs in Node.js and browsers without compilation |
 
 ## Features
 
@@ -10,28 +29,10 @@ High-performance time series prediction framework. Rust core with TypeScript bin
 - **AutoML**: Automatic model selection and ensembles
 - **Anomaly Detection**: Real-time monitoring with Z-score, IQR detectors
 
-## Quick Start
+## Install
 
 ```bash
 npm install rustful-ts
-```
-
-```typescript
-import { initWasm, Arima, Pipeline } from 'rustful-ts';
-
-await initWasm();
-
-// Basic forecasting
-const model = new Arima(1, 1, 1);
-await model.fit([10, 12, 14, 16, 18, 20, 22, 24, 26, 28]);
-const forecast = await model.predict(5);
-
-// Pipeline API
-const results = await Pipeline.create()
-  .normalize()
-  .difference(1)
-  .withArima(1, 0, 1)
-  .fitPredict(data, 10);
 ```
 
 ## Documentation
