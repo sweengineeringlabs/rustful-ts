@@ -1,0 +1,9 @@
+[package]
+name = "predictor-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Service Provider Interface for time series predictors"
+
+[dependencies]
+thiserror = { workspace = true }

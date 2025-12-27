@@ -1,0 +1,12 @@
+[package]
+name = "detector-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Anomaly detection algorithm implementations"
+
+[dependencies]
+detector-spi = { path = "../detector-spi" }
+detector-core = { path = "../detector-core" }
+thiserror = { workspace = true }
+serde = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "detector-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level facade for anomaly detection"
+
+[dependencies]
+detector-spi = { path = "../detector-spi" }
+detector-core = { path = "../detector-core" }
+detector-api = { path = "../detector-api" }

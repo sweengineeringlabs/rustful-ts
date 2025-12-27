@@ -1,0 +1,12 @@
+[package]
+name = "signal-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Trading signal generator implementations"
+
+[dependencies]
+signal-spi = { path = "../signal-spi" }
+signal-core = { path = "../signal-core" }
+thiserror = { workspace = true }
+serde = { workspace = true }

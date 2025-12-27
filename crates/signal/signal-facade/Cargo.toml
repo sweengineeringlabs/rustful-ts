@@ -1,0 +1,11 @@
+[package]
+name = "signal-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level facade for trading signals"
+
+[dependencies]
+signal-spi = { path = "../signal-spi" }
+signal-core = { path = "../signal-core" }
+signal-api = { path = "../signal-api" }

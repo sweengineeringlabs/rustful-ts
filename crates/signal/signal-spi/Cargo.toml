@@ -1,0 +1,9 @@
+[package]
+name = "signal-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Service Provider Interface for trading signal generators"
+
+[dependencies]
+serde = { workspace = true }

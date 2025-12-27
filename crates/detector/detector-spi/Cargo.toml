@@ -1,0 +1,8 @@
+[package]
+name = "detector-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Service Provider Interface for anomaly detectors"
+
+[dependencies]

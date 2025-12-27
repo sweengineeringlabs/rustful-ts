@@ -1,6 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
+    # Predictor domain
+    "crates/predictor/predictor-spi",
+    "crates/predictor/predictor-core",
+    "crates/predictor/predictor-api",
+    "crates/predictor/predictor-facade",
+    # Detector domain
+    "crates/detector/detector-spi",
+    "crates/detector/detector-core",
+    "crates/detector/detector-api",
+    "crates/detector/detector-facade",
+    # Pipeline domain
+    "crates/pipeline/pipeline-spi",
+    "crates/pipeline/pipeline-core",
+    "crates/pipeline/pipeline-api",
+    "crates/pipeline/pipeline-facade",
+    # Signal domain
+    "crates/signal/signal-spi",
+    "crates/signal/signal-core",
+    "crates/signal/signal-api",
+    "crates/signal/signal-facade",
+    # Legacy (to be migrated)
     "crates/algorithm",
     "crates/data",
     "crates/financial",
@@ -49,7 +70,31 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
-# Internal crates
+# Internal crates - Predictor domain
+predictor-spi = { path = "crates/predictor/predictor-spi" }
+predictor-core = { path = "crates/predictor/predictor-core" }
+predictor-api = { path = "crates/predictor/predictor-api" }
+predictor-facade = { path = "crates/predictor/predictor-facade" }
+
+# Internal crates - Detector domain
+detector-spi = { path = "crates/detector/detector-spi" }
+detector-core = { path = "crates/detector/detector-core" }
+detector-api = { path = "crates/detector/detector-api" }
+detector-facade = { path = "crates/detector/detector-facade" }
+
+# Internal crates - Pipeline domain
+pipeline-spi = { path = "crates/pipeline/pipeline-spi" }
+pipeline-core = { path = "crates/pipeline/pipeline-core" }
+pipeline-api = { path = "crates/pipeline/pipeline-api" }
+pipeline-facade = { path = "crates/pipeline/pipeline-facade" }
+
+# Internal crates - Signal domain
+signal-spi = { path = "crates/signal/signal-spi" }
+signal-core = { path = "crates/signal/signal-core" }
+signal-api = { path = "crates/signal/signal-api" }
+signal-facade = { path = "crates/signal/signal-facade" }
+
+# Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }
 data = { path = "crates/data" }
 financial = { path = "crates/financial" }

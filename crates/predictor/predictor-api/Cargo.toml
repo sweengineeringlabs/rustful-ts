@@ -1,0 +1,13 @@
+[package]
+name = "predictor-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Time series prediction algorithm implementations"
+
+[dependencies]
+predictor-spi = { path = "../predictor-spi" }
+predictor-core = { path = "../predictor-core" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+nalgebra = { workspace = true }

@@ -1,0 +1,11 @@
+[package]
+name = "pipeline-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level facade for data transformation pipelines"
+
+[dependencies]
+pipeline-spi = { path = "../pipeline-spi" }
+pipeline-core = { path = "../pipeline-core" }
+pipeline-api = { path = "../pipeline-api" }

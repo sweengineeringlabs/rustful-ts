@@ -1,0 +1,11 @@
+[package]
+name = "predictor-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level facade for time series prediction"
+
+[dependencies]
+predictor-spi = { path = "../predictor-spi" }
+predictor-core = { path = "../predictor-core" }
+predictor-api = { path = "../predictor-api" }
