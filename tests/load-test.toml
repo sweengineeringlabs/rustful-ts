@@ -1,0 +1,21 @@
+# rustful-ts load test config
+base = "http://localhost:8080"
+requests = 1000
+concurrent = 50
+
+[[plan]]
+name = "Health Live"
+path = "/health/live"
+
+[[plan]]
+name = "Health Ready"
+path = "/health/ready"
+
+[[plan]]
+name = "Forecast API"
+method = "POST"
+path = "/api/v1/forecast"
+headers = [
+    { name = "Content-Type", value = "application/json" }
+]
+body = '{"data": [1.0, 2.0, 3.0, 4.0, 5.0], "steps": 10}'

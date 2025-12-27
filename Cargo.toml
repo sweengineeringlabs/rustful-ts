@@ -107,6 +107,7 @@ rustboot-middleware = { path = "../rustboot/crates/rustboot-middleware", package
 rustboot-error = { path = "../rustboot/crates/rustboot-error" }
 bench = { path = "../rustboot/crates/bench" }
 loc-core = { path = "../rustboot/crates/loc/loc-core" }
+load = { path = "../rustboot/crates/load" }
 
 # Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }
