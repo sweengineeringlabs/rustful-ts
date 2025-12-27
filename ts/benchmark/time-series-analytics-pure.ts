@@ -57,7 +57,7 @@ async function runBenchmarks() {
   // ============================================
   console.log('--- Anomaly Detection ---');
 
-  const { ZScoreDetector, IQRDetector } = await import('./src/anomaly/detectors');
+  const { ZScoreDetector, IQRDetector } = await import('../src/anomaly/detectors');
 
   const anomalyData = generateData(MEDIUM);
 
@@ -90,7 +90,7 @@ async function runBenchmarks() {
   // ============================================
   console.log('--- Financial Risk Metrics ---');
 
-  const risk = await import('./src/financial/risk');
+  const risk = await import('../src/financial/risk');
 
   const returnsSmall = generateReturns(SMALL);
   const returnsMedium = generateReturns(MEDIUM);
@@ -138,7 +138,7 @@ async function runBenchmarks() {
 
   // Note: The pure TS version might have different API
   try {
-    const { EnsembleMethod } = await import('./src/automl/ensemble');
+    const { EnsembleMethod } = await import('../src/automl/ensemble');
 
     // Pure TS version had combine_predictions or similar
     // This is a placeholder - adjust based on actual API

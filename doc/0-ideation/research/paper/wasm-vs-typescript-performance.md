@@ -255,9 +255,9 @@ cd ts && npm install && cd ..
 git checkout e73696b
 
 # Run pure TS benchmark (uses sync API from this commit)
-cd ts
-npx tsx benchmark-pure-ts.ts > results-pure-ts.json
-cd ..
+cd ts/benchmark
+npx tsx time-series-analytics-pure.ts > results-pure-ts.json
+cd ../..
 
 # ============================================
 # Benchmark WASM Version
@@ -268,8 +268,9 @@ git checkout 62b7c95
 wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
 
 # Run benchmark
-cd ts
-npx tsx benchmark.ts > results-wasm.json
+cd ts/benchmark
+npx tsx time-series-analytics-wasm.ts > results-wasm.json
+cd ../..
 
 # ============================================
 # Compare Results
@@ -280,8 +281,8 @@ npx tsx benchmark.ts > results-wasm.json
 ### 7.4 Benchmark Scripts
 
 The benchmark scripts are included in the repository:
-- `ts/benchmark.ts` - WASM version benchmark
-- `ts/benchmark-pure-ts.ts` - Pure TypeScript benchmark
+- `ts/benchmark/time-series-analytics-wasm.ts` - WASM version benchmark
+- `ts/benchmark/time-series-analytics-pure.ts` - Pure TypeScript benchmark
 
 ---
 

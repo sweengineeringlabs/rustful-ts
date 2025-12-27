@@ -45,7 +45,7 @@ async function runBenchmarks() {
   console.log();
 
   // Import dynamically to work with both versions
-  const { initWasm, isWasmReady } = await import('./src/wasm-loader');
+  const { initWasm, isWasmReady } = await import('../src/wasm-loader');
 
   // Initialize WASM
   console.log('Initializing WASM...');
@@ -65,7 +65,7 @@ async function runBenchmarks() {
   // ============================================
   console.log('--- Anomaly Detection ---');
 
-  const { ZScoreDetector, IQRDetector } = await import('./src/anomaly/detectors');
+  const { ZScoreDetector, IQRDetector } = await import('../src/anomaly/detectors');
 
   const anomalyData = generateData(MEDIUM);
 
@@ -98,7 +98,7 @@ async function runBenchmarks() {
   // ============================================
   console.log('--- Financial Risk Metrics ---');
 
-  const risk = await import('./src/financial/risk');
+  const risk = await import('../src/financial/risk');
 
   const returnsSmall = generateReturns(SMALL);
   const returnsMedium = generateReturns(MEDIUM);
@@ -144,7 +144,7 @@ async function runBenchmarks() {
   // ============================================
   console.log('--- Ensemble Methods ---');
 
-  const { combinePredictions, EnsembleMethod } = await import('./src/automl/ensemble');
+  const { combinePredictions, EnsembleMethod } = await import('../src/automl/ensemble');
 
   const predictions = Array.from({ length: 10 }, () => generateData(100));
 
@@ -168,8 +168,8 @@ async function runBenchmarks() {
   // ============================================
   console.log('--- Core Algorithms (WASM) ---');
 
-  const { Arima } = await import('./src/algorithms/arima');
-  const { SimpleExponentialSmoothing } = await import('./src/algorithms/exponential-smoothing');
+  const { Arima } = await import('../src/algorithms/arima');
+  const { SimpleExponentialSmoothing } = await import('../src/algorithms/exponential-smoothing');
 
   const forecastData = generateData(MEDIUM);
 
