@@ -6,4 +6,4 @@ license.workspace = true
 description = "Benchmark harness and code metrics utilities"
 
 [dependencies]
-tokei = "13.0"
+# No external dependencies - uses only std

@@ -1,11 +1,10 @@
-//! Code metrics using tokei for accurate line counting.
+//! Lightweight code metrics without heavy dependencies.
 //!
-//! Provides accurate code, comment, and blank line counts by
-//! understanding language syntax.
+//! Counts code, comments, and blank lines for Rust and TOML files.
 
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
-use tokei::{Config, Languages};
 
 /// Statistics for a single language.
 #[derive(Debug, Clone, Default)]
@@ -20,6 +19,13 @@ impl LanguageStats {
     /// Total lines (code + comments + blanks)
     pub fn total(&self) -> usize {
         self.code + self.comments + self.blanks
+    }
+
+    fn add(&mut self, other: &LanguageStats) {
+        self.files += other.files;
+        self.code += other.code;
+        self.comments += other.comments;
+        self.blanks += other.blanks;
     }
 }
 
@@ -47,42 +53,97 @@ impl CodeMetrics {
     }
 }
 
-/// Count lines of code in a directory.
-///
-/// Uses tokei to accurately count code, comments, and blank lines
-/// by understanding language syntax.
-///
-/// # Example
-///
-/// ```ignore
-/// let metrics = count_lines("./src")?;
-/// println!("Rust code: {} lines", metrics.rust().unwrap().code);
-/// ```
-pub fn count_lines<P: AsRef<Path>>(path: P) -> Result<CodeMetrics, String> {
-    let paths = &[path.as_ref()];
-    let excluded = &[];
-    let config = Config::default();
+/// Count lines in a single file.
+fn count_file(path: &Path) -> Option<(&'static str, LanguageStats)> {
+    let ext = path.extension()?.to_str()?;
+    let lang = match ext {
+        "rs" => "Rust",
+        "toml" => "Toml",
+        "md" => "Markdown",
+        _ => return None,
+    };
 
-    let mut languages = Languages::new();
-    languages.get_statistics(paths, excluded, &config);
+    let content = fs::read_to_string(path).ok()?;
+    let mut stats = LanguageStats { files: 1, ..Default::default() };
+    let mut in_block_comment = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.is_empty() {
+            stats.blanks += 1;
+            continue;
+        }
+
+        match lang {
+            "Rust" => {
+                if in_block_comment {
+                    stats.comments += 1;
+                    if trimmed.contains("*/") {
+                        in_block_comment = false;
+                    }
+                } else if trimmed.starts_with("/*") {
+                    stats.comments += 1;
+                    if !trimmed.contains("*/") {
+                        in_block_comment = true;
+                    }
+                } else if trimmed.starts_with("//") {
+                    stats.comments += 1;
+                } else {
+                    stats.code += 1;
+                }
+            }
+            "Toml" => {
+                if trimmed.starts_with('#') {
+                    stats.comments += 1;
+                } else {
+                    stats.code += 1;
+                }
+            }
+            "Markdown" => {
+                stats.comments += 1; // All markdown is "comments"
+            }
+            _ => stats.code += 1,
+        }
+    }
+
+    Some((lang, stats))
+}
+
+/// Recursively walk directory and collect files.
+fn walk_dir(path: &Path, files: &mut Vec<std::path::PathBuf>) {
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // Skip hidden dirs, target, node_modules
+                if !name.starts_with('.') && name != "target" && name != "node_modules" {
+                    walk_dir(&path, files);
+                }
+            } else if path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+}
+
+/// Count lines of code in a directory.
+pub fn count_lines<P: AsRef<Path>>(path: P) -> Result<CodeMetrics, String> {
+    let mut files = Vec::new();
+    walk_dir(path.as_ref(), &mut files);
 
     let mut metrics = CodeMetrics::new();
 
-    for (lang_type, language) in languages {
-        let name = format!("{:?}", lang_type);
-        let stats = LanguageStats {
-            files: language.reports.len(),
-            code: language.code,
-            comments: language.comments,
-            blanks: language.blanks,
-        };
-
-        metrics.total.files += stats.files;
-        metrics.total.code += stats.code;
-        metrics.total.comments += stats.comments;
-        metrics.total.blanks += stats.blanks;
-
-        metrics.languages.insert(name, stats);
+    for file_path in files {
+        if let Some((lang, stats)) = count_file(&file_path) {
+            metrics.total.add(&stats);
+            metrics
+                .languages
+                .entry(lang.to_string())
+                .or_default()
+                .add(&stats);
+        }
     }
 
     Ok(metrics)
@@ -90,32 +151,14 @@ pub fn count_lines<P: AsRef<Path>>(path: P) -> Result<CodeMetrics, String> {
 
 /// Count lines for multiple paths and aggregate.
 pub fn count_lines_multi<P: AsRef<Path>>(paths: &[P]) -> Result<CodeMetrics, String> {
-    let path_refs: Vec<&Path> = paths.iter().map(|p| p.as_ref()).collect();
-    let excluded = &[];
-    let config = Config::default();
-
-    let mut languages = Languages::new();
-    languages.get_statistics(&path_refs, excluded, &config);
-
     let mut metrics = CodeMetrics::new();
-
-    for (lang_type, language) in languages {
-        let name = format!("{:?}", lang_type);
-        let stats = LanguageStats {
-            files: language.reports.len(),
-            code: language.code,
-            comments: language.comments,
-            blanks: language.blanks,
-        };
-
-        metrics.total.files += stats.files;
-        metrics.total.code += stats.code;
-        metrics.total.comments += stats.comments;
-        metrics.total.blanks += stats.blanks;
-
-        metrics.languages.insert(name, stats);
+    for path in paths {
+        let m = count_lines(path)?;
+        for (lang, stats) in m.languages {
+            metrics.total.add(&stats);
+            metrics.languages.entry(lang).or_default().add(&stats);
+        }
     }
-
     Ok(metrics)
 }
 
