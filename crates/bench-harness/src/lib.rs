@@ -1,19 +1,32 @@
-//! Lightweight benchmark harness with optimization barrier.
+//! Benchmark harness and code metrics utilities.
 //!
-//! # Example
+//! # Benchmarking
 //!
 //! ```ignore
-//! use bench_harness::bench;
+//! use bench_harness::{bench_print, header, section, footer};
 //!
 //! fn main() {
-//!     let data = vec![1.0; 1000];
-//!
-//!     bench("my operation", 100, || {
-//!         // computation here
-//!         result  // return value to prevent dead code elimination
+//!     header("My Benchmarks");
+//!     section("Algorithm A");
+//!     bench_print("operation", 100, || {
+//!         // computation
+//!         result
 //!     });
+//!     footer();
 //! }
 //! ```
+//!
+//! # Code Metrics
+//!
+//! ```ignore
+//! use bench_harness::metrics::{count_lines, print_metrics};
+//!
+//! // Count lines in a directory
+//! let stats = count_lines("./src").unwrap();
+//! print_metrics(&stats);
+//! ```
+
+pub mod metrics;
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
