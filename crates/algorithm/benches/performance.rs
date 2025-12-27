@@ -1,5 +1,6 @@
 //! Performance benchmarks for algorithm crate
 
+use std::hint::black_box;
 use std::time::Instant;
 
 use algorithm::prelude::*;
@@ -15,18 +16,18 @@ fn generate_data(n: usize) -> Vec<f64> {
         .collect()
 }
 
-fn bench<F>(name: &str, iterations: u32, mut f: F)
+fn bench<F, R>(name: &str, iterations: u32, mut f: F)
 where
-    F: FnMut(),
+    F: FnMut() -> R,
 {
     // Warmup
     for _ in 0..3 {
-        f();
+        black_box(f());
     }
 
     let start = Instant::now();
     for _ in 0..iterations {
-        f();
+        black_box(f());
     }
     let elapsed = start.elapsed();
     let per_iter = elapsed / iterations;
@@ -46,100 +47,90 @@ fn main() {
 
     // Preprocessing benchmarks
     println!("--- Preprocessing (10K points) ---");
-    bench("normalize", 1000, || {
-        let _ = normalize(&data_10k);
-    });
-    bench("standardize", 1000, || {
-        let _ = standardize(&data_10k);
-    });
-    bench("difference(1)", 1000, || {
-        let _ = difference(&data_10k, 1);
-    });
-    bench("difference(2)", 1000, || {
-        let _ = difference(&data_10k, 2);
-    });
+    bench("normalize", 1000, || normalize(&data_10k));
+    bench("standardize", 1000, || standardize(&data_10k));
+    bench("difference(1)", 1000, || difference(&data_10k, 1));
+    bench("difference(2)", 1000, || difference(&data_10k, 2));
 
     // Metrics benchmarks
     println!("\n--- Metrics (10K points) ---");
     let predicted: Vec<f64> = data_10k.iter().map(|x| x + 1.0).collect();
-    bench("mae", 1000, || {
-        let _ = mae(&data_10k, &predicted);
-    });
-    bench("mse", 1000, || {
-        let _ = mse(&data_10k, &predicted);
-    });
-    bench("rmse", 1000, || {
-        let _ = rmse(&data_10k, &predicted);
-    });
+    bench("mae", 1000, || mae(&data_10k, &predicted));
+    bench("mse", 1000, || mse(&data_10k, &predicted));
+    bench("rmse", 1000, || rmse(&data_10k, &predicted));
 
     // SES benchmarks
     println!("\n--- Simple Exponential Smoothing ---");
     bench("SES fit (1K)", 1000, || {
         let mut model = SimpleExponentialSmoothing::new(0.3).unwrap();
         model.fit(&data_1k).unwrap();
+        model
     });
     bench("SES fit (10K)", 100, || {
         let mut model = SimpleExponentialSmoothing::new(0.3).unwrap();
         model.fit(&data_10k).unwrap();
+        model
     });
     bench("SES fit (100K)", 10, || {
         let mut model = SimpleExponentialSmoothing::new(0.3).unwrap();
         model.fit(&data_100k).unwrap();
+        model
     });
 
     let mut ses = SimpleExponentialSmoothing::new(0.3).unwrap();
     ses.fit(&data_10k).unwrap();
-    bench("SES predict(100)", 10000, || {
-        let _ = ses.predict(100).unwrap();
-    });
+    bench("SES predict(100)", 10000, || ses.predict(100).unwrap());
 
     // Holt-Winters benchmarks
     println!("\n--- Holt-Winters ---");
     bench("HW fit (1K, period=12)", 100, || {
         let mut model = HoltWinters::new(0.3, 0.1, 0.1, 12, SeasonalType::Additive).unwrap();
         model.fit(&data_1k).unwrap();
+        model
     });
     bench("HW fit (10K, period=12)", 10, || {
         let mut model = HoltWinters::new(0.3, 0.1, 0.1, 12, SeasonalType::Additive).unwrap();
         model.fit(&data_10k).unwrap();
+        model
     });
 
     let mut hw = HoltWinters::new(0.3, 0.1, 0.1, 12, SeasonalType::Additive).unwrap();
     hw.fit(&data_1k).unwrap();
-    bench("HW predict(100)", 10000, || {
-        let _ = hw.predict(100).unwrap();
-    });
+    bench("HW predict(100)", 10000, || hw.predict(100).unwrap());
 
     // ARIMA benchmarks
     println!("\n--- ARIMA ---");
     bench("ARIMA(1,1,0) fit (1K)", 100, || {
         let mut model = Arima::new(1, 1, 0).unwrap();
         model.fit(&data_1k).unwrap();
+        model
     });
     bench("ARIMA(2,1,1) fit (1K)", 100, || {
         let mut model = Arima::new(2, 1, 1).unwrap();
         model.fit(&data_1k).unwrap();
+        model
     });
 
     let mut arima = Arima::new(1, 1, 0).unwrap();
     arima.fit(&data_1k).unwrap();
-    bench("ARIMA predict(100)", 10000, || {
-        let _ = arima.predict(100).unwrap();
-    });
+    bench("ARIMA predict(100)", 10000, || arima.predict(100).unwrap());
 
     // Linear Regression benchmarks
     println!("\n--- Linear Regression ---");
     bench("LinReg fit (1K)", 1000, || {
         let mut model = LinearRegression::new();
         model.fit(&data_1k).unwrap();
+        model
     });
     bench("LinReg fit (10K)", 100, || {
         let mut model = LinearRegression::new();
         model.fit(&data_10k).unwrap();
+        model
     });
     bench("LinReg fit (100K)", 10, || {
         let mut model = LinearRegression::new();
         model.fit(&data_100k).unwrap();
+        model
     });
 
     // KNN benchmarks
@@ -147,23 +138,24 @@ fn main() {
     bench("KNN(k=5,w=10) fit (1K)", 100, || {
         let mut model = TimeSeriesKNN::new(5, 10, DistanceMetric::Euclidean).unwrap();
         model.fit(&data_1k).unwrap();
+        model
     });
 
     let mut knn = TimeSeriesKNN::new(5, 10, DistanceMetric::Euclidean).unwrap();
     knn.fit(&data_1k).unwrap();
-    bench("KNN predict(10)", 1000, || {
-        let _ = knn.predict(10).unwrap();
-    });
+    bench("KNN predict(10)", 1000, || knn.predict(10).unwrap());
 
     // Moving Average benchmarks
     println!("\n--- Moving Average ---");
     bench("SMA(20) fit (10K)", 1000, || {
         let mut model = SimpleMovingAverage::new(20).unwrap();
         model.fit(&data_10k).unwrap();
+        model
     });
     bench("SMA(100) fit (10K)", 1000, || {
         let mut model = SimpleMovingAverage::new(100).unwrap();
         model.fit(&data_10k).unwrap();
+        model
     });
 
     println!("\n=== Benchmark Complete ===");

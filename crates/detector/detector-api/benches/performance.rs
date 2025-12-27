@@ -1,5 +1,6 @@
 //! Performance benchmarks for detector crate
 
+use std::hint::black_box;
 use std::time::Instant;
 
 use detector_api::prelude::*;
@@ -13,18 +14,18 @@ fn generate_data(n: usize) -> Vec<f64> {
         .collect()
 }
 
-fn bench<F>(name: &str, iterations: u32, mut f: F)
+fn bench<F, R>(name: &str, iterations: u32, mut f: F)
 where
-    F: FnMut(),
+    F: FnMut() -> R,
 {
     // Warmup
     for _ in 0..3 {
-        f();
+        black_box(f());
     }
 
     let start = Instant::now();
     for _ in 0..iterations {
-        f();
+        black_box(f());
     }
     let elapsed = start.elapsed();
     let per_iter = elapsed / iterations;
@@ -47,23 +48,26 @@ fn main() {
     bench("ZScore fit (1K)", 1000, || {
         let mut detector = ZScoreDetector::new(3.0).unwrap();
         detector.fit(&data_1k).unwrap();
+        detector
     });
     bench("ZScore fit (10K)", 100, || {
         let mut detector = ZScoreDetector::new(3.0).unwrap();
         detector.fit(&data_10k).unwrap();
+        detector
     });
     bench("ZScore fit (100K)", 10, || {
         let mut detector = ZScoreDetector::new(3.0).unwrap();
         detector.fit(&data_100k).unwrap();
+        detector
     });
 
     let mut zscore = ZScoreDetector::new(3.0).unwrap();
     zscore.fit(&data_10k).unwrap();
     bench("ZScore detect (10K)", 1000, || {
-        let _ = zscore.detect(&data_10k).unwrap();
+        zscore.detect(&data_10k).unwrap()
     });
     bench("ZScore score (10K)", 1000, || {
-        let _ = zscore.score(&data_10k).unwrap();
+        zscore.score(&data_10k).unwrap()
     });
 
     // IQR benchmarks
@@ -71,20 +75,23 @@ fn main() {
     bench("IQR fit (1K)", 1000, || {
         let mut detector = IQRDetector::new(1.5).unwrap();
         detector.fit(&data_1k).unwrap();
+        detector
     });
     bench("IQR fit (10K)", 100, || {
         let mut detector = IQRDetector::new(1.5).unwrap();
         detector.fit(&data_10k).unwrap();
+        detector
     });
     bench("IQR fit (100K)", 10, || {
         let mut detector = IQRDetector::new(1.5).unwrap();
         detector.fit(&data_100k).unwrap();
+        detector
     });
 
     let mut iqr = IQRDetector::new(1.5).unwrap();
     iqr.fit(&data_10k).unwrap();
     bench("IQR detect (10K)", 1000, || {
-        let _ = iqr.detect(&data_10k).unwrap();
+        iqr.detect(&data_10k).unwrap()
     });
 
     println!("\n=== Benchmark Complete ===");
