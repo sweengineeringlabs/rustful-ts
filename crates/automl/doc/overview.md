@@ -1,127 +1,45 @@
-# rustful-automl Overview
+# automl Overview
 
-## WHAT: Automatic Model Selection
+## Audience
 
-rustful-automl provides automatic model selection, hyperparameter tuning, and ensemble methods.
+Data scientists and developers who need automated model selection without manual trial-and-error.
 
-Key capabilities:
-- **Model Selection** - Compare algorithms automatically
-- **Hyperparameter Search** - Grid search, random search
-- **Ensembles** - Combine multiple models
-- **Cross-Validation** - Time series aware validation
+## WHAT
 
-## Prerequisites
+Automatic machine learning for time series forecasting:
+- **Model Selection** - Automatically find the best algorithm for your data
+- **Hyperparameter Optimization** - Grid search across parameter spaces
+- **Ensembles** - Combine multiple model predictions
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+## WHY
 
-**Dependencies**: rustful-core (automatically resolved via Cargo)
+| Problem | Solution |
+|---------|----------|
+| Manual model comparison is tedious | AutoML tests all models automatically |
+| Hyperparameter tuning requires expertise | Grid search finds optimal parameters |
+| Single models may underperform | Ensemble methods combine strengths |
 
-### Build
-
-```bash
-cargo build -p rustful-automl
-cargo test -p rustful-automl
-```
-
-## WHY: Optimal Model Discovery
-
-**Problems Solved**:
-1. Manual model selection is time-consuming
-2. Hyperparameter tuning requires expertise
-3. Single models may underperform ensembles
-
-**When to Use**: Unknown optimal algorithm, hyperparameter tuning, production model selection
-
-**When NOT to Use**: Known best algorithm, simple prototyping
-
-## HOW: Usage Guide
-
-### Automatic Model Selection
+## HOW
 
 ```rust
-use rustful_automl::selector::{AutoSelector, AutoMLConfig};
+use automl::{AutoML, combine_predictions, EnsembleMethod};
 
-let config = AutoMLConfig {
-    models: vec!["arima", "ses", "holt", "linear"],
-    metric: "rmse",
-    cross_validation: true,
-};
+// Select best model automatically
+let automl = AutoML::with_defaults();
+let result = automl.select_best_model(&data, horizon)?;
+println!("Best: {}", result.best_model);
 
-let mut selector = AutoSelector::new(config);
-selector.fit(&data)?;
-
-println!("Best model: {}", selector.best_model());
-let forecast = selector.predict(10)?;
+// Combine predictions from multiple models
+let combined = combine_predictions(&predictions, EnsembleMethod::Average, None);
 ```
 
-### Hyperparameter Search
+## Documentation
 
-```rust
-use rustful_automl::search::{GridSearch, SearchSpace};
-
-let space = SearchSpace::new()
-    .add_int("p", 0, 3)
-    .add_int("d", 0, 2)
-    .add_int("q", 0, 3);
-
-let best_params = GridSearch::run(&data, "arima", space)?;
-```
-
-### Ensembles
-
-```rust
-use rustful_automl::ensemble::{EnsembleForecaster, combine_predictions};
-
-let models = vec![arima, ses, holt];
-let ensemble = EnsembleForecaster::new(models);
-
-ensemble.fit(&data)?;
-let forecast = ensemble.predict(10)?;  // Averages predictions
-```
-
-### Weighting Methods
-
-| Method | Description |
-|--------|-------------|
-| Simple Average | Equal weights |
-| Weighted Average | Based on validation error |
-| Stacking | Meta-learner combination |
-
-## Relationship to Other Modules
-
-| Module | Relationship |
-|--------|--------------|
-| rustful-core | Evaluates core algorithms |
-| rustful-forecast | Can include pipelines |
-| ts/src/automl | TypeScript mirrors this API |
-
-**Integration Points**:
-- Compares Predictor implementations
-- Uses metrics from rustful-core
-
-## Examples and Tests
-
-### Examples
-
-**Location**: [`examples/`](../examples/)
-
-- `basic.rs` - Simple model selection
-
-### Tests
-
-**Location**: [`tests/`](../tests/)
-
-- `integration.rs` - Selection tests
-
-### Testing
-
-```bash
-cargo test -p rustful-automl
-```
+| Document | Description |
+|----------|-------------|
+| [Developer Guide](../../../doc/4-development/developer-guide.md) | Build, test, contribute |
+| [Backlog](../backlog.md) | Planned features |
 
 ---
 
 **Status**: Beta
-**Roadmap**: See [backlog.md](../backlog.md) | [Framework Backlog](../../../doc/framework-backlog.md)

@@ -30,6 +30,7 @@ fn main() {
         metric: OptimizationMetric::RMSE,
         cv_folds: 5,
         max_iterations: 100,
+        test_ratio: 0.2,
     };
     println!("   Metric: {:?}", config.metric);
     println!("   CV Folds: {}", config.cv_folds);

@@ -37,6 +37,7 @@ fn test_automl_config_custom() {
         metric: OptimizationMetric::RMSE,
         cv_folds: 10,
         max_iterations: 200,
+        test_ratio: 0.2,
     };
 
     assert!(matches!(config.metric, OptimizationMetric::RMSE));
