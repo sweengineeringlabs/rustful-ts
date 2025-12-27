@@ -12,9 +12,13 @@ categories = ["web-programming", "finance"]
 name = "data"
 crate-type = ["rlib"]
 
+[features]
+default = ["fetch"]
+fetch = ["reqwest", "tokio"]
+
 [dependencies]
-reqwest = { workspace = true }
-tokio = { workspace = true }
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

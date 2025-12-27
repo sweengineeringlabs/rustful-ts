@@ -248,33 +248,10 @@ impl Predictor for TimeSeriesKNN {
     }
 }
 
+// Private method tests must stay here
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_knn_creation() {
-        let knn = TimeSeriesKNN::new(3, 5, DistanceMetric::Euclidean);
-        assert!(knn.is_ok());
-
-        let knn = TimeSeriesKNN::new(0, 5, DistanceMetric::Euclidean);
-        assert!(knn.is_err());
-    }
-
-    #[test]
-    fn test_knn_fit_predict() {
-        // Create periodic data
-        let data: Vec<f64> = (0..100)
-            .map(|i| (i as f64 * 0.2).sin() * 10.0 + 50.0)
-            .collect();
-
-        let mut knn = TimeSeriesKNN::new(3, 10, DistanceMetric::Euclidean).unwrap();
-        knn.fit(&data).unwrap();
-
-        let forecast = knn.predict(5);
-        assert!(forecast.is_ok());
-        assert_eq!(forecast.unwrap().len(), 5);
-    }
 
     #[test]
     fn test_distance_metrics() {

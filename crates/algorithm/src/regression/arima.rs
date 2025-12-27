@@ -325,29 +325,3 @@ impl Predictor for Arima {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_arima_creation() {
-        let model = Arima::new(1, 1, 1);
-        assert!(model.is_ok());
-
-        let model = Arima::new(11, 0, 0);
-        assert!(model.is_err());
-    }
-
-    #[test]
-    fn test_arima_fit_predict() {
-        let data: Vec<f64> = (1..=50).map(|x| x as f64 + (x as f64 * 0.1).sin()).collect();
-        let mut model = Arima::new(1, 1, 0).unwrap();
-
-        assert!(model.fit(&data).is_ok());
-        assert!(model.is_fitted());
-
-        let forecast = model.predict(5);
-        assert!(forecast.is_ok());
-        assert_eq!(forecast.unwrap().len(), 5);
-    }
-}

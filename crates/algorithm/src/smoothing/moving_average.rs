@@ -292,33 +292,3 @@ impl Predictor for WeightedMovingAverage {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sma() {
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut sma = SimpleMovingAverage::new(3).unwrap();
-        sma.fit(&data).unwrap();
-
-        let smoothed = sma.smoothed_values();
-        assert_eq!(smoothed.len(), 3);
-        assert!((smoothed[0] - 2.0).abs() < 1e-10); // avg(1,2,3)
-        assert!((smoothed[1] - 3.0).abs() < 1e-10); // avg(2,3,4)
-        assert!((smoothed[2] - 4.0).abs() < 1e-10); // avg(3,4,5)
-    }
-
-    #[test]
-    fn test_wma_linear() {
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let mut wma = WeightedMovingAverage::linear(3).unwrap();
-        wma.fit(&data).unwrap();
-
-        let smoothed = wma.smoothed_values();
-        assert_eq!(smoothed.len(), 3);
-        // weights: [1, 2, 3], sum = 6
-        // first: (1*1 + 2*2 + 3*3) / 6 = 14/6 ≈ 2.333
-        assert!((smoothed[0] - 14.0 / 6.0).abs() < 1e-10);
-    }
-}

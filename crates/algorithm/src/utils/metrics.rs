@@ -208,31 +208,3 @@ impl MetricsSummary {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_mae() {
-        let actual = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let predicted = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        assert!((mae(&actual, &predicted) - 0.0).abs() < 1e-10);
-
-        let predicted = vec![2.0, 3.0, 4.0, 5.0, 6.0];
-        assert!((mae(&actual, &predicted) - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_mse() {
-        let actual = vec![1.0, 2.0, 3.0];
-        let predicted = vec![2.0, 3.0, 4.0];
-        assert!((mse(&actual, &predicted) - 1.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_r_squared() {
-        let actual = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        let predicted = vec![1.0, 2.0, 3.0, 4.0, 5.0];
-        assert!((r_squared(&actual, &predicted) - 1.0).abs() < 1e-10);
-    }
-}

@@ -3,13 +3,13 @@ resolver = "2"
 members = [
     "crates/algorithm",
     "crates/data",
-    "crates/rustful-financial",
-    "crates/rustful-automl",
-    "crates/rustful-forecast",
-    "crates/rustful-anomaly",
-    "crates/rustful-wasm",
-    "crates/rustful-server",
-    "crates/rustful-cli",
+    "crates/financial",
+    "crates/automl",
+    "crates/forecast",
+    "crates/anomaly",
+    "crates/wasm",
+    "crates/server",
+    "crates/cli",
 ]
 
 [workspace.package]
@@ -52,10 +52,10 @@ clap = { version = "4", features = ["derive"] }
 # Internal crates
 algorithm = { path = "crates/algorithm" }
 data = { path = "crates/data" }
-rustful-financial = { path = "crates/rustful-financial" }
-rustful-automl = { path = "crates/rustful-automl" }
-rustful-forecast = { path = "crates/rustful-forecast" }
-rustful-anomaly = { path = "crates/rustful-anomaly" }
+financial = { path = "crates/financial" }
+automl = { path = "crates/automl" }
+forecast = { path = "crates/forecast" }
+anomaly = { path = "crates/anomaly" }
 
 [profile.release]
 opt-level = 3

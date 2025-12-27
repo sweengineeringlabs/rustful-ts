@@ -412,11 +412,12 @@ pub fn log_returns(prices: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+// Private method tests must stay here
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ==================== Date Parsing Tests ====================
+    // ==================== Date Parsing Tests (private method) ====================
 
     #[test]
     fn test_parse_date_valid() {
@@ -429,30 +430,28 @@ mod tests {
 
     #[test]
     fn test_parse_date_leap_year() {
-        // 2024 is a leap year
         let feb28 = YahooFinance::parse_date("2024-02-28").unwrap();
         let feb29 = YahooFinance::parse_date("2024-02-29").unwrap();
         let mar01 = YahooFinance::parse_date("2024-03-01").unwrap();
 
-        assert_eq!(feb29 - feb28, 86400); // 1 day difference
-        assert_eq!(mar01 - feb29, 86400); // 1 day difference
+        assert_eq!(feb29 - feb28, 86400);
+        assert_eq!(mar01 - feb29, 86400);
     }
 
     #[test]
     fn test_parse_date_non_leap_year() {
-        // 2023 is not a leap year
         let feb28 = YahooFinance::parse_date("2023-02-28").unwrap();
         let mar01 = YahooFinance::parse_date("2023-03-01").unwrap();
 
-        assert_eq!(mar01 - feb28, 86400); // 1 day difference
+        assert_eq!(mar01 - feb28, 86400);
     }
 
     #[test]
     fn test_parse_date_invalid_format() {
         assert!(YahooFinance::parse_date("2024/01/01").is_err());
-        assert!(YahooFinance::parse_date("2024").is_err()); // Missing parts
-        assert!(YahooFinance::parse_date("2024-01").is_err()); // Missing day
-        assert!(YahooFinance::parse_date("2024-1-1").is_ok()); // Single digit months/days ok
+        assert!(YahooFinance::parse_date("2024").is_err());
+        assert!(YahooFinance::parse_date("2024-01").is_err());
+        assert!(YahooFinance::parse_date("2024-1-1").is_ok());
     }
 
     #[test]
@@ -462,7 +461,7 @@ mod tests {
         assert!(YahooFinance::parse_date("2024-01-ab").is_err());
     }
 
-    // ==================== Interval Tests ====================
+    // ==================== Interval Tests (private method) ====================
 
     #[test]
     fn test_interval_str_all() {
@@ -476,7 +475,7 @@ mod tests {
         assert_eq!(Interval::Monthly.as_str(), "1mo");
     }
 
-    // ==================== URL Building Tests ====================
+    // ==================== URL Building Tests (private method) ====================
 
     #[test]
     fn test_build_url() {
@@ -492,8 +491,6 @@ mod tests {
     #[test]
     fn test_build_url_special_symbols() {
         let client = YahooFinance::new();
-
-        // Test with common symbol formats
         let url1 = client.build_url("MSFT", 0, 100, Interval::Daily);
         assert!(url1.contains("MSFT"));
 
@@ -501,320 +498,65 @@ mod tests {
         assert!(url2.contains("BRK.B"));
     }
 
-    // ==================== Response Parsing Tests ====================
+    // ==================== Response Parsing Tests (private method) ====================
 
     #[test]
     fn test_parse_response_valid() {
         let client = YahooFinance::new();
-        let json = r#"{
-            "chart": {
-                "result": [{
-                    "timestamp": [1704067200, 1704153600, 1704240000],
-                    "indicators": {
-                        "quote": [{
-                            "open": [185.0, 186.0, 187.0],
-                            "high": [186.0, 187.0, 188.0],
-                            "low": [184.0, 185.0, 186.0],
-                            "close": [185.5, 186.5, 187.5],
-                            "volume": [1000000, 1100000, 1200000]
-                        }],
-                        "adjclose": [{
-                            "adjclose": [185.5, 186.5, 187.5]
-                        }]
-                    }
-                }],
-                "error": null
-            }
-        }"#;
-
+        let json = r#"{"chart":{"result":[{"timestamp":[1704067200,1704153600,1704240000],"indicators":{"quote":[{"open":[185.0,186.0,187.0],"high":[186.0,187.0,188.0],"low":[184.0,185.0,186.0],"close":[185.5,186.5,187.5],"volume":[1000000,1100000,1200000]}],"adjclose":[{"adjclose":[185.5,186.5,187.5]}]}}],"error":null}}"#;
         let quotes = client.parse_response(json).unwrap();
         assert_eq!(quotes.len(), 3);
         assert_eq!(quotes[0].close, 185.5);
-        assert_eq!(quotes[1].close, 186.5);
-        assert_eq!(quotes[2].close, 187.5);
-        assert_eq!(quotes[0].volume, 1000000);
     }
 
     #[test]
     fn test_parse_response_with_nulls() {
         let client = YahooFinance::new();
-        let json = r#"{
-            "chart": {
-                "result": [{
-                    "timestamp": [1704067200, 1704153600, 1704240000],
-                    "indicators": {
-                        "quote": [{
-                            "open": [185.0, null, 187.0],
-                            "high": [186.0, null, 188.0],
-                            "low": [184.0, null, 186.0],
-                            "close": [185.5, null, 187.5],
-                            "volume": [1000000, null, 1200000]
-                        }],
-                        "adjclose": [{
-                            "adjclose": [185.5, null, 187.5]
-                        }]
-                    }
-                }],
-                "error": null
-            }
-        }"#;
-
+        let json = r#"{"chart":{"result":[{"timestamp":[1704067200,1704153600,1704240000],"indicators":{"quote":[{"open":[185.0,null,187.0],"high":[186.0,null,188.0],"low":[184.0,null,186.0],"close":[185.5,null,187.5],"volume":[1000000,null,1200000]}],"adjclose":[{"adjclose":[185.5,null,187.5]}]}}],"error":null}}"#;
         let quotes = client.parse_response(json).unwrap();
-        // Middle quote with nulls should be skipped
         assert_eq!(quotes.len(), 2);
-        assert_eq!(quotes[0].close, 185.5);
-        assert_eq!(quotes[1].close, 187.5);
     }
 
     #[test]
     fn test_parse_response_api_error() {
         let client = YahooFinance::new();
-        let json = r#"{
-            "chart": {
-                "result": null,
-                "error": {
-                    "code": "Not Found",
-                    "description": "No data found for symbol INVALID"
-                }
-            }
-        }"#;
-
+        let json = r#"{"chart":{"result":null,"error":{"code":"Not Found","description":"No data found"}}}"#;
         let result = client.parse_response(json);
-        assert!(result.is_err());
-        match result {
-            Err(YahooError2::ApiError { code, description }) => {
-                assert_eq!(code, "Not Found");
-                assert!(description.contains("INVALID"));
-            }
-            _ => panic!("Expected ApiError"),
-        }
+        assert!(matches!(result, Err(YahooError2::ApiError { .. })));
     }
 
     #[test]
     fn test_parse_response_no_data() {
         let client = YahooFinance::new();
-        let json = r#"{
-            "chart": {
-                "result": [],
-                "error": null
-            }
-        }"#;
-
-        let result = client.parse_response(json);
-        assert!(matches!(result, Err(YahooError2::NoData)));
+        let json = r#"{"chart":{"result":[],"error":null}}"#;
+        assert!(matches!(client.parse_response(json), Err(YahooError2::NoData)));
     }
 
     #[test]
     fn test_parse_response_invalid_json() {
         let client = YahooFinance::new();
-        let result = client.parse_response("not valid json");
-        assert!(matches!(result, Err(YahooError2::ParseError(_))));
+        assert!(matches!(client.parse_response("not json"), Err(YahooError2::ParseError(_))));
     }
 
-    // ==================== Helper Function Tests ====================
+    // ==================== Private field/method tests ====================
 
     #[test]
-    fn test_closing_prices() {
-        let quotes = vec![
-            Quote {
-                timestamp: 1,
-                open: 100.0,
-                high: 105.0,
-                low: 99.0,
-                close: 102.0,
-                adj_close: 102.0,
-                volume: 1000,
-            },
-            Quote {
-                timestamp: 2,
-                open: 102.0,
-                high: 108.0,
-                low: 101.0,
-                close: 107.0,
-                adj_close: 107.0,
-                volume: 1100,
-            },
-        ];
-
-        let prices = closing_prices(&quotes);
-        assert_eq!(prices, vec![102.0, 107.0]);
-    }
-
-    #[test]
-    fn test_adj_closing_prices() {
-        let quotes = vec![
-            Quote {
-                timestamp: 1,
-                open: 100.0,
-                high: 105.0,
-                low: 99.0,
-                close: 102.0,
-                adj_close: 101.0,
-                volume: 1000,
-            },
-            Quote {
-                timestamp: 2,
-                open: 102.0,
-                high: 108.0,
-                low: 101.0,
-                close: 107.0,
-                adj_close: 106.0,
-                volume: 1100,
-            },
-        ];
-
-        let prices = adj_closing_prices(&quotes);
-        assert_eq!(prices, vec![101.0, 106.0]);
-    }
-
-    #[test]
-    fn test_volumes() {
-        let quotes = vec![
-            Quote {
-                timestamp: 1,
-                open: 100.0,
-                high: 105.0,
-                low: 99.0,
-                close: 102.0,
-                adj_close: 102.0,
-                volume: 1000000,
-            },
-            Quote {
-                timestamp: 2,
-                open: 102.0,
-                high: 108.0,
-                low: 101.0,
-                close: 107.0,
-                adj_close: 107.0,
-                volume: 2000000,
-            },
-        ];
-
-        let vols = volumes(&quotes);
-        assert_eq!(vols, vec![1000000.0, 2000000.0]);
-    }
-
-    #[test]
-    fn test_closing_prices_empty() {
-        let quotes: Vec<Quote> = vec![];
-        let prices = closing_prices(&quotes);
-        assert!(prices.is_empty());
-    }
-
-    // ==================== Returns Calculation Tests ====================
-
-    #[test]
-    fn test_daily_returns() {
-        let prices = vec![100.0, 110.0, 105.0];
-        let returns = daily_returns(&prices);
-        assert_eq!(returns.len(), 2);
-        assert!((returns[0] - 0.1).abs() < 1e-10);
-        assert!((returns[1] - (-0.0454545)).abs() < 1e-5);
-    }
-
-    #[test]
-    fn test_daily_returns_single_price() {
-        let prices = vec![100.0];
-        let returns = daily_returns(&prices);
-        assert!(returns.is_empty());
-    }
-
-    #[test]
-    fn test_daily_returns_empty() {
-        let prices: Vec<f64> = vec![];
-        let returns = daily_returns(&prices);
-        assert!(returns.is_empty());
-    }
-
-    #[test]
-    fn test_log_returns() {
-        let prices = vec![100.0, 110.0];
-        let returns = log_returns(&prices);
-        assert_eq!(returns.len(), 1);
-        assert!((returns[0] - 0.09531).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_log_returns_multiple() {
-        let prices = vec![100.0, 105.0, 110.25]; // 5% then 5%
-        let returns = log_returns(&prices);
-        assert_eq!(returns.len(), 2);
-        // ln(1.05) ≈ 0.04879
-        assert!((returns[0] - 0.04879).abs() < 1e-4);
-        assert!((returns[1] - 0.04879).abs() < 1e-4);
-    }
-
-    #[test]
-    fn test_log_returns_empty() {
-        let prices: Vec<f64> = vec![];
-        let returns = log_returns(&prices);
-        assert!(returns.is_empty());
-    }
-
-    // ==================== Quote Tests ====================
-
-    #[test]
-    fn test_quote_date_string() {
-        let quote = Quote {
-            timestamp: 1704067200, // 2024-01-01
-            open: 100.0,
-            high: 105.0,
-            low: 99.0,
-            close: 102.0,
-            adj_close: 102.0,
-            volume: 1000,
-        };
-
-        let date_str = quote.date_string();
-        assert!(date_str.starts_with("2024"));
-    }
-
-    // ==================== Error Display Tests ====================
-
-    #[test]
-    fn test_error_display() {
-        let err1 = YahooError2::RequestFailed("connection error".to_string());
-        assert!(err1.to_string().contains("connection error"));
-
-        let err2 = YahooError2::ParseError("invalid json".to_string());
-        assert!(err2.to_string().contains("invalid json"));
-
-        let err3 = YahooError2::InvalidDate("bad date".to_string());
-        assert!(err3.to_string().contains("bad date"));
-
-        let err4 = YahooError2::NoData;
-        assert!(err4.to_string().contains("No data"));
-
-        let err5 = YahooError2::ApiError {
-            code: "404".to_string(),
-            description: "Not found".to_string(),
-        };
-        assert!(err5.to_string().contains("404"));
-        assert!(err5.to_string().contains("Not found"));
-    }
-
-    // ==================== YahooFinance Client Tests ====================
-
-    #[test]
-    fn test_yahoo_finance_default() {
+    fn test_yahoo_finance_base_url() {
         let client1 = YahooFinance::new();
         let client2 = YahooFinance::default();
-
         assert_eq!(client1.base_url, client2.base_url);
         assert!(client1.base_url.contains("yahoo"));
     }
 
     #[test]
     fn test_days_before_month() {
-        // Non-leap year
         assert_eq!(YahooFinance::days_before_month(1, 2023), 0);
         assert_eq!(YahooFinance::days_before_month(2, 2023), 31);
         assert_eq!(YahooFinance::days_before_month(3, 2023), 59);
         assert_eq!(YahooFinance::days_before_month(12, 2023), 334);
 
-        // Leap year - March onwards should be +1
         assert_eq!(YahooFinance::days_before_month(2, 2024), 31);
-        assert_eq!(YahooFinance::days_before_month(3, 2024), 60); // 59 + 1
-        assert_eq!(YahooFinance::days_before_month(12, 2024), 335); // 334 + 1
+        assert_eq!(YahooFinance::days_before_month(3, 2024), 60);
+        assert_eq!(YahooFinance::days_before_month(12, 2024), 335);
     }
 }

@@ -316,36 +316,3 @@ impl Predictor for SeasonalLinearRegression {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_linear_regression() {
-        let data: Vec<f64> = (0..10).map(|i| 10.0 + 2.0 * i as f64).collect();
-        let mut model = LinearRegression::new();
-        model.fit(&data).unwrap();
-
-        assert!((model.slope() - 2.0).abs() < 1e-10);
-        assert!((model.intercept() - 10.0).abs() < 1e-10);
-        assert!(model.r_squared() > 0.99);
-
-        let forecast = model.predict(3).unwrap();
-        assert!((forecast[0] - 30.0).abs() < 1e-10);
-        assert!((forecast[1] - 32.0).abs() < 1e-10);
-        assert!((forecast[2] - 34.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn test_seasonal_linear_regression() {
-        let data: Vec<f64> = (0..24)
-            .map(|i| 10.0 + 0.5 * i as f64 + [2.0, -1.0, 0.0, -1.0][i % 4])
-            .collect();
-
-        let mut model = SeasonalLinearRegression::new(4).unwrap();
-        model.fit(&data).unwrap();
-
-        let forecast = model.predict(4).unwrap();
-        assert_eq!(forecast.len(), 4);
-    }
-}
