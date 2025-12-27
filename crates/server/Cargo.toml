@@ -24,6 +24,7 @@ tower-http = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+dotenvy = { workspace = true }
 
 # Rustboot infrastructure
 rustboot-health = { workspace = true }

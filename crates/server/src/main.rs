@@ -66,6 +66,9 @@ fn create_health_aggregator() -> HealthAggregator {
 
 #[tokio::main]
 async fn main() {
+    // Load .env file (optional - won't fail if missing)
+    dotenvy::dotenv().ok();
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
