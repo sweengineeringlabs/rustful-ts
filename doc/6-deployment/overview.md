@@ -12,6 +12,7 @@ Documentation for installing and deploying rustful-ts.
 | [WASM Build](wasm-build.md) | WebAssembly build and optimization |
 | [Build Sizes](build-sizes.md) | Release artifact sizes |
 | [Performance](performance.md) | Benchmark results |
+| [Metrics](metrics.md) | LOC, sizes, benchmarks summary |
 
 ## Quick Links
 
