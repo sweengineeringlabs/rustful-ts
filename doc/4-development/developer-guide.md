@@ -69,7 +69,7 @@ rustful-ts/
 │   ├── src/                 # Source code
 │   ├── tests/               # Tests
 │   └── pkg/                 # WASM output
-└── docs/                    # Documentation
+└── doc/                    # Documentation
 ```
 
 ### Build Commands

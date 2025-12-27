@@ -3,4 +3,4 @@
  */
 
 export { AutoSelector, AutoMLConfig, ModelSelectionResult, ModelType } from './selector';
-export { EnsembleForecaster, EnsembleMethod } from './ensemble';
+export { EnsembleForecaster, EnsembleMethod, combinePredictions } from './ensemble';

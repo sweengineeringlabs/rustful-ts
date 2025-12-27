@@ -6,10 +6,14 @@ export { Portfolio, Position } from './portfolio';
 export { BacktestResult, backtest, SimpleStrategy } from './backtesting';
 export {
   sharpeRatio,
+  sharpeRatioSync,
   sortinoRatio,
+  sortinoRatioSync,
   maxDrawdown,
+  maxDrawdownSync,
   drawdownSeries,
   varHistorical,
+  varHistoricalSync,
   cvar,
   dailyReturns,
   cumulativeReturns,

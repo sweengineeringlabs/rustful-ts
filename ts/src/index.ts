@@ -43,10 +43,14 @@ export { Portfolio, Position } from './financial/portfolio';
 export { BacktestResult, backtest, SimpleStrategy, Trade } from './financial/backtesting';
 export {
   sharpeRatio,
+  sharpeRatioSync,
   sortinoRatio,
+  sortinoRatioSync,
   maxDrawdown,
+  maxDrawdownSync,
   drawdownSeries,
   varHistorical,
+  varHistoricalSync,
   cvar,
   dailyReturns,
   cumulativeReturns,
@@ -76,7 +80,7 @@ export {
   ModelSelectionResult,
   ModelType,
 } from './automl/selector';
-export { EnsembleForecaster, EnsembleMethod } from './automl/ensemble';
+export { EnsembleForecaster, EnsembleMethod, combinePredictions } from './automl/ensemble';
 
 // ============================================
 // Utilities

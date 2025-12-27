@@ -40,7 +40,7 @@ cd ts && npm test
 
 - `feature/` - New features
 - `fix/` - Bug fixes
-- `docs/` - Documentation
+- `doc/` - Documentation
 - `refactor/` - Code refactoring
 
 ### Commit Messages
@@ -94,7 +94,7 @@ rustful-ts/
 │   └── ...
 ├── ts/                  # TypeScript package
 │   └── src/
-└── docs/                # Documentation
+└── doc/                # Documentation
 ```
 
 ## Adding Features

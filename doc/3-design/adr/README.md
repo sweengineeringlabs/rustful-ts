@@ -20,7 +20,7 @@ Each ADR follows this structure:
 
 ## Adding New ADRs
 
-1. Copy template from `docs/templates/adr-template.md`
+1. Copy template from `doc/templates/adr-template.md`
 2. Name: `NNN-short-title.md`
 3. Fill in Context, Decision, Consequences
 4. Update this index

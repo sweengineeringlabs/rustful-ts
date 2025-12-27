@@ -16,7 +16,7 @@
 //! ## Example
 //!
 //! ```rust
-//! use rustful_ts::algorithms::{arima::Arima, Predictor};
+//! use rustful_core::algorithms::{arima::Arima, Predictor};
 //!
 //! let data: Vec<f64> = (1..=20).map(|x| x as f64).collect();
 //! let mut model = Arima::new(1, 1, 0).unwrap();

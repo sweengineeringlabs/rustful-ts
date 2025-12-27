@@ -36,13 +36,13 @@ const results = await Pipeline.create()
 
 ## Documentation
 
-See [docs/overview.md](docs/overview.md) for complete documentation.
+See [doc/overview.md](doc/overview.md) for complete documentation.
 
 | Document | Description |
 |----------|-------------|
-| [Overview](docs/overview.md) | Main documentation hub |
-| [Architecture](docs/3-design/architecture.md) | System design |
-| [Developer Guide](docs/4-development/developer-guide.md) | Development setup |
+| [Overview](doc/overview.md) | Main documentation hub |
+| [Architecture](doc/3-design/architecture.md) | System design |
+| [Developer Guide](doc/4-development/developer-guide.md) | Development setup |
 
 ## Project Structure
 

@@ -34,7 +34,19 @@ export interface Alert {
 export type AlertHandler = (alert: Alert) => void;
 
 /**
- * Real-time anomaly monitor for streaming data
+ * Real-time anomaly monitor for streaming data (WASM-backed)
+ *
+ * @example
+ * ```typescript
+ * const monitor = new Monitor(new ZScoreDetector(3.0), 100, 5);
+ *
+ * monitor.onAlert((alert) => {
+ *   console.log(`Alert: ${alert.message}`);
+ * });
+ *
+ * // Push values and check for anomalies
+ * const alert = await monitor.push(100.5);
+ * ```
  */
 export class Monitor {
   private detector: AnomalyDetector;
@@ -71,7 +83,7 @@ export class Monitor {
    * Push a new value and check for anomalies
    * @returns Alert if anomaly detected, null otherwise
    */
-  push(value: number): Alert | null {
+  async push(value: number): Promise<Alert | null> {
     this.buffer.push(value);
 
     // Trim buffer if needed
@@ -85,10 +97,10 @@ export class Monitor {
     }
 
     // Refit detector on current buffer
-    this.detector.fit(this.buffer);
+    await this.detector.fit(this.buffer);
 
     // Check if latest value is anomalous
-    const result = this.detector.detect([value]);
+    const result = await this.detector.detect([value]);
 
     if (result.isAnomaly[0]) {
       const score = result.scores[0];
@@ -117,10 +129,10 @@ export class Monitor {
   /**
    * Push multiple values and get all alerts
    */
-  pushBatch(values: number[]): Alert[] {
+  async pushBatch(values: number[]): Promise<Alert[]> {
     const alerts: Alert[] = [];
     for (const value of values) {
-      const alert = this.push(value);
+      const alert = await this.push(value);
       if (alert) {
         alerts.push(alert);
       }

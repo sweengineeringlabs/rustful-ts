@@ -4,9 +4,9 @@
 
 ### Documentation
 
-- [Overview](docs/overview.md) - Main documentation hub
-- [Architecture](docs/3-design/architecture.md) - System design
-- [Developer Guide](docs/4-development/developer-guide.md) - Development setup
+- [Overview](doc/overview.md) - Main documentation hub
+- [Architecture](doc/3-design/architecture.md) - System design
+- [Developer Guide](doc/4-development/developer-guide.md) - Development setup
 
 ### Community Support
 
@@ -15,7 +15,7 @@
 
 ### Before Asking
 
-1. Check the [documentation](docs/overview.md)
+1. Check the [documentation](doc/overview.md)
 2. Search [existing issues](https://github.com/rustful-ts/rustful-ts/issues)
 3. Review [closed issues](https://github.com/rustful-ts/rustful-ts/issues?q=is%3Aissue+is%3Aclosed)
 

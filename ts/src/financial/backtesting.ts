@@ -4,7 +4,8 @@
 
 import { Portfolio } from './portfolio';
 import { Signal, SignalGenerator, SMACrossover } from './signals';
-import { sharpeRatio, maxDrawdown, dailyReturns } from './risk';
+import { sharpeRatioSync, maxDrawdownSync, dailyReturns } from './risk';
+import { isWasmReady } from '../wasm-loader';
 
 /**
  * Result of a backtest run
@@ -139,10 +140,34 @@ export function backtest(
   const winningTrades = sellTrades.filter((t) => (t.pnl ?? 0) > 0);
   const winRate = sellTrades.length > 0 ? winningTrades.length / sellTrades.length : 0;
 
+  // Calculate performance metrics
+  // Note: sharpeRatio and maxDrawdown use WASM - ensure initWasm() was called
+  let sharpe = 0;
+  let mdd = 0;
+
+  if (isWasmReady()) {
+    sharpe = sharpeRatioSync(returns);
+    mdd = maxDrawdownSync(equityCurve);
+  } else {
+    // Fallback to simple calculations if WASM not ready
+    const meanReturn = returns.length > 0 ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+    const variance = returns.length > 0 ? returns.reduce((sum, r) => sum + (r - meanReturn) ** 2, 0) / returns.length : 0;
+    const stdDev = Math.sqrt(variance);
+    sharpe = stdDev !== 0 ? meanReturn / stdDev : 0;
+
+    // Calculate max drawdown
+    let peak = equityCurve[0] || 0;
+    for (const val of equityCurve) {
+      if (val > peak) peak = val;
+      const dd = (peak - val) / peak;
+      if (dd > mdd) mdd = dd;
+    }
+  }
+
   return {
     totalReturn: (equityCurve[equityCurve.length - 1] - initialCapital) / initialCapital,
-    sharpeRatio: sharpeRatio(returns),
-    maxDrawdown: maxDrawdown(equityCurve),
+    sharpeRatio: sharpe,
+    maxDrawdown: mdd,
     winRate,
     numTrades: trades.length,
     equityCurve,

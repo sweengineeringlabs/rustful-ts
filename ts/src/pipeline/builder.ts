@@ -1,5 +1,14 @@
 /**
  * Pipeline builder for composable time series forecasting
+ *
+ * Architecture:
+ * - Preprocessing steps (normalize, standardize, etc.) are pure TypeScript
+ *   for state management (storing min/max, mean/std for inverse transforms)
+ * - Forecasting models (ARIMA, SES, etc.) are WASM-backed for performance
+ *
+ * This hybrid approach gives the best of both worlds:
+ * - Fast Rust-powered forecasting algorithms
+ * - Flexible TypeScript preprocessing with proper state management
  */
 
 import type { Predictor, TimeSeriesData } from '../types';

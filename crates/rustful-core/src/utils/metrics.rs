@@ -10,7 +10,7 @@
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::utils::metrics::mae;
+/// use rustful_core::utils::metrics::mae;
 ///
 /// let actual = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 /// let predicted = vec![1.1, 2.2, 2.9, 4.1, 5.0];
@@ -38,7 +38,7 @@ pub fn mae(actual: &[f64], predicted: &[f64]) -> f64 {
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::utils::metrics::mse;
+/// use rustful_core::utils::metrics::mse;
 ///
 /// let actual = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 /// let predicted = vec![1.1, 2.2, 2.9, 4.1, 5.0];

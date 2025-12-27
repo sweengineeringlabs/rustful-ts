@@ -30,8 +30,8 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::algorithms::exponential_smoothing::SimpleExponentialSmoothing;
-/// use rustful_ts::algorithms::Predictor;
+/// use rustful_core::algorithms::exponential_smoothing::SimpleExponentialSmoothing;
+/// use rustful_core::algorithms::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 11.0, 13.0, 12.0, 14.0, 13.0, 15.0];
 /// let mut model = SimpleExponentialSmoothing::new(0.3).unwrap();
@@ -164,8 +164,8 @@ impl Predictor for SimpleExponentialSmoothing {
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::algorithms::exponential_smoothing::DoubleExponentialSmoothing;
-/// use rustful_ts::algorithms::Predictor;
+/// use rustful_core::algorithms::exponential_smoothing::DoubleExponentialSmoothing;
+/// use rustful_core::algorithms::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0];
 /// let mut model = DoubleExponentialSmoothing::new(0.3, 0.1).unwrap();
@@ -286,8 +286,8 @@ pub enum SeasonalType {
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::algorithms::exponential_smoothing::{HoltWinters, SeasonalType};
-/// use rustful_ts::algorithms::Predictor;
+/// use rustful_core::algorithms::exponential_smoothing::{HoltWinters, SeasonalType};
+/// use rustful_core::algorithms::Predictor;
 ///
 /// // Monthly data with yearly seasonality
 /// let data: Vec<f64> = (0..36).map(|i| {

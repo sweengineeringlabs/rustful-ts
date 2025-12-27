@@ -4,15 +4,12 @@ Cross-cutting work items for rustful-ts framework.
 
 ## In Progress
 
-| Item | Status | Priority |
-|------|--------|----------|
-| Complete WASM bindings for all algorithms | In Progress | High |
+_None_
 
 ## Planned
 
 ### High Priority
 
-- [ ] Add confidence intervals to forecasts
 - [ ] Implement streaming predictions
 - [ ] Add more anomaly detection methods (Isolation Forest)
 - [ ] REST API authentication
@@ -43,11 +40,13 @@ Cross-cutting work items for rustful-ts framework.
 - [x] REST API structure
 - [x] CLI structure
 - [x] Documentation framework (SEA)
+- [x] WASM bindings for all algorithms
+- [x] Confidence intervals for forecasts
+- [x] examples/basic.rs for all crates
+- [x] tests/integration.rs for all crates
 
 ## Documentation Debt
 
-- [ ] Add examples/basic.rs to each crate
-- [ ] Add tests/integration.rs to each crate
 - [ ] Complete API reference documentation
 - [ ] Add algorithm theory documentation
 

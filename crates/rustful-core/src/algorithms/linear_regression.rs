@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::algorithms::linear_regression::LinearRegression;
-/// use rustful_ts::algorithms::Predictor;
+/// use rustful_core::algorithms::linear_regression::LinearRegression;
+/// use rustful_core::algorithms::Predictor;
 ///
 /// let data = vec![10.0, 12.0, 14.0, 16.0, 18.0, 20.0];
 /// let mut model = LinearRegression::new();
@@ -175,8 +175,8 @@ impl Predictor for LinearRegression {
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::algorithms::linear_regression::SeasonalLinearRegression;
-/// use rustful_ts::algorithms::Predictor;
+/// use rustful_core::algorithms::linear_regression::SeasonalLinearRegression;
+/// use rustful_core::algorithms::Predictor;
 ///
 /// // Monthly data with yearly seasonality
 /// let data: Vec<f64> = (0..36).map(|i| {

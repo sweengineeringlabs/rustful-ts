@@ -1,6 +1,8 @@
 /**
- * Anomaly detectors
+ * Anomaly detectors - WASM-backed implementations
  */
+
+import { getWasmModule, ensureWasm } from '../wasm-loader';
 
 /**
  * Result of anomaly detection
@@ -24,51 +26,69 @@ export interface AnomalyDetector {
   readonly name: string;
 
   /** Fit the detector to training data */
-  fit(data: number[]): void;
+  fit(data: number[]): Promise<void>;
 
   /** Detect anomalies in data */
-  detect(data: number[]): AnomalyResult;
+  detect(data: number[]): Promise<AnomalyResult>;
 
   /** Get anomaly scores (higher = more anomalous) */
-  score(data: number[]): number[];
+  score(data: number[]): Promise<number[]>;
 }
 
 /**
- * Z-Score based anomaly detector
+ * Z-Score based anomaly detector (WASM-backed)
+ *
+ * Detects anomalies by computing how many standard deviations
+ * each point is from the mean.
+ *
+ * @example
+ * ```typescript
+ * const detector = new ZScoreDetector(3.0);
+ * await detector.fit(trainingData);
+ * const result = await detector.detect(newData);
+ * console.log(result.anomalyIndices);
+ * ```
  */
 export class ZScoreDetector implements AnomalyDetector {
   readonly name = 'Z-Score';
+  private inner: unknown = null;
   private threshold: number;
-  private mean = 0;
-  private std = 1;
   private fitted = false;
 
   constructor(threshold: number = 3.0) {
     this.threshold = threshold;
   }
 
-  fit(data: number[]): void {
-    const n = data.length;
-    this.mean = data.reduce((a, b) => a + b, 0) / n;
-    const variance = data.reduce((sum, x) => sum + (x - this.mean) ** 2, 0) / n;
-    this.std = Math.sqrt(variance);
+  async fit(data: number[]): Promise<void> {
+    await ensureWasm();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wasm = getWasmModule() as any;
+
+    this.inner = new wasm.WasmZScoreDetector(this.threshold);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.inner as any).fit(new Float64Array(data));
     this.fitted = true;
   }
 
-  score(data: number[]): number[] {
-    if (this.std === 0) {
-      return data.map(() => 0);
+  async score(data: number[]): Promise<number[]> {
+    if (!this.fitted || !this.inner) {
+      throw new Error('Detector must be fitted before scoring');
     }
-    return data.map((x) => Math.abs((x - this.mean) / this.std));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (this.inner as any).score(new Float64Array(data));
+    return Array.from(result as Float64Array);
   }
 
-  detect(data: number[]): AnomalyResult {
-    if (!this.fitted) {
-      this.fit(data);
+  async detect(data: number[]): Promise<AnomalyResult> {
+    if (!this.fitted || !this.inner) {
+      await this.fit(data);
     }
 
-    const scores = this.score(data);
-    const isAnomaly = scores.map((s) => s > this.threshold);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wasm = this.inner as any;
+    const scores = Array.from(wasm.score(new Float64Array(data)) as Float64Array);
+    const detectResult = Array.from(wasm.detect(new Float64Array(data)) as Uint8Array);
+    const isAnomaly = detectResult.map((v: number) => v === 1);
     const anomalyIndices = isAnomaly
       .map((a, i) => (a ? i : -1))
       .filter((i) => i >= 0);
@@ -83,53 +103,58 @@ export class ZScoreDetector implements AnomalyDetector {
 }
 
 /**
- * Interquartile Range (IQR) based anomaly detector
+ * Interquartile Range (IQR) based anomaly detector (WASM-backed)
+ *
+ * Detects anomalies using the IQR method. Points outside
+ * [Q1 - multiplier*IQR, Q3 + multiplier*IQR] are anomalies.
+ *
+ * @example
+ * ```typescript
+ * const detector = new IQRDetector(1.5);
+ * await detector.fit(trainingData);
+ * const result = await detector.detect(newData);
+ * ```
  */
 export class IQRDetector implements AnomalyDetector {
   readonly name = 'IQR';
+  private inner: unknown = null;
   private multiplier: number;
-  private q1 = 0;
-  private q3 = 0;
-  private iqr = 0;
   private fitted = false;
 
   constructor(multiplier: number = 1.5) {
     this.multiplier = multiplier;
   }
 
-  fit(data: number[]): void {
-    const sorted = [...data].sort((a, b) => a - b);
-    const n = sorted.length;
-    this.q1 = sorted[Math.floor(n * 0.25)];
-    this.q3 = sorted[Math.floor(n * 0.75)];
-    this.iqr = this.q3 - this.q1;
+  async fit(data: number[]): Promise<void> {
+    await ensureWasm();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wasm = getWasmModule() as any;
+
+    this.inner = new wasm.WasmIQRDetector(this.multiplier);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this.inner as any).fit(new Float64Array(data));
     this.fitted = true;
   }
 
-  score(data: number[]): number[] {
-    if (this.iqr === 0) {
-      return data.map(() => 0);
+  async score(data: number[]): Promise<number[]> {
+    if (!this.fitted || !this.inner) {
+      throw new Error('Detector must be fitted before scoring');
     }
-    const lower = this.q1 - this.multiplier * this.iqr;
-    const upper = this.q3 + this.multiplier * this.iqr;
-
-    return data.map((x) => {
-      if (x < lower) return (lower - x) / this.iqr;
-      if (x > upper) return (x - upper) / this.iqr;
-      return 0;
-    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const result = (this.inner as any).score(new Float64Array(data));
+    return Array.from(result as Float64Array);
   }
 
-  detect(data: number[]): AnomalyResult {
-    if (!this.fitted) {
-      this.fit(data);
+  async detect(data: number[]): Promise<AnomalyResult> {
+    if (!this.fitted || !this.inner) {
+      await this.fit(data);
     }
 
-    const lower = this.q1 - this.multiplier * this.iqr;
-    const upper = this.q3 + this.multiplier * this.iqr;
-
-    const isAnomaly = data.map((x) => x < lower || x > upper);
-    const scores = this.score(data);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const wasm = this.inner as any;
+    const scores = Array.from(wasm.score(new Float64Array(data)) as Float64Array);
+    const detectResult = Array.from(wasm.detect(new Float64Array(data)) as Uint8Array);
+    const isAnomaly = detectResult.map((v: number) => v === 1);
     const anomalyIndices = isAnomaly
       .map((a, i) => (a ? i : -1))
       .filter((i) => i >= 0);
@@ -145,7 +170,16 @@ export class IQRDetector implements AnomalyDetector {
 
 /**
  * Median Absolute Deviation (MAD) based anomaly detector
- * More robust to outliers than Z-score
+ *
+ * More robust to outliers than Z-score. Uses median instead of mean.
+ * Note: This is a pure TypeScript implementation (no WASM binding yet).
+ *
+ * @example
+ * ```typescript
+ * const detector = new MADDetector(3.5);
+ * await detector.fit(trainingData);
+ * const result = await detector.detect(newData);
+ * ```
  */
 export class MADDetector implements AnomalyDetector {
   readonly name = 'MAD';
@@ -166,14 +200,14 @@ export class MADDetector implements AnomalyDetector {
       : (sorted[mid - 1] + sorted[mid]) / 2;
   }
 
-  fit(data: number[]): void {
+  async fit(data: number[]): Promise<void> {
     this.median = this.calculateMedian(data);
     const deviations = data.map((x) => Math.abs(x - this.median));
     this.mad = this.calculateMedian(deviations);
     this.fitted = true;
   }
 
-  score(data: number[]): number[] {
+  async score(data: number[]): Promise<number[]> {
     // Modified Z-score using MAD
     // Constant 0.6745 makes MAD consistent with standard deviation for normal distribution
     const k = 0.6745;
@@ -183,12 +217,12 @@ export class MADDetector implements AnomalyDetector {
     return data.map((x) => Math.abs((x - this.median) / (this.mad / k)));
   }
 
-  detect(data: number[]): AnomalyResult {
+  async detect(data: number[]): Promise<AnomalyResult> {
     if (!this.fitted) {
-      this.fit(data);
+      await this.fit(data);
     }
 
-    const scores = this.score(data);
+    const scores = await this.score(data);
     const isAnomaly = scores.map((s) => s > this.threshold);
     const anomalyIndices = isAnomaly
       .map((a, i) => (a ? i : -1))

@@ -5,7 +5,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use rustful_ts::data::{fetch_stock, Interval};
+//! use rustful_core::data::{fetch_stock, Interval};
 //!
 //! #[tokio::main]
 //! async fn main() {

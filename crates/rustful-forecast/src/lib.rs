@@ -11,3 +11,4 @@ mod confidence;
 pub use pipeline::*;
 pub use decomposition::*;
 pub use seasonality::*;
+pub use confidence::*;

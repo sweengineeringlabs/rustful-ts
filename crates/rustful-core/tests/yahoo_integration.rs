@@ -6,6 +6,8 @@
 //! Note: These tests are ignored by default to avoid network dependencies in CI.
 //! Run ignored tests with: cargo test --features fetch --test yahoo_integration -- --ignored
 
+#![cfg(feature = "fetch")]
+
 use rustful_core::data::{
     adj_closing_prices, closing_prices, daily_returns, fetch_stock_sync, log_returns, volumes,
     Interval, YahooFinance,

@@ -32,8 +32,8 @@ pub enum DistanceMetric {
 /// # Example
 ///
 /// ```rust
-/// use rustful_ts::algorithms::knn::{TimeSeriesKNN, DistanceMetric};
-/// use rustful_ts::algorithms::Predictor;
+/// use rustful_core::algorithms::knn::{TimeSeriesKNN, DistanceMetric};
+/// use rustful_core::algorithms::Predictor;
 ///
 /// let data: Vec<f64> = (0..100).map(|i| (i as f64 * 0.1).sin() * 10.0 + 50.0).collect();
 ///

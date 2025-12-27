@@ -1,7 +1,8 @@
 /**
- * Ensemble forecasting methods
+ * Ensemble forecasting methods - WASM-backed implementations
  */
 
+import { getWasmModule, ensureWasm } from '../wasm-loader';
 import type { Predictor, TimeSeriesData } from '../types';
 
 /**
@@ -14,7 +15,57 @@ export enum EnsembleMethod {
 }
 
 /**
- * Ensemble forecaster combining multiple models
+ * Combine predictions using WASM (internal helper)
+ */
+async function combineWithWasm(
+  predictions: number[][],
+  method: EnsembleMethod,
+  weights?: number[]
+): Promise<number[]> {
+  await ensureWasm();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wasm = getWasmModule() as any;
+
+  switch (method) {
+    case EnsembleMethod.Average:
+      return Array.from(wasm.ensemble_average(predictions) as Float64Array);
+
+    case EnsembleMethod.WeightedAverage:
+      if (!weights) {
+        weights = predictions.map(() => 1 / predictions.length);
+      }
+      return Array.from(
+        wasm.ensemble_weighted_average(predictions, new Float64Array(weights)) as Float64Array
+      );
+
+    case EnsembleMethod.Median:
+      return Array.from(wasm.ensemble_median(predictions) as Float64Array);
+
+    default:
+      return Array.from(wasm.ensemble_average(predictions) as Float64Array);
+  }
+}
+
+/**
+ * Ensemble forecaster combining multiple models (WASM-backed)
+ *
+ * Uses WASM for both model predictions (if models are WASM-backed)
+ * and for the combination step.
+ *
+ * @example
+ * ```typescript
+ * import { initWasm, Arima, SimpleExponentialSmoothing, EnsembleForecaster, EnsembleMethod } from 'rustful-ts';
+ *
+ * await initWasm();
+ *
+ * const ensemble = new EnsembleForecaster(
+ *   [new Arima(1, 1, 1), new SimpleExponentialSmoothing(0.3)],
+ *   EnsembleMethod.Average
+ * );
+ *
+ * await ensemble.fit(data);
+ * const forecast = await ensemble.predict(10);
+ * ```
  */
 export class EnsembleForecaster implements Predictor {
   private models: Predictor[];
@@ -60,57 +111,20 @@ export class EnsembleForecaster implements Predictor {
   }
 
   /**
-   * Generate ensemble predictions
+   * Generate ensemble predictions (WASM-backed combination)
    */
   async predict(steps: number): Promise<number[]> {
     if (!this.fitted) {
       throw new Error('Ensemble must be fitted before prediction');
     }
 
-    // Get predictions from all models
+    // Get predictions from all models (each model uses WASM internally)
     const allPredictions = await Promise.all(
       this.models.map((model) => model.predict(steps))
     );
 
-    // Combine predictions
-    return this.combine(allPredictions);
-  }
-
-  /**
-   * Combine predictions using the specified method
-   */
-  private combine(predictions: number[][]): number[] {
-    const nSteps = predictions[0].length;
-    const result: number[] = [];
-
-    for (let i = 0; i < nSteps; i++) {
-      const values = predictions.map((p) => p[i]);
-
-      switch (this.method) {
-        case EnsembleMethod.Average:
-          result.push(values.reduce((a, b) => a + b, 0) / values.length);
-          break;
-
-        case EnsembleMethod.WeightedAverage:
-          result.push(
-            values.reduce((sum, v, j) => sum + v * this.weights[j], 0)
-          );
-          break;
-
-        case EnsembleMethod.Median: {
-          const sorted = [...values].sort((a, b) => a - b);
-          const mid = Math.floor(sorted.length / 2);
-          result.push(
-            sorted.length % 2 !== 0
-              ? sorted[mid]
-              : (sorted[mid - 1] + sorted[mid]) / 2
-          );
-          break;
-        }
-      }
-    }
-
-    return result;
+    // Combine using WASM
+    return combineWithWasm(allPredictions, this.method, this.weights);
   }
 
   isFitted(): boolean {
@@ -126,4 +140,29 @@ export class EnsembleForecaster implements Predictor {
     }
     return Promise.all(this.models.map((model) => model.predict(steps)));
   }
+}
+
+/**
+ * Standalone function to combine predictions (WASM-backed)
+ *
+ * @example
+ * ```typescript
+ * const predictions = [
+ *   [10, 11, 12],
+ *   [12, 13, 14],
+ *   [11, 12, 13],
+ * ];
+ * const combined = await combinePredictions(predictions, EnsembleMethod.Average);
+ * // combined = [11, 12, 13]
+ * ```
+ */
+export async function combinePredictions(
+  predictions: number[][],
+  method: EnsembleMethod,
+  weights?: number[]
+): Promise<number[]> {
+  if (predictions.length === 0) {
+    return [];
+  }
+  return combineWithWasm(predictions, method, weights);
 }

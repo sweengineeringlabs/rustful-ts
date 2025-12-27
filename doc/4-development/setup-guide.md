@@ -186,7 +186,7 @@ npm test
 5. **TypeScript wrapper**: `ts/src/algorithms/new-algo.ts`
 6. **Export**: Update `ts/src/index.ts`
 7. **Tests**: Add tests in both Rust and TypeScript
-8. **Docs**: Update `docs/algorithms/README.md` and `docs/api/README.md`
+8. **Docs**: Update `doc/algorithms/README.md` and `doc/api/README.md`
 
 ## IDE Setup
 

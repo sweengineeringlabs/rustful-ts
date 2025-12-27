@@ -49,6 +49,8 @@ Main documentation hub for the rustful-ts time series prediction framework.
 ## Design Documentation
 
 - [Architecture](3-design/architecture.md) - System design and module relationships
+- [Block Diagram](3-design/block-diagram.md) - Visual layer architecture
+- [Workflow Diagrams](3-design/workflow-diagrams.md) - Data flow and process workflows
 - [ADRs](3-design/adr/README.md) - Architecture Decision Records
 
 ## Development Documentation
@@ -65,3 +67,11 @@ Main documentation hub for the rustful-ts time series prediction framework.
 - [Templates README](templates/README.md) - Documentation templates
 - [Crate Overview Template](templates/crate-overview-template.md)
 - [Framework Doc Template](templates/framework-doc-template.md)
+
+## Repository Governance
+
+- [CHANGELOG](../CHANGELOG.md) - Version history
+- [CODE_OF_CONDUCT](../CODE_OF_CONDUCT.md) - Community guidelines
+- [CONTRIBUTING](../CONTRIBUTING.md) - Contribution process
+- [SECURITY](../SECURITY.md) - Security policy
+- [SUPPORT](../SUPPORT.md) - Getting help

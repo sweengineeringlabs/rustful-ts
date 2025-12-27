@@ -17,9 +17,14 @@ default = []
 
 [dependencies]
 rustful-core = { workspace = true }
+rustful-financial = { workspace = true }
+rustful-anomaly = { workspace = true }
+rustful-automl = { workspace = true }
+rustful-forecast = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
 console_error_panic_hook = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
 wasm-bindgen-test = { workspace = true }

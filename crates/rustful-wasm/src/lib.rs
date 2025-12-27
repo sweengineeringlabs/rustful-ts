@@ -334,3 +334,187 @@ pub fn standardize_data(data: &[f64]) -> Vec<f64> {
 pub fn difference_data(data: &[f64], order: usize) -> Vec<f64> {
     rustful_core::utils::preprocessing::difference(data, order)
 }
+
+// ============================================================================
+// Anomaly Detection Bindings
+// ============================================================================
+
+use rustful_anomaly::{ZScoreDetector, IQRDetector, AnomalyDetector};
+
+/// Z-Score anomaly detector for WASM
+#[wasm_bindgen]
+pub struct WasmZScoreDetector {
+    inner: ZScoreDetector,
+}
+
+#[wasm_bindgen]
+impl WasmZScoreDetector {
+    /// Create a new Z-Score detector with given threshold (default: 3.0)
+    #[wasm_bindgen(constructor)]
+    pub fn new(threshold: f64) -> WasmZScoreDetector {
+        Self {
+            inner: ZScoreDetector::new(threshold),
+        }
+    }
+
+    /// Fit the detector to training data
+    pub fn fit(&mut self, data: &[f64]) -> Result<(), JsValue> {
+        self.inner.fit(data).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Detect anomalies and return boolean array
+    pub fn detect(&self, data: &[f64]) -> Result<Vec<u8>, JsValue> {
+        let result = self.inner.detect(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(result.is_anomaly.iter().map(|&b| if b { 1 } else { 0 }).collect())
+    }
+
+    /// Get anomaly scores
+    pub fn score(&self, data: &[f64]) -> Result<Vec<f64>, JsValue> {
+        self.inner.score(data).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+/// IQR anomaly detector for WASM
+#[wasm_bindgen]
+pub struct WasmIQRDetector {
+    inner: IQRDetector,
+}
+
+#[wasm_bindgen]
+impl WasmIQRDetector {
+    /// Create a new IQR detector with given multiplier (default: 1.5)
+    #[wasm_bindgen(constructor)]
+    pub fn new(multiplier: f64) -> WasmIQRDetector {
+        Self {
+            inner: IQRDetector::new(multiplier),
+        }
+    }
+
+    /// Fit the detector to training data
+    pub fn fit(&mut self, data: &[f64]) -> Result<(), JsValue> {
+        self.inner.fit(data).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Detect anomalies and return boolean array
+    pub fn detect(&self, data: &[f64]) -> Result<Vec<u8>, JsValue> {
+        let result = self.inner.detect(data).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(result.is_anomaly.iter().map(|&b| if b { 1 } else { 0 }).collect())
+    }
+
+    /// Get anomaly scores
+    pub fn score(&self, data: &[f64]) -> Result<Vec<f64>, JsValue> {
+        self.inner.score(data).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+// ============================================================================
+// Financial Risk Metrics
+// ============================================================================
+
+/// Calculate Value at Risk (historical method)
+#[wasm_bindgen]
+pub fn compute_var(returns: &[f64], confidence: f64) -> f64 {
+    rustful_financial::risk::var_historical(returns, confidence)
+}
+
+/// Calculate Sharpe ratio
+#[wasm_bindgen]
+pub fn compute_sharpe_ratio(returns: &[f64], risk_free_rate: f64) -> f64 {
+    rustful_financial::risk::sharpe_ratio(returns, risk_free_rate)
+}
+
+/// Calculate maximum drawdown
+#[wasm_bindgen]
+pub fn compute_max_drawdown(equity_curve: &[f64]) -> f64 {
+    rustful_financial::risk::max_drawdown(equity_curve)
+}
+
+/// Calculate Sortino ratio
+#[wasm_bindgen]
+pub fn compute_sortino_ratio(returns: &[f64], risk_free_rate: f64) -> f64 {
+    rustful_financial::risk::sortino_ratio(returns, risk_free_rate)
+}
+
+// ============================================================================
+// Pipeline Bindings
+// ============================================================================
+
+use rustful_forecast::{Pipeline, NormalizeStep, DifferenceStep, StandardizeStep};
+
+/// Forecast pipeline for WASM
+#[wasm_bindgen]
+pub struct WasmPipeline {
+    inner: Pipeline,
+}
+
+#[wasm_bindgen]
+impl WasmPipeline {
+    /// Create a new empty pipeline
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> WasmPipeline {
+        Self {
+            inner: Pipeline::new(),
+        }
+    }
+
+    /// Add normalization step
+    pub fn add_normalize(&mut self) {
+        self.inner.add_step(Box::new(NormalizeStep::new()));
+    }
+
+    /// Add standardization step
+    pub fn add_standardize(&mut self) {
+        self.inner.add_step(Box::new(StandardizeStep::new()));
+    }
+
+    /// Add differencing step
+    pub fn add_difference(&mut self, order: usize) {
+        self.inner.add_step(Box::new(DifferenceStep::new(order)));
+    }
+
+    /// Transform data through pipeline
+    pub fn transform(&mut self, data: &[f64]) -> Result<Vec<f64>, JsValue> {
+        self.inner.fit_transform(data).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Inverse transform data
+    pub fn inverse_transform(&self, data: &[f64]) -> Result<Vec<f64>, JsValue> {
+        self.inner.inverse_transform(data).map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+}
+
+impl Default for WasmPipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// AutoML / Ensemble Bindings
+// ============================================================================
+
+use rustful_automl::{EnsembleMethod, combine_predictions};
+
+/// Combine predictions using average
+#[wasm_bindgen]
+pub fn ensemble_average(predictions: JsValue) -> Result<Vec<f64>, JsValue> {
+    let preds: Vec<Vec<f64>> = serde_wasm_bindgen::from_value(predictions)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(combine_predictions(&preds, EnsembleMethod::Average, None))
+}
+
+/// Combine predictions using weighted average
+#[wasm_bindgen]
+pub fn ensemble_weighted_average(predictions: JsValue, weights: &[f64]) -> Result<Vec<f64>, JsValue> {
+    let preds: Vec<Vec<f64>> = serde_wasm_bindgen::from_value(predictions)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(combine_predictions(&preds, EnsembleMethod::WeightedAverage, Some(weights)))
+}
+
+/// Combine predictions using median
+#[wasm_bindgen]
+pub fn ensemble_median(predictions: JsValue) -> Result<Vec<f64>, JsValue> {
+    let preds: Vec<Vec<f64>> = serde_wasm_bindgen::from_value(predictions)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(combine_predictions(&preds, EnsembleMethod::Median, None))
+}

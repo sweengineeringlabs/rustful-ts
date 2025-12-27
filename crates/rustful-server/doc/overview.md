@@ -47,8 +47,8 @@ rustful serve --port 8080
 ### Forecast Request
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/forecast \
-  -H "Content-Type: application/json" \
+curl -X POST http://localhost:8080/api/v1/forecast 
+  -H "Content-Type: application/json" 
   -d '{
     "data": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     "model": "arima",
@@ -70,8 +70,8 @@ curl -X POST http://localhost:8080/api/v1/forecast \
 ### Anomaly Detection
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/anomaly/detect \
-  -H "Content-Type: application/json" \
+curl -X POST http://localhost:8080/api/v1/anomaly/detect 
+  -H "Content-Type: application/json" 
   -d '{
     "data": [1, 2, 3, 100, 4, 5],
     "method": "zscore",
@@ -123,4 +123,4 @@ cargo test -p rustful-server
 ---
 
 **Status**: Beta
-**Roadmap**: See [framework-backlog.md](../../../docs/framework-backlog.md)
+**Roadmap**: See [backlog.md](../backlog.md) | [Framework Backlog](../../../doc/framework-backlog.md)
