@@ -44,6 +44,15 @@ See [doc/overview.md](doc/overview.md) for complete documentation.
 | [Architecture](doc/3-design/architecture.md) | System design |
 | [Developer Guide](doc/4-development/developer-guide.md) | Development setup |
 
+## Performance
+
+WASM-backed implementations provide **up to 8.5x speedup** for compute-intensive operations.
+
+| Resource | Description |
+|----------|-------------|
+| [Benchmark Suite](ts/benchmark/overview.md) | Performance benchmarks and reproduction |
+| [Research Paper](doc/0-ideation/research/paper/wasm-typescript-time-series-analytics-benchmark.md) | Academic analysis of WASM vs TypeScript performance |
+
 ## Project Structure
 
 ```

@@ -87,6 +87,30 @@ async function benchmark(name: string, fn: () => void, iterations: number) {
 - Medium: 1,000 data points
 - Large: 10,000 data points
 
+**Data Format vs Characteristics:**
+
+The synthetic data matches the **format** expected in production use cases:
+- Financial risk functions receive `number[]` arrays of returns
+- Anomaly detectors receive `number[]` arrays of time series values
+- Array sizes (100–10,000) represent realistic batch sizes for financial analytics and IoT workloads
+
+However, the data **characteristics** are simplified:
+
+| Aspect | Real-World Data | Our Synthetic Data |
+|--------|-----------------|-------------------|
+| Distribution | Fat-tailed, skewed | Uniform random |
+| Autocorrelation | Present (momentum, mean-reversion) | None |
+| Seasonality | Daily, weekly, yearly patterns | None |
+| Anomalies | Actual outliers, regime changes | Random noise only |
+| Trends | Upward/downward drift | Random walk only |
+
+This simplification is **valid for timing benchmarks** because:
+1. Computational complexity depends on array size, not data distribution
+2. Mathematical operations (mean, variance, sorting) execute identically regardless of input values
+3. WASM marshalling overhead scales with data size, not data patterns
+
+For **prediction accuracy** benchmarks, real-world datasets would be required.
+
 ### 2.4 Environment
 
 - **Runtime:** Node.js v20.x with tsx
@@ -210,7 +234,7 @@ This serialization overhead (~0.15ms) exceeds the computation time itself.
 1. **Single runtime:** Benchmarks conducted only in Node.js; browser performance may differ.
 2. **Cold start not measured:** WASM initialization time (~50-100ms) not included in per-operation benchmarks.
 3. **Single machine:** Results may vary across CPU architectures.
-4. **Synthetic data:** Real-world time series may have different characteristics.
+4. **Synthetic data:** Data uses uniform random distribution without seasonality, trends, or autocorrelation (see Section 2.3). While valid for timing benchmarks, real-world datasets would be needed to validate performance under production data characteristics.
 
 ---
 
@@ -280,9 +304,9 @@ cd ../..
 
 ### 7.4 Benchmark Scripts
 
-The benchmark scripts are included in the repository:
-- `ts/benchmark/time-series-analytics-wasm.ts` - WASM version benchmark
-- `ts/benchmark/time-series-analytics-pure.ts` - Pure TypeScript benchmark
+The benchmark scripts are available in the repository:
+- [time-series-analytics-wasm.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-wasm.ts) - WASM version benchmark
+- [time-series-analytics-pure.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-pure.ts) - Pure TypeScript benchmark
 
 ---
 

@@ -58,6 +58,11 @@ Main documentation hub for the rustful-ts time series prediction framework.
 - [Developer Guide](4-development/developer-guide.md) - Development hub
 - [Setup Guide](4-development/setup-guide.md) - Environment setup
 
+## Research & Benchmarks
+
+- [Benchmark Suite](../ts/benchmark/overview.md) - Performance benchmarks (TS vs WASM)
+- [Research Paper](0-ideation/research/paper/wasm-typescript-time-series-analytics-benchmark.md) - WASM vs TypeScript performance analysis
+
 ## Backlog
 
 - [Framework Backlog](framework-backlog.md) - Cross-cutting work items
