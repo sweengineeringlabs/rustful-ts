@@ -9,6 +9,21 @@ Key capabilities:
 - **Monitoring** - Real-time anomaly tracking
 - **Alerting** - Configurable alert system with severity levels
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+
+No external dependencies. Standalone module.
+
+### Build
+
+```bash
+cargo build -p rustful-anomaly
+cargo test -p rustful-anomaly
+```
+
 ## WHY: Outlier Detection
 
 **Problems Solved**:

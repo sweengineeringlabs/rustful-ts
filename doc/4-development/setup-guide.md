@@ -4,84 +4,107 @@ How to set up the development environment for contributing to rustful-ts.
 
 ## Prerequisites
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Rust | 1.70+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| wasm-pack | latest | `cargo install wasm-pack` |
-| maturin | latest | `pip install maturin` |
-| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| Python | 3.8+ | [python.org](https://python.org) |
-| Bun (optional) | latest | `curl -fsSL https://bun.sh/install \| bash` |
+| Tool | Version | Install | Required For |
+|------|---------|---------|--------------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | All crates |
+| wasm32 target | - | `rustup target add wasm32-unknown-unknown` | rustful-wasm |
+| wasm-pack | 0.13+ | `cargo install wasm-pack` | rustful-wasm |
+| wasm-opt | latest | Via binaryen: `apt install binaryen` or `brew install binaryen` | WASM optimization |
+| Node.js | 18+ | [nodejs.org](https://nodejs.org) | TypeScript package |
+| npm/pnpm | latest | Comes with Node.js | TypeScript package |
+
+### Optional Tools
+
+| Tool | Version | Install | Used For |
+|------|---------|---------|----------|
+| Bun | latest | `curl -fsSL https://bun.sh/install \| bash` | Faster TS runtime |
+| tsx | latest | `npm install -g tsx` | Running TS benchmarks |
 
 ## Verify Installation
 
 ```bash
-rustc --version      # rustc 1.70.0 or higher
-wasm-pack --version  # wasm-pack 0.12.0 or higher
-maturin --version    # maturin 1.0.0 or higher
-node --version       # v18.0.0 or higher
-python --version     # Python 3.8 or higher
-bun --version        # (optional) 1.0.0 or higher
+rustc --version               # rustc 1.75.0 or higher
+rustup target list --installed  # should include wasm32-unknown-unknown
+wasm-pack --version           # wasm-pack 0.13.0 or higher
+wasm-opt --version            # binaryen version 117 or higher
+node --version                # v18.0.0 or higher
 ```
 
 ## Clone & Setup
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rustful-ts.git
+git clone https://github.com/sweengineeringlabs/rustful-ts.git
 cd rustful-ts
 
-# Build WASM (TypeScript)
-wasm-pack build --target web --out-dir ts/pkg
+# Build WASM (for Node.js)
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
 
 # Install TypeScript dependencies
-cd ts
-npm install
-cd ..
+cd ts && npm install && cd ..
 
-# Build Python package (development mode)
-maturin develop --features python
+# Verify WASM build
+ls ts/pkg/  # Should contain .wasm, .js, .d.ts files
+```
+
+## Build Targets
+
+### WASM Target Options
+
+| Target | Use Case | Command |
+|--------|----------|---------|
+| `nodejs` | Node.js, benchmarks, CLI | `wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg` |
+| `web` | Browser bundles | `wasm-pack build crates/rustful-wasm --target web --out-dir ../../ts/pkg` |
+| `bundler` | Webpack/Vite | `wasm-pack build crates/rustful-wasm --target bundler --out-dir ../../ts/pkg` |
+
+### Release Build (Optimized)
+
+```bash
+# Build with release optimizations
+wasm-pack build crates/rustful-wasm --target nodejs --release --out-dir ../../ts/pkg
 ```
 
 ## Build Commands
 
-### Full Build (All Targets)
+### Full Build
 
 ```bash
-# TypeScript (WASM)
-wasm-pack build --target web --out-dir ts/pkg && cd ts && npm run build
+# Build all Rust crates
+cargo build --workspace
 
-# Python
-maturin build --features python --release
+# Build WASM + TypeScript
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
+cd ts && npm run build && cd ..
 ```
 
-### TypeScript Only
+### TypeScript/WASM Only
 
 ```bash
 # Check for errors (fast)
-cargo check --features wasm
+cargo check -p rustful-wasm
 
-# Build WASM
-wasm-pack build --target web --out-dir ts/pkg
+# Build WASM for Node.js
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
 
-# Build with release optimizations
-wasm-pack build --target web --out-dir ts/pkg --release
+# Build WASM for browsers
+wasm-pack build crates/rustful-wasm --target web --out-dir ../../ts/pkg
 
 # Build TypeScript
 cd ts && npm run build
 ```
 
-### Python Only
+### Individual Crates
 
 ```bash
-# Development mode (editable install)
-maturin develop --features python
+# Build specific crate
+cargo build -p rustful-core
+cargo build -p rustful-financial
+cargo build -p rustful-anomaly
+cargo build -p rustful-automl
+cargo build -p rustful-forecast
 
-# Build wheel
-maturin build --features python --release
-
-# Build and install locally
-maturin develop --features python --release
+# Test specific crate
+cargo test -p rustful-core
 ```
 
 ## Run Examples
@@ -148,17 +171,17 @@ pytest py/tests/test_algorithms.py::TestArima -v
 ### Modifying Rust Code
 
 ```bash
-# 1. Edit files in src/
-vim src/algorithms/arima.rs
+# 1. Edit files in crates/
+vim crates/rustful-core/src/algorithms/arima.rs
 
 # 2. Check for errors
-cargo check
+cargo check -p rustful-core
 
 # 3. Run tests
-cargo test
+cargo test -p rustful-core
 
 # 4. Rebuild WASM
-wasm-pack build --target web --out-dir ts/pkg
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
 
 # 5. Test from TypeScript
 cd ts && npm test
@@ -179,10 +202,10 @@ npm test
 
 ### Adding a New Algorithm
 
-1. **Rust implementation**: `src/algorithms/new_algo.rs`
-2. **Add to module**: Update `src/algorithms/mod.rs`
-3. **WASM bindings**: Add to `src/wasm_bindings.rs`
-4. **Rebuild WASM**: `wasm-pack build --target web --out-dir ts/pkg`
+1. **Rust implementation**: `crates/rustful-core/src/algorithms/new_algo.rs`
+2. **Add to module**: Update `crates/rustful-core/src/algorithms/mod.rs`
+3. **WASM bindings**: Add to `crates/rustful-wasm/src/lib.rs`
+4. **Rebuild WASM**: `wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg`
 5. **TypeScript wrapper**: `ts/src/algorithms/new-algo.ts`
 6. **Export**: Update `ts/src/index.ts`
 7. **Tests**: Add tests in both Rust and TypeScript
@@ -218,22 +241,34 @@ Recommended extensions:
 ### WASM build fails
 
 ```bash
+# Ensure wasm32 target is installed
+rustup target add wasm32-unknown-unknown
+
 # Update wasm-pack
 cargo install wasm-pack --force
 
 # Clear cache and rebuild
 rm -rf ts/pkg
-wasm-pack build --target web --out-dir ts/pkg
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
 ```
 
 ### TypeScript can't find WASM module
 
 ```bash
 # Ensure WASM is built first
-wasm-pack build --target web --out-dir ts/pkg
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
 
 # Check pkg/ directory exists
 ls ts/pkg/
+# Should contain: rustful_wasm.js, rustful_wasm.d.ts, rustful_wasm_bg.wasm
+```
+
+### "getrandom" compilation error
+
+This occurs when dependencies try to use OS entropy in WASM. Fixed by using:
+```toml
+# In Cargo.toml
+nalgebra = { version = "0.32", default-features = false, features = ["std"] }
 ```
 
 ### Tests fail with "WASM not initialized"

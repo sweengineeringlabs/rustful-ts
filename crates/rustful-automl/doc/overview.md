@@ -10,6 +10,21 @@ Key capabilities:
 - **Ensembles** - Combine multiple models
 - **Cross-Validation** - Time series aware validation
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+
+**Dependencies**: rustful-core (automatically resolved via Cargo)
+
+### Build
+
+```bash
+cargo build -p rustful-automl
+cargo test -p rustful-automl
+```
+
 ## WHY: Optimal Model Discovery
 
 **Problems Solved**:

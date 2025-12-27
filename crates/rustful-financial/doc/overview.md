@@ -10,6 +10,21 @@ Key capabilities:
 - **Signal Generation** - Trading signals (Buy/Sell/Hold)
 - **Risk Metrics** - VaR, Sharpe ratio, Sortino ratio, max drawdown
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+
+**Dependencies**: rustful-core (automatically resolved via Cargo)
+
+### Build
+
+```bash
+cargo build -p rustful-financial
+cargo test -p rustful-financial
+```
+
 ## WHY: Trading Analytics
 
 **Problems Solved**:

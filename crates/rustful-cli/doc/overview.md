@@ -10,6 +10,21 @@ Key capabilities:
 - **Backtesting** - Strategy testing from command line
 - **Server** - Start REST API server
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+
+**Dependencies**: rustful-core, rustful-anomaly, rustful-financial, rustful-server, clap (automatically resolved via Cargo)
+
+### Build & Install
+
+```bash
+cargo build -p rustful-cli
+cargo install --path crates/rustful-cli
+```
+
 ## WHY: Scripting and Automation
 
 **Problems Solved**:

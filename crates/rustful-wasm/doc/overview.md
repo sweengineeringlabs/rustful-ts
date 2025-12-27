@@ -9,6 +9,23 @@ Key capabilities:
 - **Type Conversions** - Automatic Float64Array <-> Rust slice conversion
 - **Error Handling** - Rust errors converted to JavaScript exceptions
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| wasm32 target | - | `rustup target add wasm32-unknown-unknown` |
+| wasm-pack | 0.13+ | `cargo install wasm-pack` |
+| wasm-opt | latest | `apt install binaryen` or `brew install binaryen` |
+
+### Verify
+
+```bash
+rustup target list --installed  # includes wasm32-unknown-unknown
+wasm-pack --version             # 0.13.0+
+wasm-opt --version              # binaryen 117+
+```
+
 ## WHY: JavaScript Performance
 
 **Problems Solved**:
@@ -25,7 +42,11 @@ Key capabilities:
 ### Building WASM
 
 ```bash
-wasm-pack build --target bundler --out-dir ts/pkg
+# From repository root
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
+
+# Or for browsers
+wasm-pack build crates/rustful-wasm --target web --out-dir ../../ts/pkg
 ```
 
 ### Target Options
@@ -89,11 +110,14 @@ pub fn normalize_data(data: &[f64]) -> Vec<f64>;
 ### Building
 
 ```bash
-# Build for bundlers (Vite, Webpack)
-wasm-pack build --target bundler --out-dir ts/pkg
+# Build for Node.js (benchmarks, CLI)
+wasm-pack build crates/rustful-wasm --target nodejs --out-dir ../../ts/pkg
 
-# Build for Node.js
-wasm-pack build --target nodejs --out-dir ts/pkg
+# Build for bundlers (Vite, Webpack)
+wasm-pack build crates/rustful-wasm --target bundler --out-dir ../../ts/pkg
+
+# Build for browsers
+wasm-pack build crates/rustful-wasm --target web --out-dir ../../ts/pkg
 ```
 
 ### Testing

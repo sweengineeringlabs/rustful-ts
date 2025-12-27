@@ -10,6 +10,21 @@ Key capabilities:
 - **Seasonality** - Detection and handling
 - **Decomposition** - Trend, seasonal, residual separation
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+
+**Dependencies**: rustful-core (automatically resolved via Cargo)
+
+### Build
+
+```bash
+cargo build -p rustful-forecast
+cargo test -p rustful-forecast
+```
+
 ## WHY: Composable Forecasting
 
 **Problems Solved**:

@@ -9,6 +9,21 @@ Key capabilities:
 - **WebSocket** - Real-time anomaly streaming
 - **Health Checks** - Monitoring and load balancer support
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+
+**Dependencies**: rustful-core, rustful-anomaly, rustful-financial, tokio, axum (automatically resolved via Cargo)
+
+### Build
+
+```bash
+cargo build -p rustful-server
+cargo test -p rustful-server
+```
+
 ## WHY: Language-Agnostic Access
 
 **Problems Solved**:

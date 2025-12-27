@@ -11,6 +11,21 @@ Key capabilities:
 - **Pattern Matching** - K-Nearest Neighbors for time series
 - **Utilities** - Metrics (MAE, RMSE, MAPE), preprocessing, validation
 
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+
+No external dependencies required. Pure Rust implementation.
+
+### Build
+
+```bash
+cargo build -p rustful-core
+cargo test -p rustful-core
+```
+
 ## WHY: Performance Foundation
 
 **Problems Solved**:
