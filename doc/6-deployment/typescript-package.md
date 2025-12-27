@@ -181,6 +181,16 @@ npm publish
 | TypeScript | ~50 KB |
 | Total | ~1.3 MB |
 
+### Size Context
+
+| Scenario | Impact |
+|----------|--------|
+| Node.js server | Negligible |
+| CDN-cached library | Loaded once, cached |
+| Bundle-sensitive SPA | Consider lazy loading |
+
+The WASM binary trades size for 3-8x performance gains. For context, typical web apps load 5-10MB of JS frameworks.
+
 ### Tree Shaking
 
 Import only what you need:

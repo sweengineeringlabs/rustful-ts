@@ -135,6 +135,17 @@ Typical sizes for rustful-wasm:
 | Release | ~1.2 MB |
 | Release + wasm-opt -Oz | ~800 KB |
 
+### When Size Matters
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Node.js / server | Use release build, size is negligible |
+| Browser (CDN) | Release build, cached after first load |
+| Edge / serverless | Use `-Oz` for faster cold starts |
+| Bundle-critical SPA | Consider lazy loading WASM module |
+
+An equivalent pure TypeScript implementation would be ~50-100KB but 3-8x slower. The size is a trade-off for performance, not pure overhead.
+
 ### Size Reduction Tips
 
 1. **Use release mode**: `--release`
