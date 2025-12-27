@@ -9,4 +9,3 @@ description = "AutoML for time series: model selection, hyperparameter optimizat
 rustful-core = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-rand = { workspace = true }

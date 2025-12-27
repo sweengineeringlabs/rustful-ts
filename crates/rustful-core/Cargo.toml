@@ -21,7 +21,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 nalgebra = { workspace = true }
 ndarray = { workspace = true }
-rand = { workspace = true }
 thiserror = { workspace = true }
 
 # HTTP client for data fetching (optional)
