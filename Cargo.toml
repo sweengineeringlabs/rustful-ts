@@ -105,6 +105,7 @@ signal-facade = { path = "crates/signal/signal-facade" }
 bench-harness = { path = "crates/bench-harness" }
 
 # Rustboot framework (infrastructure) - local path for development
+rustboot-config = { path = "../rustboot/crates/rustboot-config", package = "dev-engineeringlabs-rustboot-config" }
 rustboot-health = { path = "../rustboot/crates/rustboot-health", package = "dev-engineeringlabs-rustboot-health" }
 rustboot-middleware = { path = "../rustboot/crates/rustboot-middleware", package = "dev-engineeringlabs-rustboot-middleware" }
 rustboot-error = { path = "../rustboot/crates/rustboot-error" }

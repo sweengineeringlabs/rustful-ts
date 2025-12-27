@@ -7,7 +7,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use rustboot_config::DotEnvSource;
 use rustboot_health::{AlwaysHealthyCheck, CheckResult, FunctionCheck, HealthAggregator};
+use serde::Deserialize;
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -16,6 +18,63 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod routes;
+
+/// Server configuration loaded from environment/.env
+#[derive(Debug, Deserialize)]
+pub struct ServerConfig {
+    #[serde(default = "default_host")]
+    pub host: String,
+    #[serde(default = "default_port")]
+    pub port: u16,
+    #[serde(default = "default_log_level")]
+    pub rust_log: String,
+}
+
+fn default_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_port() -> u16 {
+    8080
+}
+
+fn default_log_level() -> String {
+    "server=info,tower_http=info".to_string()
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            host: default_host(),
+            port: default_port(),
+            rust_log: default_log_level(),
+        }
+    }
+}
+
+impl ServerConfig {
+    /// Load configuration from .env file and environment variables
+    pub fn load() -> Self {
+        // Load .env file (optional - won't fail if missing)
+        let _ = DotEnvSource::new().load_into_env();
+
+        Self {
+            host: env::var("HOST").unwrap_or_else(|_| default_host()),
+            port: env::var("PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or_else(default_port),
+            rust_log: env::var("RUST_LOG").unwrap_or_else(|_| default_log_level()),
+        }
+    }
+
+    /// Get the socket address
+    pub fn addr(&self) -> SocketAddr {
+        format!("{}:{}", self.host, self.port)
+            .parse()
+            .expect("Invalid HOST:PORT configuration")
+    }
+}
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -66,15 +125,15 @@ fn create_health_aggregator() -> HealthAggregator {
 
 #[tokio::main]
 async fn main() {
-    // Load .env file (optional - won't fail if missing)
-    dotenvy::dotenv().ok();
+    // Load configuration from .env and environment
+    let config = ServerConfig::load();
 
-    // Initialize tracing
+    // Initialize tracing with configured log level
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer())
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "server=info,tower_http=info".into()),
+                .unwrap_or_else(|_| config.rust_log.clone().into()),
         )
         .init();
 
@@ -104,16 +163,8 @@ async fn main() {
         .layer(cors)
         .with_state(state);
 
-    // Server configuration from environment
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    let port: u16 = env::var("PORT")
-        .unwrap_or_else(|_| "8080".to_string())
-        .parse()
-        .expect("PORT must be a valid number");
-    let addr: SocketAddr = format!("{}:{}", host, port)
-        .parse()
-        .expect("Invalid HOST:PORT configuration");
-
+    // Start server
+    let addr = config.addr();
     tracing::info!("rustful-server v{} listening on {}", env!("CARGO_PKG_VERSION"), addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
