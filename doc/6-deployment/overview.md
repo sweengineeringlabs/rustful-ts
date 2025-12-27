@@ -10,6 +10,7 @@ Documentation for installing and deploying rustful-ts.
 | [Installation](installation.md) | Installation guides for all platforms |
 | [TypeScript Package](typescript-package.md) | npm package deployment |
 | [WASM Build](wasm-build.md) | WebAssembly build and optimization |
+| [Build Sizes](build-sizes.md) | Release artifact sizes |
 
 ## Quick Links
 
