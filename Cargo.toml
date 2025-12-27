@@ -105,11 +105,11 @@ rustboot-config = { path = "../rustboot/crates/rustboot-config", package = "dev-
 rustboot-health = { path = "../rustboot/crates/rustboot-health", package = "dev-engineeringlabs-rustboot-health" }
 rustboot-middleware = { path = "../rustboot/crates/rustboot-middleware", package = "dev-engineeringlabs-rustboot-middleware" }
 rustboot-error = { path = "../rustboot/crates/rustboot-error" }
-bench = { path = "../rustboot/crates/bench" }
-loc-core = { path = "../rustboot/crates/loc/loc-core" }
-load = { path = "../rustboot/crates/load" }
-mem = { path = "../rustboot/crates/mem" }
-prof = { path = "../rustboot/crates/prof" }
+bench = { path = "../rustboot/crates/swe-doctor/bench" }
+loc-core = { path = "../rustboot/crates/swe-doctor/loc/loc-core" }
+load = { path = "../rustboot/crates/swe-doctor/load" }
+mem = { path = "../rustboot/crates/swe-doctor/mem" }
+prof = { path = "../rustboot/crates/swe-doctor/prof" }
 
 # Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }
