@@ -1,0 +1,32 @@
+# Rust
+/target/
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# TypeScript/Node
+node_modules/
+ts/pkg/
+ts/dist/
+*.tsbuildinfo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+*.profraw

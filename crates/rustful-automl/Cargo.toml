@@ -1,0 +1,12 @@
+[package]
+name = "rustful-automl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AutoML for time series: model selection, hyperparameter optimization, ensembles"
+
+[dependencies]
+rustful-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }

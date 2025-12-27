@@ -1,0 +1,11 @@
+[package]
+name = "rustful-anomaly"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Anomaly detection for time series: detectors, monitoring, alerting"
+
+[dependencies]
+rustful-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

@@ -1,0 +1,31 @@
+[package]
+name = "rustful-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core time series prediction algorithms"
+keywords = ["time-series", "forecasting", "prediction", "machine-learning"]
+categories = ["algorithms", "science"]
+
+[lib]
+name = "rustful_core"
+crate-type = ["rlib"]
+
+[features]
+default = []
+fetch = ["reqwest", "tokio"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+nalgebra = { workspace = true }
+ndarray = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }
+
+# HTTP client for data fetching (optional)
+reqwest = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]

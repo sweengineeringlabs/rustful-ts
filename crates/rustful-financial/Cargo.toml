@@ -1,0 +1,11 @@
+[package]
+name = "rustful-financial"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Financial analytics for time series: portfolio, backtesting, risk metrics"
+
+[dependencies]
+rustful-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

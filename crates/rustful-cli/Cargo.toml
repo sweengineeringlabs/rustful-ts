@@ -1,0 +1,21 @@
+[package]
+name = "rustful-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for rustful-ts time series library"
+
+[[bin]]
+name = "rustful"
+path = "src/main.rs"
+
+[dependencies]
+rustful-core = { workspace = true }
+rustful-forecast = { path = "../rustful-forecast" }
+rustful-financial = { path = "../rustful-financial" }
+rustful-automl = { path = "../rustful-automl" }
+rustful-anomaly = { path = "../rustful-anomaly" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }

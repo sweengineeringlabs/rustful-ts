@@ -1,0 +1,25 @@
+[package]
+name = "rustful-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebAssembly bindings for rustful-ts time series library"
+keywords = ["time-series", "wasm", "typescript", "javascript"]
+categories = ["wasm"]
+
+[lib]
+name = "rustful_wasm"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+
+[dependencies]
+rustful-core = { workspace = true }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+console_error_panic_hook = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = { workspace = true }
