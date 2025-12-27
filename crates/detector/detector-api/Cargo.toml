@@ -10,3 +10,7 @@ detector-spi = { path = "../detector-spi" }
 detector-core = { path = "../detector-core" }
 thiserror = { workspace = true }
 serde = { workspace = true }
+
+[[bench]]
+name = "performance"
+harness = false

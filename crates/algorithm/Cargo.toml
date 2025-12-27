@@ -16,4 +16,8 @@ crate-type = ["rlib"]
 serde = { workspace = true }
 thiserror = { workspace = true }
 
+[[bench]]
+name = "performance"
+harness = false
+
 [dev-dependencies]
