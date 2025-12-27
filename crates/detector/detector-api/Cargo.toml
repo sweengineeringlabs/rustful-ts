@@ -16,4 +16,4 @@ name = "performance"
 harness = false
 
 [dev-dependencies]
-bench-harness = { workspace = true }
+bench = { workspace = true }

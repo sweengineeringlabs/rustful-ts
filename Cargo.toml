@@ -21,8 +21,7 @@ members = [
     "crates/signal/signal-core",
     "crates/signal/signal-api",
     "crates/signal/signal-facade",
-    # Utilities
-    "crates/bench-harness",
+    # Utilities moved to rustboot: bench, loc
     # Legacy (to be migrated)
     "crates/algorithm",
     "crates/data",
@@ -101,14 +100,13 @@ signal-core = { path = "crates/signal/signal-core" }
 signal-api = { path = "crates/signal/signal-api" }
 signal-facade = { path = "crates/signal/signal-facade" }
 
-# Internal crates - Utilities
-bench-harness = { path = "crates/bench-harness" }
-
 # Rustboot framework (infrastructure) - local path for development
 rustboot-config = { path = "../rustboot/crates/rustboot-config", package = "dev-engineeringlabs-rustboot-config" }
 rustboot-health = { path = "../rustboot/crates/rustboot-health", package = "dev-engineeringlabs-rustboot-health" }
 rustboot-middleware = { path = "../rustboot/crates/rustboot-middleware", package = "dev-engineeringlabs-rustboot-middleware" }
 rustboot-error = { path = "../rustboot/crates/rustboot-error" }
+bench = { path = "../rustboot/crates/bench" }
+loc-core = { path = "../rustboot/crates/loc/loc-core" }
 
 # Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }

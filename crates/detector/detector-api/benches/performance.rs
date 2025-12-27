@@ -1,6 +1,6 @@
 //! Performance benchmarks for detector crate
 
-use bench_harness::{bench_print, footer, header, section};
+use bench::{bench_print, footer, header, section};
 use detector_api::prelude::*;
 
 fn generate_data(n: usize) -> Vec<f64> {

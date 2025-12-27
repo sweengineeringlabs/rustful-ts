@@ -3,7 +3,7 @@
 use algorithm::prelude::*;
 use algorithm::utils::metrics::{mae, mse, rmse};
 use algorithm::utils::preprocessing::{difference, normalize, standardize};
-use bench_harness::{bench_print, footer, header, section};
+use bench::{bench_print, footer, header, section};
 
 fn generate_data(n: usize) -> Vec<f64> {
     (0..n)
