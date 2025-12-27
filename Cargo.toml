@@ -23,6 +23,7 @@ members = [
     "crates/signal/signal-facade",
     # Utilities
     "crates/bench-harness",
+    "crates/loc",
     # Legacy (to be migrated)
     "crates/algorithm",
     "crates/data",
