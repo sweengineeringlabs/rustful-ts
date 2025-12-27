@@ -17,6 +17,7 @@ Key finding: WASM provides **up to 8.5x speedup** for compute-intensive operatio
 | `time-series-analytics-wasm.ts` | WASM benchmarks with synthetic data |
 | `time-series-analytics-pure.ts` | Pure TypeScript benchmarks with synthetic data |
 | `time-series-analytics-realdata.ts` | WASM benchmarks with real-world datasets |
+| `time-series-analytics-realdata-pure.ts` | Pure TypeScript benchmarks with real-world datasets |
 
 ## Datasets
 

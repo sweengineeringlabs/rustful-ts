@@ -196,41 +196,36 @@ Observation: WASM advantage increases with data size
 
 ### 3.4 Real-World Dataset Results
 
-To validate findings with realistic data characteristics, we benchmarked WASM implementations against four public datasets:
+To validate findings with realistic data characteristics, we benchmarked both Pure TypeScript and WASM implementations against four public datasets:
 
-| Benchmark | Dataset | Points | Avg (ms) |
-|-----------|---------|--------|----------|
-| **Financial Risk (Stock Data)** ||||
-| sharpeRatio (SPY) | Yahoo Finance | 1,256 | 0.0271 |
-| sortinoRatio (SPY) | Yahoo Finance | 1,256 | 0.0246 |
-| maxDrawdown (SPY) | Yahoo Finance | 1,256 | 0.0173 |
-| varHistorical (SPY) | Yahoo Finance | 1,256 | 0.0603 |
-| **Anomaly Detection (Weather)** ||||
-| ZScoreDetector.fit | Melbourne Temp | 3,650 | 0.0367 |
-| ZScoreDetector.detect | Melbourne Temp | 3,650 | 0.4861 |
-| IQRDetector.fit | Melbourne Temp | 3,650 | 0.1426 |
-| IQRDetector.detect | Melbourne Temp | 3,650 | 0.4707 |
-| **Forecasting (Cyclical Data)** ||||
-| Arima.fit (Sunspots) | SIDC | 2,820 | 0.1658 |
-| Arima.predict (Sunspots) | SIDC | 2,820 | 0.0147 |
-| SES.fit (Sunspots) | SIDC | 2,820 | 0.0242 |
-| **Forecasting (Seasonal Data)** ||||
-| Arima.fit (Airline) | Box-Jenkins | 144 | 0.0110 |
-| SES.fit (Airline) | Box-Jenkins | 144 | 0.0054 |
-| **Ensemble Methods** ||||
-| combinePredictions Average | 5 models | 24 pts | 0.0260 |
-| combinePredictions Median | 5 models | 24 pts | 0.0171 |
-| combinePredictions Weighted | 5 models | 24 pts | 0.0142 |
+| Benchmark | Points | Pure TS (ms) | WASM (ms) | Speedup | Winner |
+|-----------|--------|-------------|-----------|---------|--------|
+| **Financial Risk (SPY Stock)** ||||||
+| sharpeRatio | 1,256 | 0.0830 | 0.0271 | 3.06x | WASM |
+| sortinoRatio | 1,256 | 0.0954 | 0.0246 | 3.88x | WASM |
+| maxDrawdown | 1,256 | 0.0192 | 0.0173 | 1.11x | WASM |
+| varHistorical | 1,256 | 0.3209 | 0.0603 | 5.32x | WASM |
+| **Anomaly Detection (Weather)** ||||||
+| ZScoreDetector.fit | 3,650 | 0.2582 | 0.0367 | 7.04x | WASM |
+| ZScoreDetector.detect | 3,650 | 0.2445 | 0.4861 | 0.50x | TS |
+| IQRDetector.fit | 3,650 | 1.1206 | 0.1426 | 7.86x | WASM |
+| IQRDetector.detect | 3,650 | 0.3385 | 0.4707 | 0.72x | TS |
+| **Ensemble Methods** ||||||
+| combinePredictions Average | 24 | 0.0065 | 0.0260 | 0.25x | TS |
+| combinePredictions Median | 24 | 0.0165 | 0.0171 | 0.97x | ~Same |
+| combinePredictions Weighted | 24 | 0.0070 | 0.0142 | 0.49x | TS |
 
-**Key Observations:**
+**Key Findings (Validated with Real Data):**
 
-1. **Performance scales consistently**: Financial metrics on real stock data (1,256 points) show similar performance to synthetic data of comparable size.
+1. **WASM excels at fit() operations**: 7-8x faster on weather data (3,650 points), consistent with synthetic benchmarks.
 
-2. **Large datasets perform well**: Weather data (3,650 points) processes efficiently with `fit()` operations under 0.15ms.
+2. **Financial metrics show 3-5x speedup**: sharpeRatio (3.06x), sortinoRatio (3.88x), varHistorical (5.32x) on real stock returns with actual volatility clustering and fat tails.
 
-3. **Detection overhead persists**: `detect()` operations on weather data show ~0.48ms overhead, consistent with synthetic benchmarks.
+3. **Detection overhead persists with real data**: `detect()` operations still favor TypeScript due to marshalling overhead, regardless of data characteristics.
 
-4. **Real data characteristics don't impact timing**: Despite seasonality, trends, and volatility in real data, execution times remain comparable to synthetic equivalents.
+4. **Small ensemble operations favor TypeScript**: 2-4x faster for simple averaging on small prediction arrays.
+
+5. **Results match synthetic benchmarks**: Real-world seasonality, trends, and volatility do not meaningfully impact relative performance—confirming that computational complexity, not data patterns, drives the WASM advantage.
 
 ---
 
@@ -366,6 +361,7 @@ The benchmark scripts are available in the repository:
 - [time-series-analytics-wasm.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-wasm.ts) - WASM benchmark (synthetic data)
 - [time-series-analytics-pure.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-pure.ts) - Pure TypeScript benchmark (synthetic data)
 - [time-series-analytics-realdata.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-realdata.ts) - WASM benchmark (real-world datasets)
+- [time-series-analytics-realdata-pure.ts](https://github.com/sweengineeringlabs/rustful-ts/blob/master/ts/benchmark/time-series-analytics-realdata-pure.ts) - Pure TypeScript benchmark (real-world datasets)
 
 ### 7.5 Datasets
 
@@ -470,37 +466,46 @@ async function benchmark(
 }
 ```
 
-### B.3 Real-World Dataset Results
+### B.3 Real-World Dataset Results (WASM)
 
 ```json
 {
   "timestamp": "2025-12-27T08:17:11.210Z",
-  "wasmReady": true,
-  "datasets": {
-    "stock": {"name": "SPY Daily Prices", "points": 1256, "source": "Yahoo Finance"},
-    "weather": {"name": "Melbourne Daily Temp", "points": 3650, "source": "BoM"},
-    "sunspots": {"name": "Monthly Sunspots", "points": 2820, "source": "SIDC"},
-    "airline": {"name": "Monthly Passengers", "points": 144, "source": "Box-Jenkins"}
-  },
+  "implementation": "WASM",
   "results": [
-    {"name": "sharpeRatio (SPY)", "dataset": "stock", "avgMs": 0.0271},
-    {"name": "sortinoRatio (SPY)", "dataset": "stock", "avgMs": 0.0246},
-    {"name": "maxDrawdown (SPY)", "dataset": "stock", "avgMs": 0.0173},
-    {"name": "varHistorical (SPY)", "dataset": "stock", "avgMs": 0.0603},
-    {"name": "ZScoreDetector.fit (Weather)", "dataset": "weather", "avgMs": 0.0367},
-    {"name": "ZScoreDetector.detect (Weather)", "dataset": "weather", "avgMs": 0.4861},
-    {"name": "IQRDetector.fit (Weather)", "dataset": "weather", "avgMs": 0.1426},
-    {"name": "IQRDetector.detect (Weather)", "dataset": "weather", "avgMs": 0.4707},
-    {"name": "Arima.fit (Sunspots)", "dataset": "sunspots", "avgMs": 0.1658},
-    {"name": "Arima.predict (Sunspots)", "dataset": "sunspots", "avgMs": 0.0147},
-    {"name": "SES.fit (Sunspots)", "dataset": "sunspots", "avgMs": 0.0242},
-    {"name": "SES.predict (Sunspots)", "dataset": "sunspots", "avgMs": 0.0046},
-    {"name": "Arima.fit (Airline)", "dataset": "airline", "avgMs": 0.0110},
-    {"name": "Arima.predict (Airline)", "dataset": "airline", "avgMs": 0.0044},
-    {"name": "SES.fit (Airline)", "dataset": "airline", "avgMs": 0.0054},
-    {"name": "combinePredictions Average", "dataset": "ensemble", "avgMs": 0.0260},
-    {"name": "combinePredictions Median", "dataset": "ensemble", "avgMs": 0.0171},
-    {"name": "combinePredictions Weighted", "dataset": "ensemble", "avgMs": 0.0142}
+    {"name": "sharpeRatio (SPY)", "avgMs": 0.0271},
+    {"name": "sortinoRatio (SPY)", "avgMs": 0.0246},
+    {"name": "maxDrawdown (SPY)", "avgMs": 0.0173},
+    {"name": "varHistorical (SPY)", "avgMs": 0.0603},
+    {"name": "ZScoreDetector.fit (Weather)", "avgMs": 0.0367},
+    {"name": "ZScoreDetector.detect (Weather)", "avgMs": 0.4861},
+    {"name": "IQRDetector.fit (Weather)", "avgMs": 0.1426},
+    {"name": "IQRDetector.detect (Weather)", "avgMs": 0.4707},
+    {"name": "combinePredictions Average", "avgMs": 0.0260},
+    {"name": "combinePredictions Median", "avgMs": 0.0171},
+    {"name": "combinePredictions Weighted", "avgMs": 0.0142}
+  ]
+}
+```
+
+### B.4 Real-World Dataset Results (Pure TypeScript)
+
+```json
+{
+  "timestamp": "2025-12-27T08:28:27.871Z",
+  "implementation": "Pure TypeScript",
+  "results": [
+    {"name": "sharpeRatio (SPY)", "avgMs": 0.0830},
+    {"name": "sortinoRatio (SPY)", "avgMs": 0.0954},
+    {"name": "maxDrawdown (SPY)", "avgMs": 0.0192},
+    {"name": "varHistorical (SPY)", "avgMs": 0.3209},
+    {"name": "ZScoreDetector.fit (Weather)", "avgMs": 0.2582},
+    {"name": "ZScoreDetector.detect (Weather)", "avgMs": 0.2445},
+    {"name": "IQRDetector.fit (Weather)", "avgMs": 1.1206},
+    {"name": "IQRDetector.detect (Weather)", "avgMs": 0.3385},
+    {"name": "combinePredictions Average", "avgMs": 0.0065},
+    {"name": "combinePredictions Median", "avgMs": 0.0165},
+    {"name": "combinePredictions Weighted", "avgMs": 0.0070}
   ]
 }
 ```
