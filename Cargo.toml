@@ -109,6 +109,7 @@ bench = { path = "../rustboot/crates/bench" }
 loc-core = { path = "../rustboot/crates/loc/loc-core" }
 load = { path = "../rustboot/crates/load" }
 mem = { path = "../rustboot/crates/mem" }
+prof = { path = "../rustboot/crates/prof" }
 
 # Internal crates - Legacy (to be migrated)
 algorithm = { path = "crates/algorithm" }
