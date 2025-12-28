@@ -1,0 +1,36 @@
+[package]
+name = "tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Text User Interface for rustful-ts time series library"
+
+[[bin]]
+name = "rustful-tui"
+path = "src/main.rs"
+
+[dependencies]
+# TUI framework
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Domain facades
+predictor-facade = { workspace = true }
+detector-facade = { workspace = true }
+signal-facade = { workspace = true }
+pipeline-facade = { workspace = true }
+
+# Data loading
+csv = "1.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["sync", "time"] }
+
+# HTTP client for server monitoring
+reqwest = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = "1.0"
