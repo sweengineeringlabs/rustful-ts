@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Documentation restructured to SEA framework
 
-## [0.2.0] - 2024-12-27
+## [0.2.0] - 2025-12-27
 
 ### Added
 - Multi-crate workspace structure:
@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Moved src/ to crates/rustful-core/src/
 - Updated WASM bindings location to rustful-wasm
 
-## [0.1.0] - 2024-12-20
+## [0.1.0] - 2025-12-20
 
 ### Added
 - Initial release

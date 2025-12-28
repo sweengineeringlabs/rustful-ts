@@ -14,10 +14,8 @@ Each ADR follows this structure:
 
 | ADR | Title | Status | Date |
 |-----|-------|--------|------|
-| [001](001-workspace-structure.md) | Cargo Workspace Structure | Accepted | 2024-12-27 |
-| [002](002-wasm-bindings.md) | WASM as Primary TypeScript Interface | Accepted | 2024-12-27 |
-| [003](003-trait-based-design.md) | Trait-Based Algorithm Design | Accepted | 2024-12-27 |
-| [004](004-deployment-documentation.md) | Deployment Documentation Structure | Accepted | 2024-12-27 |
+| [001](001-workspace-structure.md) | Cargo Workspace Structure | Accepted | 2025-12-27 |
+| [004](004-deployment-documentation.md) | Deployment Documentation Structure | Accepted | 2025-12-27 |
 
 ## Adding New ADRs
 

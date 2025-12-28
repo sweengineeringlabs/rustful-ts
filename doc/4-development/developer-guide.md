@@ -55,15 +55,19 @@ npm test
 | Guide | Description |
 |-------|-------------|
 | [Setup Guide](guide/setup-guide.md) | Environment setup |
-| [Testing Guide](guide/testing-guide.md) | Test organization |
+| [Rust Optimization](guide/rust-optimization.md) | Performance optimization |
 
 ### Project Structure
 
 ```
 rustful-ts/
 ├── crates/                  # Rust workspace
-│   ├── rustful-core/        # Core algorithms
-│   ├── rustful-wasm/        # WASM bindings
+│   ├── algorithm/           # Core algorithms
+│   ├── predictor/           # Predictor SEA module
+│   ├── detector/            # Detector SEA module
+│   ├── pipeline/            # Pipeline SEA module
+│   ├── signal/              # Signal SEA module
+│   ├── wasm/                # WASM bindings
 │   └── ...                  # Other crates
 ├── ts/                      # TypeScript package
 │   ├── src/                 # Source code
@@ -166,5 +170,5 @@ Development follows a standard fork-branch-PR workflow with Rust and TypeScript 
 - [CONTRIBUTING.md](../../CONTRIBUTING.md) - Contribution process
 - [Setup Guide](guide/setup-guide.md) - Environment setup
 
-**Last Updated**: 2024-12-27
+**Last Updated**: 2025-12-28
 **Version**: 0.2

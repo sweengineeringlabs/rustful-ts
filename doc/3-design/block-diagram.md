@@ -142,4 +142,4 @@ The rustful-ts framework uses a three-layer architecture with clear separation o
 - [Workflow Diagrams](workflow-diagrams.md) - Data flow and process workflows
 - [ADRs](adr/README.md) - Architecture decisions
 
-**Last Updated**: 2024-12-27
+**Last Updated**: 2025-12-28

@@ -1,5 +1,7 @@
 # detector-facade Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 Application developers who need anomaly detection with a simple, unified API.

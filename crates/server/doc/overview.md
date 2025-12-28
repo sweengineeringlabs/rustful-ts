@@ -1,5 +1,7 @@
 # server Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 Backend developers who need HTTP API access to time series functionality from any language.

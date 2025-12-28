@@ -1,5 +1,7 @@
 # anomaly Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 DevOps engineers and data scientists who need real-time outlier detection and monitoring.

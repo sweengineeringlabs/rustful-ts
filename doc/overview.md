@@ -17,28 +17,39 @@
 
 ## Modules
 
-### Core Modules (Priority 1)
+### Core Layer
 
 | Module | Purpose | Documentation |
 |--------|---------|---------------|
-| [rustful-core](../crates/rustful-core/doc/overview.md) | Core prediction algorithms | ARIMA, Holt-Winters, SES, KNN |
-| [rustful-wasm](../crates/rustful-wasm/doc/overview.md) | WASM bindings | TypeScript/JavaScript interop |
+| [algorithm](../crates/algorithm/doc/overview.md) | Core algorithms | ARIMA, Holt-Winters, SES, KNN |
+| [data](../crates/data/doc/overview.md) | Data fetching | Yahoo Finance, validation |
 
-### Domain Modules (Priority 2)
-
-| Module | Purpose | Documentation |
-|--------|---------|---------------|
-| [rustful-forecast](../crates/rustful-forecast/doc/overview.md) | Pipeline infrastructure | Composable forecasting |
-| [rustful-financial](../crates/rustful-financial/doc/overview.md) | Financial analytics | Portfolio, backtesting, risk |
-| [rustful-automl](../crates/rustful-automl/doc/overview.md) | AutoML | Model selection, ensembles |
-| [rustful-anomaly](../crates/rustful-anomaly/doc/overview.md) | Anomaly detection | Detectors, monitoring |
-
-### Interface Modules (Priority 3)
+### SEA Modules (Stratified Encapsulation Architecture)
 
 | Module | Purpose | Documentation |
 |--------|---------|---------------|
-| [rustful-server](../crates/rustful-server/doc/overview.md) | REST API | HTTP endpoints |
-| [rustful-cli](../crates/rustful-cli/doc/overview.md) | CLI tool | Command-line interface |
+| [predictor](../crates/predictor/predictor-facade/doc/overview.md) | Prediction facade | Unified prediction API |
+| [detector](../crates/detector/detector-facade/doc/overview.md) | Anomaly facade | Unified detection API |
+| [pipeline](../crates/pipeline/pipeline-facade/doc/overview.md) | Pipeline facade | Data transformation |
+| [signal](../crates/signal/signal-facade/doc/overview.md) | Signal facade | Trading signals |
+
+### Domain Modules
+
+| Module | Purpose | Documentation |
+|--------|---------|---------------|
+| [forecast](../crates/forecast/doc/overview.md) | Pipeline infrastructure | Composable forecasting |
+| [financial](../crates/financial/doc/overview.md) | Financial analytics | Portfolio, backtesting, risk |
+| [automl](../crates/automl/doc/overview.md) | AutoML | Model selection, ensembles |
+| [anomaly](../crates/anomaly/doc/overview.md) | Anomaly detection | Detectors, monitoring |
+
+### Interface Modules
+
+| Module | Purpose | Documentation |
+|--------|---------|---------------|
+| [wasm](../crates/wasm/doc/overview.md) | WASM bindings | TypeScript/JavaScript interop |
+| [server](../crates/server/doc/overview.md) | REST API | HTTP endpoints |
+| [cli](../crates/cli/doc/overview.md) | CLI tool | Command-line interface |
+| [tui](../crates/tui/doc/overview.md) | Terminal UI | Dashboard visualization |
 
 ### TypeScript Package
 
@@ -60,7 +71,8 @@
 ## Development Documentation
 
 - [Developer Guide](4-development/developer-guide.md) - Development hub
-- [Setup Guide](4-development/setup-guide.md) - Environment setup
+- [Setup Guide](4-development/guide/setup-guide.md) - Environment setup
+- [Rust Optimization](4-development/guide/rust-optimization.md) - Performance optimization
 
 ## Research & Benchmarks
 

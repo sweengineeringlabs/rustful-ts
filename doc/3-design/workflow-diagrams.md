@@ -424,4 +424,4 @@ Trading strategy backtesting flow.
 - [Architecture](architecture.md) - System architecture
 - [Block Diagram](block-diagram.md) - Component overview
 
-**Last Updated**: 2024-12-27
+**Last Updated**: 2025-12-28

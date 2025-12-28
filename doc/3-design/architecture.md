@@ -365,5 +365,5 @@ rustful-ts uses a layered architecture with Rust at the core, domain modules for
 - [ADRs](adr/README.md) - Architecture decisions
 - [Algorithms](../algorithms/README.md) - Algorithm details
 
-**Last Updated**: 2024-12-27
+**Last Updated**: 2025-12-28
 **Version**: 0.2

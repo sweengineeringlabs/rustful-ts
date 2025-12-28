@@ -1,5 +1,7 @@
 # cli Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 Data analysts and DevOps engineers who need command-line access for scripting and automation.

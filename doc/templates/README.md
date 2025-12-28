@@ -1,38 +1,56 @@
 # Documentation Templates
 
-Templates for rustful-ts documentation following SEA (Stratified Encapsulation Architecture) patterns.
+Templates for rustful-ts documentation following the **Audience + WHAT-WHY-HOW** structure from the SEA Documentation Template Engine.
 
 ## Quick Reference
 
-| Template | Use For |
-|----------|---------|
-| [crate-overview-template.md](crate-overview-template.md) | Module/crate documentation |
-| [framework-doc-template.md](framework-doc-template.md) | Framework-wide documentation |
+| Template | Use For | Target Location |
+|----------|---------|-----------------|
+| [crate-overview-template.md](crate-overview-template.md) | Module/crate documentation | `crates/*/doc/overview.md` |
+| [framework-doc-template.md](framework-doc-template.md) | Framework-wide documentation | `doc/3-design/*.md`, `doc/4-development/guide/*.md` |
 
 ## How to Use
 
 1. **Choose a template** based on what you're documenting
 2. **Copy it** to your target location
 3. **Replace placeholders** marked with `[BRACKETS]`
-4. **Follow the customization guide** at the end of each template
-5. **Remove the customization guide** before publishing
+4. **Update dates** (`YYYY-MM-DD` → actual dates)
 
 ## Template Structure
 
-Each template follows this structure:
+### Crate/Module Overview Template
 
+```markdown
+# [Module/Crate Name] Overview
+
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](...).
+
+## Audience
+## WHAT
+## WHY
+## HOW
+## Documentation
+
+**Status**: [Stable / Beta / Alpha]
 ```
-# Title
-**Audience**: [Who should read this]  (framework docs only)
+
+### Framework Documentation Template
+
+```markdown
+# [Document Title]
+
+**Audience**: [Who should read this]
 
 ## WHAT: [Description]
 ## WHY: [Motivation and benefits]
 ## HOW: [Implementation]
   - Examples
-  - Best practices
-
+  - Best practices (✅ DO / ❌ DON'T)
+  - Decision Matrix
 ## Summary (with Key Takeaways)
-## Template Customization Guide
+
+**Last Updated**: YYYY-MM-DD
+**Version**: X.Y
 ```
 
 ## Placeholder Convention

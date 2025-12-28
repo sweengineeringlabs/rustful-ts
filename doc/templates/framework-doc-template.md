@@ -50,13 +50,22 @@ approach1.apply(context)
 
 ### Best Practices
 
-**DO**:
+**✅ DO**:
 - [Recommendation 1] - [Why]
 - [Recommendation 2] - [Why]
+- [Recommendation 3] - [Why]
 
-**DON'T**:
+**❌ DON'T**:
 - [Anti-pattern 1] - [Why to avoid]
 - [Anti-pattern 2] - [Why to avoid]
+- [Anti-pattern 3] - [Why to avoid]
+
+### Decision Matrix
+
+| Scenario | Recommended Approach | Reasoning |
+|----------|---------------------|-----------|
+| [When X] | [Approach Y] | [Why] |
+| [When A] | [Approach B] | [Why] |
 
 ## Summary
 
@@ -76,49 +85,4 @@ approach1.apply(context)
 **Last Updated**: YYYY-MM-DD
 **Version**: X.Y
 
----
-
-## Template Customization Guide
-
-When using this template for framework documentation:
-
-1. **Replace all placeholders**:
-   - `[Document Title]` - Clear, descriptive title
-   - `[Target readers]` - Architects, Developers, Security Teams, etc.
-   - `[Clear Description]` - What this document covers
-   - `[Problem/Motivation]` - Why this matters
-   - `[Implementation/Application]` - How to apply it
-   - `YYYY-MM-DD` - Actual dates
-   - `X.Y` - Version number
-
-2. **Define audience clearly**:
-   - Be specific about who should read this
-   - Multiple audiences are OK (comma-separated)
-   - This is REQUIRED for framework docs
-
-3. **Fill in WHAT section**:
-   - 1-3 sentence description
-   - List scope items (what IS covered)
-   - List out-of-scope items (what is NOT covered)
-
-4. **Fill in WHY section**:
-   - List 2-3 problems being addressed
-   - Include current impact and consequences
-   - List benefits of the solution
-
-5. **Fill in HOW section**:
-   - Provide concrete approaches/examples
-   - Include code samples (language-agnostic OK)
-   - Add "When to use" guidance
-   - Include Best Practices (DO/DON'T)
-   - Add Decision Matrix if applicable
-
-6. **Write Summary**:
-   - 2-3 sentences maximum
-   - List 3 key takeaways
-
-7. **Link related docs**:
-   - Add paths to related documentation
-   - Brief description of each link
-
-8. **Remove this section** after customization
+**Next Review**: YYYY-MM-DD

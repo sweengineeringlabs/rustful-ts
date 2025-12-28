@@ -1,5 +1,7 @@
 # predictor-spi Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 Library developers who want to implement custom time series prediction algorithms.

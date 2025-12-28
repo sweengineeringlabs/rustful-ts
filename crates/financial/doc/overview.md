@@ -1,5 +1,7 @@
 # financial Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 Quantitative developers and traders who need portfolio management, backtesting, and risk analytics.

@@ -1,5 +1,7 @@
 # wasm Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 TypeScript/JavaScript developers who need high-performance time series algorithms via WebAssembly.

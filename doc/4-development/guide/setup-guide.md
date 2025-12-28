@@ -149,5 +149,5 @@ Development requires Rust 1.70+, Node.js 18+, and wasm-pack for full WASM builds
 - [Developer Guide](../developer-guide.md) - Development hub
 - [Testing Guide](testing-guide.md) - Test organization
 
-**Last Updated**: 2024-12-27
+**Last Updated**: 2025-12-28
 **Version**: 0.2

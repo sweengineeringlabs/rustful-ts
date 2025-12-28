@@ -1,5 +1,7 @@
 # automl Overview
 
+> **Scope**: High-level overview only. Implementation details belong in [Developer Guide](../../../doc/4-development/developer-guide.md).
+
 ## Audience
 
 Data scientists and developers who need automated model selection without manual trial-and-error.
