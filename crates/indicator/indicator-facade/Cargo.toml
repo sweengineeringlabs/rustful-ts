@@ -1,0 +1,15 @@
+[package]
+name = "indicator-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Technical indicator Facade - unified re-exports"
+
+[features]
+default = []
+simd = ["indicator-core/simd"]
+
+[dependencies]
+indicator-spi = { path = "../indicator-spi" }
+indicator-api = { path = "../indicator-api" }
+indicator-core = { path = "../indicator-core" }

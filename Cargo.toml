@@ -21,6 +21,17 @@ members = [
     "crates/signal/signal-core",
     "crates/signal/signal-api",
     "crates/signal/signal-facade",
+    # Indicator domain (migrated from quantlang)
+    "crates/indicator/indicator-spi",
+    "crates/indicator/indicator-api",
+    "crates/indicator/indicator-core",
+    "crates/indicator/indicator-optimizer",
+    "crates/indicator/indicator-facade",
+    # Tuning domain (migrated from quantlang)
+    "crates/tuning/tuning-spi",
+    "crates/tuning/tuning-api",
+    "crates/tuning/tuning-core",
+    "crates/tuning/tuning-facade",
     # Utilities moved to rustboot: bench, loc
     # Legacy (to be migrated)
     "crates/algorithm",
@@ -102,6 +113,19 @@ signal-spi = { path = "crates/signal/signal-spi" }
 signal-core = { path = "crates/signal/signal-core" }
 signal-api = { path = "crates/signal/signal-api" }
 signal-facade = { path = "crates/signal/signal-facade" }
+
+# Internal crates - Indicator domain
+indicator-spi = { path = "crates/indicator/indicator-spi" }
+indicator-api = { path = "crates/indicator/indicator-api" }
+indicator-core = { path = "crates/indicator/indicator-core" }
+indicator-optimizer = { path = "crates/indicator/indicator-optimizer" }
+indicator-facade = { path = "crates/indicator/indicator-facade" }
+
+# Internal crates - Tuning domain
+tuning-spi = { path = "crates/tuning/tuning-spi" }
+tuning-api = { path = "crates/tuning/tuning-api" }
+tuning-core = { path = "crates/tuning/tuning-core" }
+tuning-facade = { path = "crates/tuning/tuning-facade" }
 
 # Rustboot framework (infrastructure) - local path for development
 rustboot-config = { path = "../rustboot/crates/rustboot-config", package = "dev-engineeringlabs-rustboot-config" }

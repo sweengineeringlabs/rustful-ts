@@ -1,0 +1,10 @@
+[package]
+name = "tuning-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hyperparameter tuning SPI - optimizer and validator traits"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

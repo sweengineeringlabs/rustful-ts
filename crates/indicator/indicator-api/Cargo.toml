@@ -1,0 +1,10 @@
+[package]
+name = "indicator-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Technical indicator API - configs and builders"
+
+[dependencies]
+indicator-spi = { path = "../indicator-spi" }
+serde.workspace = true

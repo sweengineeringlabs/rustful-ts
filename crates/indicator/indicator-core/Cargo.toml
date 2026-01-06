@@ -1,0 +1,20 @@
+[package]
+name = "indicator-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Technical indicator Core - SIMD-optimized implementations"
+
+[features]
+default = []
+simd = []
+
+[dependencies]
+indicator-spi = { path = "../indicator-spi" }
+indicator-api = { path = "../indicator-api" }
+serde.workspace = true
+thiserror.workspace = true
+
+[[bench]]
+name = "indicators"
+harness = false

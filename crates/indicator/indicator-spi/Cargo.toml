@@ -1,0 +1,10 @@
+[package]
+name = "indicator-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Technical indicator SPI - traits and types"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

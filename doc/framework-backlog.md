@@ -53,6 +53,7 @@ _None_
 ## Module-Specific Backlogs
 
 See individual crate backlogs:
+- [Model Porting](2-planning/backlog.md) - HuggingFace model porting, training SPI, performance optimization
 - [rustful-core](../crates/rustful-core/backlog.md)
 - [rustful-financial](../crates/rustful-financial/backlog.md)
 - [rustful-anomaly](../crates/rustful-anomaly/backlog.md)
