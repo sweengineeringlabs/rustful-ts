@@ -1,0 +1,9 @@
+[package]
+name = "automl-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Service Provider Interface for AutoML: model selection, hyperparameter optimization"
+
+[dependencies]
+thiserror = { workspace = true }

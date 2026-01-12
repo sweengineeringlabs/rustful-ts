@@ -1,0 +1,10 @@
+[package]
+name = "financial-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Financial analytics API - configs and builders"
+
+[dependencies]
+financial-spi = { path = "../financial-spi" }
+serde.workspace = true

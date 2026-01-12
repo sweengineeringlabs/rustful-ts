@@ -1,0 +1,10 @@
+[package]
+name = "data-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Data source API - configs and builders"
+
+[dependencies]
+data-spi = { path = "../data-spi" }
+serde.workspace = true

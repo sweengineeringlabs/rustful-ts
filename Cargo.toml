@@ -31,16 +31,39 @@ members = [
     "crates/optimizer/optimizer-api",
     "crates/optimizer/optimizer-core",
     "crates/optimizer/optimizer-facade",
+    # Anomaly domain
+    "crates/anomaly/anomaly-spi",
+    "crates/anomaly/anomaly-api",
+    "crates/anomaly/anomaly-core",
+    "crates/anomaly/anomaly-facade",
+    # Financial domain
+    "crates/financial/financial-spi",
+    "crates/financial/financial-api",
+    "crates/financial/financial-core",
+    "crates/financial/financial-facade",
+    # Data domain
+    "crates/data/data-spi",
+    "crates/data/data-api",
+    "crates/data/data-core",
+    "crates/data/data-facade",
     # FFI bindings
     "crates/ts-ffi",
     # Utilities moved to rustboot: bench, loc
-    # Legacy (to be migrated)
-    "crates/algorithm",
-    "crates/data",
-    "crates/financial",
-    "crates/automl",
-    "crates/forecast",
-    "crates/anomaly",
+    # AutoML domain
+    "crates/automl/automl-spi",
+    "crates/automl/automl-api",
+    "crates/automl/automl-core",
+    "crates/automl/automl-facade",
+    # Algorithm domain
+    "crates/algorithm/algorithm-spi",
+    "crates/algorithm/algorithm-api",
+    "crates/algorithm/algorithm-core",
+    "crates/algorithm/algorithm-facade",
+    # Forecast domain
+    "crates/forecast/forecast-spi",
+    "crates/forecast/forecast-api",
+    "crates/forecast/forecast-core",
+    "crates/forecast/forecast-facade",
     "crates/wasm",
     "crates/server",
     "crates/cli",
@@ -119,14 +142,13 @@ signal-facade = { path = "crates/signal/signal-facade" }
 indicator-spi = { path = "crates/indicator/indicator-spi" }
 indicator-api = { path = "crates/indicator/indicator-api" }
 indicator-core = { path = "crates/indicator/indicator-core" }
-indicator-optimizer = { path = "crates/indicator/indicator-optimizer" }
 indicator-facade = { path = "crates/indicator/indicator-facade" }
 
-# Internal crates - Tuning domain
-tuning-spi = { path = "crates/tuning/tuning-spi" }
-tuning-api = { path = "crates/tuning/tuning-api" }
-tuning-core = { path = "crates/tuning/tuning-core" }
-tuning-facade = { path = "crates/tuning/tuning-facade" }
+# Internal crates - Optimizer domain
+optimizer-spi = { path = "crates/optimizer/optimizer-spi" }
+optimizer-api = { path = "crates/optimizer/optimizer-api" }
+optimizer-core = { path = "crates/optimizer/optimizer-core" }
+optimizer-facade = { path = "crates/optimizer/optimizer-facade" }
 
 # Rustboot framework (infrastructure) - local path for development
 rustboot-config = { path = "../rustboot/crates/rustboot-config", package = "dev-engineeringlabs-rustboot-config" }
@@ -139,13 +161,45 @@ load = { path = "../rustboot/crates/swe-doctor/load" }
 mem = { path = "../rustboot/crates/swe-doctor/mem" }
 prof = { path = "../rustboot/crates/swe-doctor/prof" }
 
-# Internal crates - Legacy (to be migrated)
-algorithm = { path = "crates/algorithm" }
-data = { path = "crates/data" }
-financial = { path = "crates/financial" }
-automl = { path = "crates/automl" }
-forecast = { path = "crates/forecast" }
-anomaly = { path = "crates/anomaly" }
+# Internal crates - Anomaly domain
+anomaly-spi = { path = "crates/anomaly/anomaly-spi" }
+anomaly-api = { path = "crates/anomaly/anomaly-api" }
+anomaly-core = { path = "crates/anomaly/anomaly-core" }
+anomaly-facade = { path = "crates/anomaly/anomaly-facade" }
+
+# Internal crates - Financial domain
+financial-spi = { path = "crates/financial/financial-spi" }
+financial-api = { path = "crates/financial/financial-api" }
+financial-core = { path = "crates/financial/financial-core" }
+financial-facade = { path = "crates/financial/financial-facade" }
+financial = { path = "crates/financial/financial-facade", package = "financial-facade" }
+
+# Internal crates - Data domain
+data-spi = { path = "crates/data/data-spi" }
+data-api = { path = "crates/data/data-api" }
+data-core = { path = "crates/data/data-core" }
+data-facade = { path = "crates/data/data-facade" }
+
+# Internal crates - AutoML domain
+automl-spi = { path = "crates/automl/automl-spi" }
+automl-api = { path = "crates/automl/automl-api" }
+automl-core = { path = "crates/automl/automl-core" }
+automl-facade = { path = "crates/automl/automl-facade" }
+automl = { path = "crates/automl/automl-facade", package = "automl-facade" }
+
+# Internal crates - Forecast domain
+forecast-spi = { path = "crates/forecast/forecast-spi" }
+forecast-api = { path = "crates/forecast/forecast-api" }
+forecast-core = { path = "crates/forecast/forecast-core" }
+forecast-facade = { path = "crates/forecast/forecast-facade" }
+forecast = { path = "crates/forecast/forecast-facade", package = "forecast-facade" }
+
+# Internal crates - Algorithm domain
+algorithm-spi = { path = "crates/algorithm/algorithm-spi" }
+algorithm-api = { path = "crates/algorithm/algorithm-api" }
+algorithm-core = { path = "crates/algorithm/algorithm-core" }
+algorithm-facade = { path = "crates/algorithm/algorithm-facade" }
+algorithm = { path = "crates/algorithm/algorithm-facade", package = "algorithm-facade" }
 
 [profile.release]
 opt-level = 3

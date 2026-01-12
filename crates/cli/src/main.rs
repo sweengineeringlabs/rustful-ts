@@ -8,7 +8,7 @@ use algorithm::smoothing::{
 use algorithm::regression::Arima;
 use algorithm::Predictor;
 use clap::{Parser, Subcommand};
-use anomaly::{AnomalyDetector, IQRDetector, ZScoreDetector};
+use anomaly_facade::{AnomalyDetector, IQRDetector, ZScoreDetector};
 use financial::{BacktestResult, Signal, SignalGenerator, Trade};
 use std::fs::File;
 use std::io::BufReader;

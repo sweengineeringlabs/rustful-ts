@@ -1,0 +1,11 @@
+[package]
+name = "forecast-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core implementations for forecasting pipeline"
+
+[dependencies]
+forecast-spi = { path = "../forecast-spi" }
+serde = { workspace = true }
+thiserror = { workspace = true }

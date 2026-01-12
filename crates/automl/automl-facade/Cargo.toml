@@ -1,0 +1,11 @@
+[package]
+name = "automl-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level facade for AutoML: model selection, hyperparameter optimization"
+
+[dependencies]
+automl-spi = { path = "../automl-spi" }
+automl-api = { path = "../automl-api" }
+automl-core = { path = "../automl-core" }

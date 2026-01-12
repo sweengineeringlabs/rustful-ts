@@ -1,0 +1,9 @@
+[package]
+name = "forecast-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Service Provider Interface for forecasting pipeline"
+
+[dependencies]
+thiserror = { workspace = true }

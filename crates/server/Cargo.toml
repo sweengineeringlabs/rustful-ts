@@ -11,10 +11,10 @@ path = "src/main.rs"
 
 [dependencies]
 algorithm = { workspace = true }
-forecast = { path = "../forecast" }
-financial = { path = "../financial" }
-automl = { path = "../automl" }
-anomaly = { path = "../anomaly" }
+forecast = { workspace = true }
+financial-facade = { workspace = true }
+automl-facade = { workspace = true }
+anomaly-facade = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

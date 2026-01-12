@@ -1,0 +1,15 @@
+[package]
+name = "data-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Data source Facade - unified re-exports"
+
+[features]
+default = ["fetch"]
+fetch = ["data-core/fetch"]
+
+[dependencies]
+data-spi = { path = "../data-spi" }
+data-api = { path = "../data-api" }
+data-core = { path = "../data-core" }

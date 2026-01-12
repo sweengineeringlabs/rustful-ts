@@ -1,0 +1,13 @@
+[package]
+name = "algorithm-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-level facade for time series algorithms"
+keywords = ["time-series", "forecasting", "prediction", "algorithms"]
+categories = ["algorithms", "science"]
+
+[dependencies]
+algorithm-spi = { path = "../algorithm-spi" }
+algorithm-api = { path = "../algorithm-api" }
+algorithm-core = { path = "../algorithm-core" }

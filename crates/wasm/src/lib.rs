@@ -340,7 +340,7 @@ pub fn difference_data(data: &[f64], order: usize) -> Vec<f64> {
 // Anomaly Detection Bindings
 // ============================================================================
 
-use anomaly::{ZScoreDetector, IQRDetector, AnomalyDetector};
+use anomaly_facade::{ZScoreDetector, IQRDetector, AnomalyDetector};
 
 /// Z-Score anomaly detector for WASM
 #[wasm_bindgen]
@@ -415,25 +415,25 @@ impl WasmIQRDetector {
 /// Calculate Value at Risk (historical method)
 #[wasm_bindgen]
 pub fn compute_var(returns: &[f64], confidence: f64) -> f64 {
-    financial::risk::var_historical(returns, confidence)
+    financial_facade::risk::var_historical(returns, confidence)
 }
 
 /// Calculate Sharpe ratio
 #[wasm_bindgen]
 pub fn compute_sharpe_ratio(returns: &[f64], risk_free_rate: f64) -> f64 {
-    financial::risk::sharpe_ratio(returns, risk_free_rate)
+    financial_facade::risk::sharpe_ratio(returns, risk_free_rate)
 }
 
 /// Calculate maximum drawdown
 #[wasm_bindgen]
 pub fn compute_max_drawdown(equity_curve: &[f64]) -> f64 {
-    financial::risk::max_drawdown(equity_curve)
+    financial_facade::risk::max_drawdown(equity_curve)
 }
 
 /// Calculate Sortino ratio
 #[wasm_bindgen]
 pub fn compute_sortino_ratio(returns: &[f64], risk_free_rate: f64) -> f64 {
-    financial::risk::sortino_ratio(returns, risk_free_rate)
+    financial_facade::risk::sortino_ratio(returns, risk_free_rate)
 }
 
 // ============================================================================
@@ -494,7 +494,7 @@ impl Default for WasmPipeline {
 // AutoML / Ensemble Bindings
 // ============================================================================
 
-use automl::{EnsembleMethod, combine_predictions};
+use automl_facade::{EnsembleMethod, combine_predictions};
 
 /// Combine predictions using average
 #[wasm_bindgen]

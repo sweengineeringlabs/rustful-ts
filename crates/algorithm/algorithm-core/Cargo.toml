@@ -1,0 +1,24 @@
+[package]
+name = "algorithm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core implementations for time series algorithms"
+keywords = ["time-series", "forecasting", "prediction", "algorithms"]
+categories = ["algorithms", "science"]
+
+[lib]
+name = "algorithm_core"
+crate-type = ["rlib"]
+
+[dependencies]
+algorithm-spi = { path = "../algorithm-spi" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[[bench]]
+name = "performance"
+harness = false
+
+[dev-dependencies]
+bench = { workspace = true }

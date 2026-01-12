@@ -1,0 +1,10 @@
+[package]
+name = "data-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Data source SPI - traits and types for financial data fetching"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

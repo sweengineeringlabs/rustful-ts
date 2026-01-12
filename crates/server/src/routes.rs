@@ -3,7 +3,7 @@
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use algorithm::{Predictor, regression::Arima};
-use anomaly::{ZScoreDetector, AnomalyDetector};
+use anomaly_facade::{ZScoreDetector, AnomalyDetector};
 
 #[derive(Debug, Deserialize)]
 pub struct ForecastRequest {

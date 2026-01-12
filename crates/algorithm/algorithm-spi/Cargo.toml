@@ -1,0 +1,11 @@
+[package]
+name = "algorithm-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Service Provider Interface for time series algorithms"
+keywords = ["time-series", "forecasting", "prediction", "algorithms", "spi"]
+categories = ["algorithms", "science"]
+
+[dependencies]
+thiserror = { workspace = true }

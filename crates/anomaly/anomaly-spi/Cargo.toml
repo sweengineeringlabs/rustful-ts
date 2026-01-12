@@ -1,0 +1,10 @@
+[package]
+name = "anomaly-spi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Anomaly detection SPI - traits and types"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

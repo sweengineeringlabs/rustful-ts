@@ -34,3 +34,6 @@ reqwest = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 anyhow = "1.0"
+
+[dev-dependencies]
+tempfile = "3"

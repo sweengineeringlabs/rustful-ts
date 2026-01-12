@@ -1,0 +1,11 @@
+[package]
+name = "financial-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Financial analytics Core - implementations"
+
+[dependencies]
+financial-spi = { path = "../financial-spi" }
+financial-api = { path = "../financial-api" }
+serde.workspace = true

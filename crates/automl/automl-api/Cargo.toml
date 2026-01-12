@@ -1,0 +1,10 @@
+[package]
+name = "automl-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Consumer API and configuration types for AutoML"
+
+[dependencies]
+automl-spi = { path = "../automl-spi" }
+serde = { workspace = true }

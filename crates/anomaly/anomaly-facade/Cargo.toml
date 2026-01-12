@@ -1,0 +1,11 @@
+[package]
+name = "anomaly-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Anomaly detection Facade - unified re-exports"
+
+[dependencies]
+anomaly-spi = { path = "../anomaly-spi" }
+anomaly-api = { path = "../anomaly-api" }
+anomaly-core = { path = "../anomaly-core" }

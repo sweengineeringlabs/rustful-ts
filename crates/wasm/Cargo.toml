@@ -17,9 +17,9 @@ default = []
 
 [dependencies]
 algorithm = { workspace = true }
-financial = { workspace = true }
-anomaly = { workspace = true }
-automl = { workspace = true }
+financial-facade = { workspace = true }
+anomaly-facade = { workspace = true }
+automl-facade = { workspace = true }
 forecast = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }

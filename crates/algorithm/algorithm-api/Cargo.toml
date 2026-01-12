@@ -1,0 +1,11 @@
+[package]
+name = "algorithm-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Consumer API for time series algorithms"
+keywords = ["time-series", "forecasting", "prediction", "algorithms", "api"]
+categories = ["algorithms", "science"]
+
+[dependencies]
+algorithm-spi = { path = "../algorithm-spi" }

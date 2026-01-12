@@ -1,0 +1,11 @@
+[package]
+name = "financial-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Financial analytics Facade - unified re-exports"
+
+[dependencies]
+financial-spi = { path = "../financial-spi" }
+financial-api = { path = "../financial-api" }
+financial-core = { path = "../financial-core" }

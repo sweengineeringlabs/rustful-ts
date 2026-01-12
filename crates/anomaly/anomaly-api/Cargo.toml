@@ -1,0 +1,10 @@
+[package]
+name = "anomaly-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Anomaly detection API - configs and builders"
+
+[dependencies]
+anomaly-spi = { path = "../anomaly-spi" }
+serde.workspace = true
