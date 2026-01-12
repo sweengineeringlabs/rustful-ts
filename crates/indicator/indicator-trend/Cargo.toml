@@ -1,0 +1,17 @@
+[package]
+name = "indicator-trend"
+description = "Technical trend indicators - Aroon, Vortex, Alligator, DPO, Coppock, etc."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+simd = []
+
+[dependencies]
+indicator-spi = { path = "../indicator-spi" }
+indicator-api = { path = "../indicator-api" }
+serde.workspace = true
+
+[dev-dependencies]
