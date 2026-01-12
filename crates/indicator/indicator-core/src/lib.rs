@@ -79,6 +79,23 @@ pub mod elder_ray;
 pub mod simd;
 
 // ============================================================================
+// Extended Indicator Categories
+// ============================================================================
+pub mod oscillators;
+pub mod trend;
+pub mod volatility;
+pub mod volume;
+pub mod statistical;
+pub mod pattern;
+pub mod risk;
+pub mod bands;
+pub mod dsp;
+pub mod composite;
+pub mod breadth;
+pub mod swing;
+pub mod demark;
+
+// ============================================================================
 // Moving Average Exports
 // ============================================================================
 pub use sma::SMA;
@@ -178,4 +195,118 @@ pub use indicator_api::{
     VWAPConfig, OBVConfig, MFIConfig, CMFConfig,
     // Other
     ElderRayConfig, PivotType,
+};
+
+// ============================================================================
+// Extended Category Re-exports
+// ============================================================================
+
+// Oscillators
+pub use oscillators::{
+    ROC, Momentum, ChandeMomentum, DeMarker, AwesomeOscillator, AcceleratorOscillator,
+    KST, PPO, RVI, StochasticRSI, ConnorsRSI, TSI, SMI, RMI, FisherTransform,
+    InverseFisherTransform, Qstick, PMO, SpecialK, DisparityIndex, PrettyGoodOscillator,
+    APO, ErgodicOscillator, PolarizedFractalEfficiency, IntradayMomentumIndex,
+    RelativeVolatilityIndex, DoubleStochastic,
+};
+
+// Trend
+pub use trend::{
+    Alligator, AlligatorOutput, Aroon, AroonOutput, CoppockCurve, DPO, GatorOscillator,
+    McGinleyDynamic, RainbowMA, RandomWalkIndex, TrendDetectionIndex, TrendIntensityIndex,
+    VerticalHorizontalFilter, VortexIndicator,
+};
+
+// Volatility
+pub use volatility::{
+    HistoricalVolatility, ChaikinVolatility, MassIndex, ParkinsonVolatility,
+    GarmanKlassVolatility, RogersSatchellVolatility, YangZhangVolatility,
+    RealizedVolatility, NormalizedATR, ChoppinessIndex, UlcerIndex,
+};
+
+// Volume
+pub use volume::{
+    VWMA, ADLine, ForceIndex, KlingerOscillator, BalanceOfPower, EaseOfMovement,
+    VROC, PVT, NVI, PVI, WilliamsAD, TwiggsMoneyFlow, VolumeOscillator, NetVolume,
+    ChaikinOscillator, TWAP,
+};
+
+// Statistical
+pub use statistical::{
+    StandardDeviation, Variance, ZScore, LinearRegression, LinearRegressionOutput,
+    Correlation, Spread, Ratio, ZScoreSpread, Autocorrelation, Skewness, Kurtosis,
+};
+
+// Pattern
+pub use pattern::{
+    ZigZag, HeikinAshi, HeikinAshiOutput, DarvasBox, Fractals, Doji, Hammer, Engulfing,
+    Harami, MorningStar, ThreeSoldiers, Marubozu, Piercing, SpinningTop, Tweezer,
+    ThreeInside, ThreeOutside, AbandonedBaby, BeltHold, Kicking, ThreeLineStrike,
+    TasukiGap, RisingFallingMethods,
+};
+
+// Risk
+pub use risk::{
+    SharpeRatio, SortinoRatio, CalmarRatio, MaxDrawdown, ValueAtRisk, VaRMethod,
+    ConditionalVaR, Beta, Alpha, TreynorRatio, InformationRatio, OmegaRatio, GainLossRatio,
+};
+
+// Bands
+pub use bands::{
+    AccelerationBands, ChandelierExit, Envelope, HighLowBands, PriceChannel,
+    ProjectionBands, STARCBands, StandardErrorBands, TironeLevels, TironeLevelsOutput,
+};
+
+// DSP
+pub use dsp::{
+    MESA, MAMA, SineWave, HilbertTransform, CyberCycle, CGOscillator,
+    LaguerreRSI, RoofingFilter, Supersmoother, Decycler,
+};
+
+// Composite
+pub use composite::{
+    TTMSqueeze, TTMSqueezeConfig, TTMSqueezeOutput,
+    ElderImpulse, ElderImpulseConfig, ElderImpulseOutput,
+    SchaffTrendCycle, SchaffConfig, SchaffOutput,
+    ElderTripleScreen, ElderTripleScreenConfig, ElderTripleScreenOutput,
+    CommoditySelectionIndex, CommoditySelectionConfig, CommoditySelectionOutput,
+    SqueezeMomentum, SqueezeMomentumConfig, SqueezeMomentumOutput,
+    TrendStrengthIndex, TrendStrengthConfig, TrendStrengthOutput, TrendComponents,
+    RegimeDetector, RegimeDetectorConfig, RegimeDetectorOutput, MarketRegime,
+};
+
+// Breadth
+pub use breadth::{
+    AdvanceDeclineLine, BreadthThrust, CumulativeVolumeIndex, UpDownVolume,
+    HighLowData, HighLowIndex, HighLowMethod, HighLowSeries,
+    McClellanOscillator, McClellanSummationIndex,
+    MarketCondition, PercentAboveMA, PercentAboveMASeries,
+    ContrarianSignal, PutCallRatio, PutCallSeries, PutCallSignal,
+    TickBias, TickIndex, TickSeries, TickSignal, TickStats,
+    TRINSignal, TRIN, BreadthData, BreadthSeries, BreadthIndicator,
+};
+
+// Swing
+pub use swing::{
+    SwingIndex, AccumulativeSwingIndex, GannSwing, GannSwingState,
+    MarketStructure, MarketTrend, StructurePoint,
+    OrderBlocks, OrderBlock, OrderBlockType,
+    FairValueGap, FVGType, FVGZone,
+    LiquidityVoids, LiquidityVoid, LiquidityVoidType,
+    BreakOfStructure, BOSType, BOSEvent, CHoCHType,
+    SwingPoints, SwingPoint, SwingPointType,
+    PivotHighsLows, PivotPoint, PivotType as SwingPivotType,
+};
+
+// DeMark
+pub use demark::{
+    TDSetup, TDSetupOutput, TDSetupConfig, SetupPhase,
+    TDCountdown, TDCountdownOutput, TDCountdownConfig, CountdownPhase,
+    TDSequential, TDSequentialOutput, TDSequentialConfig, SequentialState, SignalStrength,
+    TDCombo, TDComboOutput, TDComboConfig, ComboPhase, ComboState,
+    TDREI, TDREIOutput, TDREIConfig,
+    TDPOQ, TDPOQOutput, TDPOQConfig,
+    TDPressure, TDPressureOutput, TDPressureConfig,
+    TDDWave, TDDWaveOutput, TDDWaveConfig, WaveDirection, DWavePhase, PivotType as DWavePivotType,
+    TDTrendFactor, TDTrendFactorOutput, TDTrendFactorConfig, TrendState,
 };

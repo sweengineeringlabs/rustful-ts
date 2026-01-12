@@ -27,18 +27,6 @@ members = [
     "crates/indicator/indicator-core",
     "crates/indicator/indicator-optimizer",
     "crates/indicator/indicator-facade",
-    "crates/indicator/indicator-oscillators",
-    "crates/indicator/indicator-trend",
-    "crates/indicator/indicator-volatility",
-    "crates/indicator/indicator-volume",
-    "crates/indicator/indicator-statistical",
-    "crates/indicator/indicator-pattern",
-    "crates/indicator/indicator-risk",
-    "crates/indicator/indicator-bands",
-    "crates/indicator/indicator-composite",
-    "crates/indicator/indicator-swing",
-    "crates/indicator/indicator-breadth",
-    "crates/indicator/indicator-dsp",
     # Tuning domain (migrated from quantlang)
     "crates/tuning/tuning-spi",
     "crates/tuning/tuning-api",
@@ -132,17 +120,6 @@ indicator-api = { path = "crates/indicator/indicator-api" }
 indicator-core = { path = "crates/indicator/indicator-core" }
 indicator-optimizer = { path = "crates/indicator/indicator-optimizer" }
 indicator-facade = { path = "crates/indicator/indicator-facade" }
-indicator-oscillators = { path = "crates/indicator/indicator-oscillators" }
-indicator-trend = { path = "crates/indicator/indicator-trend" }
-indicator-volatility = { path = "crates/indicator/indicator-volatility" }
-indicator-volume = { path = "crates/indicator/indicator-volume" }
-indicator-statistical = { path = "crates/indicator/indicator-statistical" }
-indicator-pattern = { path = "crates/indicator/indicator-pattern" }
-indicator-risk = { path = "crates/indicator/indicator-risk" }
-indicator-bands = { path = "crates/indicator/indicator-bands" }
-indicator-composite = { path = "crates/indicator/indicator-composite" }
-indicator-swing = { path = "crates/indicator/indicator-swing" }
-indicator-breadth = { path = "crates/indicator/indicator-breadth" }
 
 # Internal crates - Tuning domain
 tuning-spi = { path = "crates/tuning/tuning-spi" }
