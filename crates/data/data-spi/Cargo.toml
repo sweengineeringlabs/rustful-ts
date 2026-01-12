@@ -8,3 +8,6 @@ description = "Data source SPI - traits and types for financial data fetching"
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
