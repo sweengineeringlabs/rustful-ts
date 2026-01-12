@@ -14,20 +14,43 @@ use indicator_core::*;
 
 #[test]
 fn test_fixtures_load_correctly() {
+    // Equities
     let spy = spy_daily();
     let btc = btc_daily();
     let aapl = aapl_daily();
     let gld = gld_daily();
+    let nas100 = nas100_daily();
 
     println!("SPY: {} bars", spy.len());
     println!("BTC: {} bars", btc.len());
     println!("AAPL: {} bars", aapl.len());
     println!("GLD: {} bars", gld.len());
+    println!("NAS100: {} bars", nas100.len());
 
-    assert!(spy.len() > 8000);  // All data since 1993 inception
-    assert!(btc.len() > 300);
-    assert!(aapl.len() > 200);
-    assert!(gld.len() > 200);
+    assert!(spy.len() > 8000, "SPY should have full history since 1993");
+    assert!(btc.len() > 3000, "BTC should have history since 2014");
+    assert!(aapl.len() > 10000, "AAPL should have history since 1980");
+    assert!(gld.len() > 4000, "GLD should have history since 2004");
+    assert!(nas100.len() > 5000, "NAS100 should have history since 1999");
+
+    // Forex
+    let eurusd = eurusd_daily();
+    let gbpusd = gbpusd_daily();
+    let usdjpy = usdjpy_daily();
+    let gbpjpy = gbpjpy_daily();
+    let eurjpy = eurjpy_daily();
+
+    println!("EURUSD: {} bars", eurusd.len());
+    println!("GBPUSD: {} bars", gbpusd.len());
+    println!("USDJPY: {} bars", usdjpy.len());
+    println!("GBPJPY: {} bars", gbpjpy.len());
+    println!("EURJPY: {} bars", eurjpy.len());
+
+    assert!(eurusd.len() > 5000, "EURUSD should have history since 2003");
+    assert!(gbpusd.len() > 5000, "GBPUSD should have history since 2003");
+    assert!(usdjpy.len() > 5000, "USDJPY should have history since 2003");
+    assert!(gbpjpy.len() > 5000, "GBPJPY should have history since 2003");
+    assert!(eurjpy.len() > 5000, "EURJPY should have history since 2003");
 }
 
 // ============================================================================
@@ -450,4 +473,143 @@ fn test_indicators_dont_repaint_real_data() {
             );
         }
     }
+}
+
+// ============================================================================
+// Forex-Specific Tests
+// ============================================================================
+
+#[test]
+fn test_forex_indicators_work_without_volume() {
+    // Forex data has zero volume - verify indicators that don't need volume work
+    let data = eurusd_daily();
+
+    // RSI on forex
+    let rsi = RSI::new(14);
+    let result = rsi.calculate(&data.close);
+    let valid_count = result.iter().filter(|x| !x.is_nan()).count();
+    assert!(valid_count > data.len() - 15, "RSI should work on forex data");
+
+    // MACD on forex
+    let macd = MACD::new(12, 26, 9);
+    let (macd_line, signal, _) = macd.calculate(&data.close);
+    let valid_macd = macd_line.iter().filter(|x| !x.is_nan()).count();
+    let valid_signal = signal.iter().filter(|x| !x.is_nan()).count();
+    assert!(valid_macd > 0 && valid_signal > 0, "MACD should work on forex data");
+
+    // Bollinger Bands on forex
+    let bb = BollingerBands::new(20, 2.0);
+    let (middle, upper, lower) = bb.calculate(&data.close);
+    for i in 20..data.len() {
+        if !middle[i].is_nan() {
+            assert!(upper[i] > middle[i], "Upper band should be above middle");
+            assert!(lower[i] < middle[i], "Lower band should be below middle");
+        }
+    }
+}
+
+#[test]
+fn test_forex_pairs_volatility_comparison() {
+    // JPY pairs are typically more volatile than major pairs
+    let eurusd = eurusd_daily();
+    let gbpjpy = gbpjpy_daily();
+
+    let eurusd_hv = HistoricalVolatility::new(20);
+    let gbpjpy_hv = HistoricalVolatility::new(20);
+
+    let eurusd_vol = eurusd_hv.calculate(&eurusd.close);
+    let gbpjpy_vol = gbpjpy_hv.calculate(&gbpjpy.close);
+
+    let eurusd_avg: f64 = eurusd_vol.iter().filter(|x| !x.is_nan()).sum::<f64>()
+        / eurusd_vol.iter().filter(|x| !x.is_nan()).count() as f64;
+    let gbpjpy_avg: f64 = gbpjpy_vol.iter().filter(|x| !x.is_nan()).sum::<f64>()
+        / gbpjpy_vol.iter().filter(|x| !x.is_nan()).count() as f64;
+
+    println!("EURUSD avg volatility: {:.4}%", eurusd_avg * 100.0);
+    println!("GBPJPY avg volatility: {:.4}%", gbpjpy_avg * 100.0);
+
+    // GBPJPY is typically more volatile than EURUSD
+    assert!(
+        gbpjpy_avg > eurusd_avg,
+        "Expected GBPJPY volatility ({:.4}%) > EURUSD volatility ({:.4}%)",
+        gbpjpy_avg * 100.0,
+        eurusd_avg * 100.0
+    );
+}
+
+#[test]
+fn test_4h_aggregation_works() {
+    // Test that 4H aggregation produces valid data
+    let h1 = spy_hourly();
+    let h4 = spy_4h();
+
+    println!("SPY 1H: {} bars", h1.len());
+    println!("SPY 4H: {} bars", h4.len());
+
+    // 4H should have roughly 1/4 the bars
+    assert!(h4.len() > 0, "4H should have data");
+    assert!(h4.len() < h1.len(), "4H should have fewer bars than 1H");
+
+    // Run indicators on 4H data
+    let sma = SMA::new(20);
+    let result = sma.calculate(&h4.close);
+    let valid_count = result.iter().filter(|x| !x.is_nan()).count();
+    assert!(valid_count > h4.len() - 20, "SMA should work on 4H data");
+
+    // RSI on 4H
+    let rsi = RSI::new(14);
+    let rsi_result = rsi.calculate(&h4.close);
+    for &val in rsi_result.iter() {
+        if !val.is_nan() {
+            assert!(val >= 0.0 && val <= 100.0, "RSI on 4H should be in range");
+        }
+    }
+}
+
+#[test]
+fn test_nas100_vs_spy_correlation() {
+    // NAS100 and SPY should be positively correlated (both US equities)
+    let spy = spy_daily();
+    let nas100 = nas100_daily();
+
+    // Use more recent data where both exist
+    let min_len = spy.len().min(nas100.len());
+    let spy_recent = &spy.close[spy.len() - min_len..];
+    let nas100_recent = &nas100.close[nas100.len() - min_len..];
+
+    // Calculate daily returns correlation
+    let mut spy_returns = Vec::new();
+    let mut nas100_returns = Vec::new();
+
+    for i in 1..min_len {
+        spy_returns.push((spy_recent[i] - spy_recent[i - 1]) / spy_recent[i - 1]);
+        nas100_returns.push((nas100_recent[i] - nas100_recent[i - 1]) / nas100_recent[i - 1]);
+    }
+
+    // Simple correlation calculation
+    let n = spy_returns.len() as f64;
+    let spy_mean: f64 = spy_returns.iter().sum::<f64>() / n;
+    let nas_mean: f64 = nas100_returns.iter().sum::<f64>() / n;
+
+    let mut cov = 0.0;
+    let mut spy_var = 0.0;
+    let mut nas_var = 0.0;
+
+    for i in 0..spy_returns.len() {
+        let spy_diff = spy_returns[i] - spy_mean;
+        let nas_diff = nas100_returns[i] - nas_mean;
+        cov += spy_diff * nas_diff;
+        spy_var += spy_diff * spy_diff;
+        nas_var += nas_diff * nas_diff;
+    }
+
+    let correlation = cov / (spy_var.sqrt() * nas_var.sqrt());
+    println!("SPY-NAS100 correlation: {:.4}", correlation);
+
+    // Should be highly correlated (both US equity indices)
+    assert!(
+        correlation > 0.8,
+        "SPY and NAS100 should be highly correlated, got {:.4}",
+        correlation
+    );
 }
