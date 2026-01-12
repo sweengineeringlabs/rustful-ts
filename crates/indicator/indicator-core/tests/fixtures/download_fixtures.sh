@@ -31,8 +31,8 @@ download_symbol() {
 }
 
 # Download various symbols for testing
-# SPY - S&P 500 ETF (10 years, liquid, good for general testing)
-download_symbol "SPY" "2015-01-01" "2025-01-01" "1d"
+# SPY - S&P 500 ETF (all available since inception 1993)
+download_symbol "SPY" "1993-01-22" "2025-12-31" "1d"
 
 # BTC-USD - Bitcoin (volatile, good for testing extreme moves)
 download_symbol "BTC-USD" "2024-01-01" "2024-12-31" "1d"

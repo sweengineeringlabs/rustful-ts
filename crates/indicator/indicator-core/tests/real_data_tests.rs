@@ -24,7 +24,7 @@ fn test_fixtures_load_correctly() {
     println!("AAPL: {} bars", aapl.len());
     println!("GLD: {} bars", gld.len());
 
-    assert!(spy.len() > 2000);  // 10 years of daily data
+    assert!(spy.len() > 8000);  // All data since 1993 inception
     assert!(btc.len() > 300);
     assert!(aapl.len() > 200);
     assert!(gld.len() > 200);
