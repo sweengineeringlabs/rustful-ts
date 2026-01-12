@@ -1,0 +1,16 @@
+[package]
+name = "indicator-demark"
+description = "Tom DeMark technical indicators - TD Sequential, TD Combo, TD REI, and more"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+simd = []
+
+[dependencies]
+indicator-spi = { path = "../indicator-spi" }
+serde.workspace = true
+
+[dev-dependencies]

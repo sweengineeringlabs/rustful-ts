@@ -21,3 +21,8 @@ indicator-statistical = { path = "../indicator-statistical" }
 indicator-pattern = { path = "../indicator-pattern" }
 indicator-risk = { path = "../indicator-risk" }
 indicator-bands = { path = "../indicator-bands" }
+indicator-dsp = { path = "../indicator-dsp" }
+indicator-composite = { path = "../indicator-composite" }
+indicator-breadth = { path = "../indicator-breadth" }
+indicator-swing = { path = "../indicator-swing" }
+indicator-demark = { path = "../indicator-demark" }

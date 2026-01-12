@@ -934,3 +934,178 @@ impl IndicatorType {
         }
     }
 }
+
+// ============================================================================
+// Advanced Moving Averages
+// ============================================================================
+
+/// Smoothed Moving Average (SMMA/RMA) configuration.
+/// Also known as Wilder's Smoothing Method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SMMAConfig {
+    pub period: usize,
+}
+
+impl SMMAConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Default for SMMAConfig {
+    fn default() -> Self {
+        Self { period: 14 }
+    }
+}
+
+/// Arnaud Legoux Moving Average (ALMA) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ALMAConfig {
+    pub period: usize,
+    /// Offset controls the Gaussian curve position (0.85 = closer to recent prices).
+    pub offset: f64,
+    /// Sigma controls the width of the Gaussian curve.
+    pub sigma: f64,
+}
+
+impl ALMAConfig {
+    pub fn new(period: usize, offset: f64, sigma: f64) -> Self {
+        Self { period, offset, sigma }
+    }
+}
+
+impl Default for ALMAConfig {
+    fn default() -> Self {
+        Self {
+            period: 9,
+            offset: 0.85,
+            sigma: 6.0,
+        }
+    }
+}
+
+/// Fractal Adaptive Moving Average (FRAMA) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FRAMAConfig {
+    pub period: usize,
+    /// Fast smoothing constant (optional, default: 1.0).
+    pub fast_sc: Option<f64>,
+    /// Slow smoothing constant (optional, default: 0.01).
+    pub slow_sc: Option<f64>,
+}
+
+impl FRAMAConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period, fast_sc: None, slow_sc: None }
+    }
+
+    pub fn with_smoothing(period: usize, fast_sc: f64, slow_sc: f64) -> Self {
+        Self { period, fast_sc: Some(fast_sc), slow_sc: Some(slow_sc) }
+    }
+}
+
+impl Default for FRAMAConfig {
+    fn default() -> Self {
+        Self { period: 16, fast_sc: None, slow_sc: None }
+    }
+}
+
+/// Variable Index Dynamic Average (VIDYA) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VIDYAConfig {
+    pub period: usize,
+    /// Chande Momentum Oscillator period.
+    pub cmo_period: usize,
+}
+
+impl VIDYAConfig {
+    pub fn new(period: usize, cmo_period: usize) -> Self {
+        Self { period, cmo_period }
+    }
+}
+
+impl Default for VIDYAConfig {
+    fn default() -> Self {
+        Self { period: 14, cmo_period: 9 }
+    }
+}
+
+/// Tillson T3 Moving Average configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct T3Config {
+    pub period: usize,
+    /// Volume factor (0.0 to 1.0, default: 0.7).
+    pub volume_factor: f64,
+}
+
+impl T3Config {
+    pub fn new(period: usize, volume_factor: f64) -> Self {
+        Self { period, volume_factor }
+    }
+}
+
+impl Default for T3Config {
+    fn default() -> Self {
+        Self { period: 5, volume_factor: 0.7 }
+    }
+}
+
+/// Triangular Moving Average (TRIMA) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TRIMAConfig {
+    pub period: usize,
+}
+
+impl TRIMAConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Default for TRIMAConfig {
+    fn default() -> Self {
+        Self { period: 20 }
+    }
+}
+
+/// Guppy Multiple Moving Average (GMMA) configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GMMAConfig {
+    /// Short-term EMA periods.
+    pub short_periods: Vec<usize>,
+    /// Long-term EMA periods.
+    pub long_periods: Vec<usize>,
+}
+
+impl GMMAConfig {
+    pub fn new(short_periods: Vec<usize>, long_periods: Vec<usize>) -> Self {
+        Self { short_periods, long_periods }
+    }
+}
+
+impl Default for GMMAConfig {
+    fn default() -> Self {
+        Self {
+            short_periods: vec![3, 5, 8, 10, 12, 15],
+            long_periods: vec![30, 35, 40, 45, 50, 60],
+        }
+    }
+}
+
+/// Sine Weighted Moving Average configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SineWMAConfig {
+    pub period: usize,
+}
+
+impl SineWMAConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Default for SineWMAConfig {
+    fn default() -> Self {
+        Self { period: 14 }
+    }
+}

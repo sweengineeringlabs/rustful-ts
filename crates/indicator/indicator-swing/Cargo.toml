@@ -1,0 +1,16 @@
+[package]
+name = "indicator-swing"
+description = "Swing trading and price structure indicators - Swing Index, ASI, Market Structure, Order Blocks, FVG, etc."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+simd = []
+
+[dependencies]
+indicator-spi = { path = "../indicator-spi" }
+serde.workspace = true
+
+[dev-dependencies]

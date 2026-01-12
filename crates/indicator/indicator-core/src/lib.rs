@@ -13,6 +13,14 @@ pub mod tema;
 pub mod hma;
 pub mod kama;
 pub mod zlema;
+pub mod smma;
+pub mod alma;
+pub mod frama;
+pub mod vidya;
+pub mod t3;
+pub mod triangular;
+pub mod gmma;
+pub mod sine_wma;
 
 // ============================================================================
 // Filters
@@ -81,6 +89,14 @@ pub use tema::TEMA;
 pub use hma::HMA;
 pub use kama::KAMA;
 pub use zlema::ZLEMA;
+pub use smma::SMMA;
+pub use alma::ALMA;
+pub use frama::FRAMA;
+pub use vidya::VIDYA;
+pub use t3::T3;
+pub use triangular::TRIMA;
+pub use gmma::{GMMA, GMMAOutput};
+pub use sine_wma::SineWMA;
 
 // ============================================================================
 // Filter Exports
@@ -147,6 +163,8 @@ pub use indicator_api::{
     // Moving Averages
     SMAConfig, EMAConfig, WMAConfig, DEMAConfig, TEMAConfig,
     HMAConfig, KAMAConfig, ZLEMAConfig,
+    SMMAConfig, ALMAConfig, FRAMAConfig, VIDYAConfig,
+    T3Config, TRIMAConfig, GMMAConfig, SineWMAConfig,
     // Filters
     KalmanConfig, MedianConfig, GaussianConfig,
     // Oscillators

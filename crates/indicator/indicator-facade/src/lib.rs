@@ -34,3 +34,18 @@ pub use indicator_risk::*;
 
 // Re-export everything from Bands
 pub use indicator_bands::*;
+
+// Re-export everything from DSP (Ehlers)
+pub use indicator_dsp::*;
+
+// Re-export everything from Composite
+pub use indicator_composite::*;
+
+// Re-export everything from Breadth
+pub use indicator_breadth::*;
+
+// Re-export everything from Swing
+pub use indicator_swing::*;
+
+// Re-export everything from DeMark
+pub use indicator_demark::*;
