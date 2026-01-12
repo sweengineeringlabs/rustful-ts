@@ -25,13 +25,14 @@ members = [
     "crates/indicator/indicator-spi",
     "crates/indicator/indicator-api",
     "crates/indicator/indicator-core",
-    "crates/indicator/indicator-optimizer",
     "crates/indicator/indicator-facade",
-    # Tuning domain (migrated from quantlang)
-    "crates/tuning/tuning-spi",
-    "crates/tuning/tuning-api",
-    "crates/tuning/tuning-core",
-    "crates/tuning/tuning-facade",
+    # Optimizer domain (merged from tuning + indicator-optimizer)
+    "crates/optimizer/optimizer-spi",
+    "crates/optimizer/optimizer-api",
+    "crates/optimizer/optimizer-core",
+    "crates/optimizer/optimizer-facade",
+    # FFI bindings
+    "crates/ts-ffi",
     # Utilities moved to rustboot: bench, loc
     # Legacy (to be migrated)
     "crates/algorithm",

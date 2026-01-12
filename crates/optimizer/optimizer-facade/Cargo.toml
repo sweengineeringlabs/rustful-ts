@@ -1,0 +1,11 @@
+[package]
+name = "optimizer-facade"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Optimizer Facade - unified re-exports"
+
+[dependencies]
+optimizer-spi = { path = "../optimizer-spi" }
+optimizer-api = { path = "../optimizer-api" }
+optimizer-core = { path = "../optimizer-core" }

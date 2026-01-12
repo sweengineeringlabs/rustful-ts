@@ -1,6 +1,7 @@
-//! Hyperparameter Tuning Service Provider Interface
+//! Optimizer Service Provider Interface
 //!
 //! Defines traits for optimization, validation, and objective functions.
+//! This is the extension point for custom optimizers, validators, and objectives.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -9,9 +10,9 @@ use thiserror::Error;
 // Error Types
 // ============================================================================
 
-/// Tuning errors.
+/// Optimizer errors.
 #[derive(Debug, Error)]
-pub enum TuningError {
+pub enum OptimizerError {
     #[error("Insufficient data: required {required}, got {got}")]
     InsufficientData { required: usize, got: usize },
 
@@ -28,7 +29,71 @@ pub enum TuningError {
     IndicatorError(String),
 }
 
-pub type Result<T> = std::result::Result<T, TuningError>;
+pub type Result<T> = std::result::Result<T, OptimizerError>;
+
+// ============================================================================
+// Parameter Ranges
+// ============================================================================
+
+/// Defines a range for a single integer parameter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParamRange {
+    pub min: usize,
+    pub max: usize,
+    pub step: usize,
+}
+
+impl ParamRange {
+    pub fn new(min: usize, max: usize, step: usize) -> Self {
+        Self { min, max, step }
+    }
+
+    /// Get all values in this range.
+    pub fn values(&self) -> Vec<usize> {
+        (self.min..=self.max).step_by(self.step.max(1)).collect()
+    }
+
+    /// Number of discrete values in this range.
+    pub fn count(&self) -> usize {
+        if self.step == 0 {
+            return 1;
+        }
+        (self.max - self.min) / self.step + 1
+    }
+}
+
+/// Defines a range for a floating-point parameter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FloatParamRange {
+    pub min: f64,
+    pub max: f64,
+    pub step: f64,
+}
+
+impl FloatParamRange {
+    pub fn new(min: f64, max: f64, step: f64) -> Self {
+        Self { min, max, step }
+    }
+
+    /// Get all values in this range.
+    pub fn values(&self) -> Vec<f64> {
+        let mut result = Vec::new();
+        let mut val = self.min;
+        while val <= self.max + 1e-10 {
+            result.push(val);
+            val += self.step;
+        }
+        result
+    }
+
+    /// Number of discrete values in this range.
+    pub fn count(&self) -> usize {
+        if self.step <= 0.0 {
+            return 1;
+        }
+        ((self.max - self.min) / self.step + 1.0) as usize
+    }
+}
 
 // ============================================================================
 // Objective Functions
@@ -138,6 +203,8 @@ pub trait Validator: Send + Sync {
 pub enum OptimizationMethod {
     /// Exhaustive grid search.
     GridSearch,
+    /// Multi-threaded grid search.
+    ParallelGrid,
     /// Random sampling.
     RandomSearch { iterations: usize },
     /// Genetic algorithm.
@@ -149,8 +216,6 @@ pub enum OptimizationMethod {
     },
     /// Bayesian optimization with surrogate model.
     Bayesian { iterations: usize },
-    /// Multi-threaded grid search.
-    ParallelGrid,
 }
 
 impl Default for OptimizationMethod {

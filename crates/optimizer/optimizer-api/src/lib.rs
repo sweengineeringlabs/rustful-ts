@@ -1,7 +1,13 @@
-//! Tuning configuration types.
+//! Optimizer API
+//!
+//! Configuration types and builders for optimization.
 
 use serde::{Deserialize, Serialize};
-use tuning_spi::{Objective, ValidationStrategy, OptimizationMethod, SignalCombination};
+use optimizer_spi::{Objective, ValidationStrategy, OptimizationMethod, SignalCombination};
+
+// ============================================================================
+// Optimizer Configuration
+// ============================================================================
 
 /// Optimizer configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +64,10 @@ impl OptimizerConfig {
     }
 }
 
+// ============================================================================
+// Genetic Algorithm Configuration
+// ============================================================================
+
 /// Genetic algorithm configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneticConfig {
@@ -82,6 +92,10 @@ impl Default for GeneticConfig {
     }
 }
 
+// ============================================================================
+// Bayesian Optimization Configuration
+// ============================================================================
+
 /// Bayesian optimization configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BayesianConfig {
@@ -100,6 +114,27 @@ impl Default for BayesianConfig {
     }
 }
 
+/// Acquisition function for Bayesian optimization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AcquisitionFunction {
+    /// Upper Confidence Bound.
+    UCB,
+    /// Expected Improvement.
+    ExpectedImprovement,
+    /// Probability of Improvement.
+    ProbabilityOfImprovement,
+}
+
+impl Default for AcquisitionFunction {
+    fn default() -> Self {
+        AcquisitionFunction::UCB
+    }
+}
+
+// ============================================================================
+// Walk-Forward Configuration
+// ============================================================================
+
 /// Walk-forward validation configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WalkForwardConfig {
@@ -117,4 +152,3 @@ impl Default for WalkForwardConfig {
         }
     }
 }
-

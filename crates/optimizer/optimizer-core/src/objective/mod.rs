@@ -1,6 +1,6 @@
 //! Objective function implementations.
 
-use tuning_spi::{Objective, ObjectiveFunction};
+use optimizer_spi::{Objective, ObjectiveFunction};
 
 /// Sharpe Ratio objective function.
 #[derive(Debug, Clone, Default)]
@@ -13,7 +13,7 @@ impl SharpeRatio {
     pub fn new() -> Self {
         Self {
             risk_free_rate: 0.0,
-            annualization: 252.0, // Daily returns
+            annualization: 252.0,
         }
     }
 
@@ -31,7 +31,6 @@ impl ObjectiveFunction for SharpeRatio {
             return f64::NEG_INFINITY;
         }
 
-        // Calculate strategy returns
         let strategy_returns: Vec<f64> = signals.iter()
             .zip(returns.iter())
             .map(|(s, r)| s * r)
@@ -48,7 +47,6 @@ impl ObjectiveFunction for SharpeRatio {
             return 0.0;
         }
 
-        // Annualized Sharpe ratio
         let excess_return = mean - self.risk_free_rate / self.annualization;
         (excess_return / std) * self.annualization.sqrt()
     }
@@ -88,14 +86,13 @@ impl ObjectiveFunction for SortinoRatio {
         let n = strategy_returns.len() as f64;
         let mean: f64 = strategy_returns.iter().sum::<f64>() / n;
 
-        // Downside deviation
         let downside_returns: Vec<f64> = strategy_returns.iter()
             .filter(|&&r| r < 0.0)
             .copied()
             .collect();
 
         if downside_returns.is_empty() {
-            return f64::INFINITY; // No negative returns
+            return f64::INFINITY;
         }
 
         let downside_variance: f64 = downside_returns.iter()
@@ -134,16 +131,13 @@ impl ObjectiveFunction for DirectionalAccuracy {
 
         let correct: usize = signals.iter()
             .zip(returns.iter())
-            .filter(|(s, r)| {
-                // Signal and return have same sign (both positive or both negative)
-                ((**s > 0.0) == (**r > 0.0)) && **s != 0.0
-            })
+            .filter(|(s, r)| ((**s > 0.0) == (**r > 0.0)) && **s != 0.0)
             .count();
 
         let total: usize = signals.iter().filter(|&&s| s != 0.0).count();
 
         if total == 0 {
-            return 0.5; // Neutral
+            return 0.5;
         }
 
         correct as f64 / total as f64
@@ -170,7 +164,6 @@ impl ObjectiveFunction for TotalReturn {
             return 0.0;
         }
 
-        // Cumulative return
         signals.iter()
             .zip(returns.iter())
             .fold(1.0, |acc, (s, r)| acc * (1.0 + s * r)) - 1.0
@@ -197,7 +190,6 @@ impl ObjectiveFunction for MaxDrawdown {
             return 0.0;
         }
 
-        // Calculate cumulative returns
         let mut equity: f64 = 1.0;
         let mut peak: f64 = 1.0;
         let mut max_dd: f64 = 0.0;
@@ -209,7 +201,6 @@ impl ObjectiveFunction for MaxDrawdown {
             max_dd = max_dd.max(dd);
         }
 
-        // Return negative so that minimizing dd means maximizing this value
         -max_dd
     }
 
@@ -267,8 +258,8 @@ pub fn create_objective(objective: Objective) -> Box<dyn ObjectiveFunction> {
         Objective::TotalReturn => Box::new(TotalReturn::new()),
         Objective::MaxDrawdown => Box::new(MaxDrawdown::new()),
         Objective::ProfitFactor => Box::new(ProfitFactor::new()),
-        Objective::InformationCoefficient => Box::new(DirectionalAccuracy::new()), // Simplified
-        Objective::WinRate => Box::new(DirectionalAccuracy::new()), // Similar
+        Objective::InformationCoefficient => Box::new(DirectionalAccuracy::new()),
+        Objective::WinRate => Box::new(DirectionalAccuracy::new()),
     }
 }
 
@@ -281,7 +272,6 @@ mod tests {
         let sharpe = SharpeRatio::new();
         let signals = vec![1.0, 1.0, -1.0, 1.0, -1.0];
         let returns = vec![0.01, 0.02, -0.01, 0.015, -0.005];
-
         let result = sharpe.compute(&signals, &returns);
         assert!(result.is_finite());
     }
@@ -289,11 +279,9 @@ mod tests {
     #[test]
     fn test_directional_accuracy() {
         let da = DirectionalAccuracy::new();
-        // Perfect prediction
         let signals = vec![1.0, -1.0, 1.0];
         let returns = vec![0.01, -0.01, 0.02];
-
         let result = da.compute(&signals, &returns);
-        assert!((result - 1.0).abs() < 1e-10); // 100% accuracy
+        assert!((result - 1.0).abs() < 1e-10);
     }
 }

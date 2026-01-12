@@ -1,6 +1,6 @@
 //! Validation strategy implementations.
 
-use tuning_spi::{Validator, ValidationStrategy, ValidationSplit, Result, TuningError};
+use optimizer_spi::{Validator, ValidationStrategy, ValidationSplit, Result, OptimizerError};
 
 /// Train/Test split validator.
 #[derive(Debug, Clone)]
@@ -19,7 +19,7 @@ impl Validator for TrainTestValidator {
         let train_end = (data_len as f64 * self.train_ratio) as usize;
 
         if train_end < 2 || train_end >= data_len - 1 {
-            return Err(TuningError::InsufficientData {
+            return Err(OptimizerError::InsufficientData {
                 required: 4,
                 got: data_len,
             });
@@ -54,12 +54,12 @@ impl WalkForwardValidator {
 impl Validator for WalkForwardValidator {
     fn splits(&self, data_len: usize) -> Result<Vec<ValidationSplit>> {
         if self.windows == 0 {
-            return Err(TuningError::InvalidConfig("windows must be > 0".into()));
+            return Err(OptimizerError::InvalidConfig("windows must be > 0".into()));
         }
 
         let window_size = data_len / self.windows;
         if window_size < 2 {
-            return Err(TuningError::InsufficientData {
+            return Err(OptimizerError::InsufficientData {
                 required: self.windows * 2,
                 got: data_len,
             });
@@ -88,7 +88,7 @@ impl Validator for WalkForwardValidator {
         }
 
         if splits.is_empty() {
-            return Err(TuningError::InsufficientData {
+            return Err(OptimizerError::InsufficientData {
                 required: self.windows * 4,
                 got: data_len,
             });
@@ -120,12 +120,12 @@ impl KFoldValidator {
 impl Validator for KFoldValidator {
     fn splits(&self, data_len: usize) -> Result<Vec<ValidationSplit>> {
         if self.folds < 2 {
-            return Err(TuningError::InvalidConfig("folds must be >= 2".into()));
+            return Err(OptimizerError::InvalidConfig("folds must be >= 2".into()));
         }
 
         let fold_size = data_len / self.folds;
         if fold_size < 1 {
-            return Err(TuningError::InsufficientData {
+            return Err(OptimizerError::InsufficientData {
                 required: self.folds,
                 got: data_len,
             });
@@ -141,13 +141,11 @@ impl Validator for KFoldValidator {
                 (i + 1) * fold_size
             };
 
-            // Training is everything except the test fold
-            // For time series, we typically use data before test
             let train_start = 0;
             let train_end = test_start;
 
             if train_end <= train_start {
-                continue; // First fold has no training data
+                continue;
             }
 
             splits.push(ValidationSplit {
@@ -181,10 +179,10 @@ impl TimeSeriesCVValidator {
 
 impl Validator for TimeSeriesCVValidator {
     fn splits(&self, data_len: usize) -> Result<Vec<ValidationSplit>> {
-        let min_train = data_len - self.test_size * self.n_splits;
+        let min_train = data_len.saturating_sub(self.test_size * self.n_splits);
 
         if min_train < self.test_size {
-            return Err(TuningError::InsufficientData {
+            return Err(OptimizerError::InsufficientData {
                 required: self.test_size * (self.n_splits + 1),
                 got: data_len,
             });
@@ -276,7 +274,6 @@ mod tests {
         let splits = validator.splits(100).unwrap();
 
         assert!(!splits.is_empty());
-        // Each split should have train before test
         for split in &splits {
             assert!(split.train_end <= split.test_start);
         }

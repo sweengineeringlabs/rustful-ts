@@ -1,0 +1,10 @@
+[package]
+name = "optimizer-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Optimizer API - configuration types and builders"
+
+[dependencies]
+optimizer-spi = { path = "../optimizer-spi" }
+serde = { version = "1.0", features = ["derive"] }
