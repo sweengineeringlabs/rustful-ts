@@ -1,208 +1,51 @@
 //! Technical Indicator Core Implementations
 //!
-//! SIMD-optimized technical analysis indicators.
+//! SIMD-optimized technical analysis indicators organized by category.
 
 // ============================================================================
-// Moving Averages
+// Category Modules
 // ============================================================================
-pub mod sma;
-pub mod ema;
-pub mod wma;
-pub mod dema;
-pub mod tema;
-pub mod hma;
-pub mod kama;
-pub mod zlema;
-pub mod smma;
-pub mod alma;
-pub mod frama;
-pub mod vidya;
-pub mod t3;
-pub mod triangular;
-pub mod gmma;
-pub mod sine_wma;
-
-// ============================================================================
-// Filters
-// ============================================================================
-pub mod kalman;
-pub mod median;
-pub mod gaussian;
-
-// ============================================================================
-// Momentum/Oscillators
-// ============================================================================
-pub mod rsi;
-pub mod stochastic;
-pub mod williams_r;
-pub mod cci;
-pub mod trix;
-pub mod ultimate_oscillator;
-
-// ============================================================================
-// Trend Indicators
-// ============================================================================
-pub mod macd;
-pub mod adx;
-pub mod ichimoku;
-pub mod supertrend;
-pub mod parabolic_sar;
-
-// ============================================================================
-// Volatility Indicators
-// ============================================================================
-pub mod bollinger;
-pub mod atr;
-pub mod donchian;
-pub mod keltner;
-
-// ============================================================================
-// Volume Indicators
-// ============================================================================
-pub mod vwap;
-pub mod obv;
-pub mod mfi;
-pub mod cmf;
-
-// ============================================================================
-// Support/Resistance
-// ============================================================================
-pub mod pivot_points;
-pub mod fibonacci;
-
-// ============================================================================
-// Other
-// ============================================================================
-pub mod elder_ray;
-
-#[cfg(feature = "simd")]
-pub mod simd;
-
-// ============================================================================
-// Extended Indicator Categories
-// ============================================================================
+pub mod moving_averages;
+pub mod filters;
 pub mod oscillators;
 pub mod trend;
 pub mod volatility;
 pub mod volume;
+pub mod bands;
+pub mod support_resistance;
 pub mod statistical;
 pub mod pattern;
 pub mod risk;
-pub mod bands;
 pub mod dsp;
 pub mod composite;
 pub mod breadth;
 pub mod swing;
 pub mod demark;
 
+#[cfg(feature = "simd")]
+pub mod simd;
+
 // ============================================================================
 // Moving Average Exports
 // ============================================================================
-pub use sma::SMA;
-pub use ema::EMA;
-pub use wma::WMA;
-pub use dema::DEMA;
-pub use tema::TEMA;
-pub use hma::HMA;
-pub use kama::KAMA;
-pub use zlema::ZLEMA;
-pub use smma::SMMA;
-pub use alma::ALMA;
-pub use frama::FRAMA;
-pub use vidya::VIDYA;
-pub use t3::T3;
-pub use triangular::TRIMA;
-pub use gmma::{GMMA, GMMAOutput};
-pub use sine_wma::SineWMA;
+pub use moving_averages::{
+    SMA, EMA, WMA, DEMA, TEMA, HMA, KAMA, ZLEMA, SMMA, ALMA,
+    FRAMA, VIDYA, T3, TRIMA, GMMA, SineWMA,
+};
 
 // ============================================================================
 // Filter Exports
 // ============================================================================
-pub use kalman::KalmanFilter;
-pub use median::MedianFilter;
-pub use gaussian::GaussianFilter;
+pub use filters::{
+    KalmanFilter, MedianFilter, GaussianFilter, SVHMA,
+    DeviationFilteredAverage, StepVhfAdaptiveVMA,
+};
 
 // ============================================================================
 // Oscillator Exports
 // ============================================================================
-pub use rsi::RSI;
-pub use stochastic::Stochastic;
-pub use williams_r::WilliamsR;
-pub use cci::CCI;
-pub use trix::TRIX;
-pub use ultimate_oscillator::UltimateOscillator;
-
-// ============================================================================
-// Trend Exports
-// ============================================================================
-pub use macd::MACD;
-pub use adx::{ADX, ADXOutput};
-pub use ichimoku::{Ichimoku, IchimokuOutput};
-pub use supertrend::{SuperTrend, SuperTrendOutput};
-pub use parabolic_sar::{ParabolicSAR, ParabolicSAROutput};
-
-// ============================================================================
-// Volatility Exports
-// ============================================================================
-pub use bollinger::BollingerBands;
-pub use atr::ATR;
-pub use donchian::DonchianChannels;
-pub use keltner::KeltnerChannels;
-
-// ============================================================================
-// Volume Exports
-// ============================================================================
-pub use vwap::VWAP;
-pub use obv::OBV;
-pub use mfi::MFI;
-pub use cmf::CMF;
-
-// ============================================================================
-// Support/Resistance Exports
-// ============================================================================
-pub use pivot_points::{PivotPoints, PivotPointsResult};
-pub use fibonacci::{Fibonacci, FibonacciLevels};
-
-// ============================================================================
-// Other Exports
-// ============================================================================
-pub use elder_ray::{ElderRay, ElderRayOutput};
-
-// Re-export SPI types
-pub use indicator_spi::{
-    TechnicalIndicator, StreamingIndicator, SignalIndicator,
-    IndicatorOutput, IndicatorSignal, IndicatorError, Result,
-    OHLCV, OHLCVSeries,
-};
-
-// Re-export API configs
-pub use indicator_api::{
-    // Moving Averages
-    SMAConfig, EMAConfig, WMAConfig, DEMAConfig, TEMAConfig,
-    HMAConfig, KAMAConfig, ZLEMAConfig,
-    SMMAConfig, ALMAConfig, FRAMAConfig, VIDYAConfig,
-    T3Config, TRIMAConfig, GMMAConfig, SineWMAConfig,
-    // Filters
-    KalmanConfig, MedianConfig, GaussianConfig,
-    // Oscillators
-    RSIConfig, StochasticConfig, WilliamsRConfig, CCIConfig,
-    TRIXConfig, UltimateOscillatorConfig,
-    // Trend
-    MACDConfig, ADXConfig, IchimokuConfig, SuperTrendConfig, ParabolicSARConfig,
-    // Volatility
-    BollingerConfig, ATRConfig, DonchianConfig, KeltnerConfig,
-    // Volume
-    VWAPConfig, OBVConfig, MFIConfig, CMFConfig,
-    // Other
-    ElderRayConfig, PivotType,
-};
-
-// ============================================================================
-// Extended Category Re-exports
-// ============================================================================
-
-// Oscillators
 pub use oscillators::{
+    RSI, Stochastic, WilliamsR, CCI, TRIX, UltimateOscillator,
     ROC, Momentum, ChandeMomentum, DeMarker, AwesomeOscillator, AcceleratorOscillator,
     KST, PPO, RVI, StochasticRSI, ConnorsRSI, TSI, SMI, RMI, FisherTransform,
     InverseFisherTransform, Qstick, PMO, SpecialK, DisparityIndex, PrettyGoodOscillator,
@@ -210,34 +53,59 @@ pub use oscillators::{
     RelativeVolatilityIndex, DoubleStochastic,
 };
 
-// Trend
+// ============================================================================
+// Trend Exports
+// ============================================================================
 pub use trend::{
+    MACD, ADX, Ichimoku, IchimokuOutput, SuperTrend, ParabolicSAR,
     Alligator, AlligatorOutput, Aroon, AroonOutput, CoppockCurve, DPO, GatorOscillator,
     McGinleyDynamic, RainbowMA, RandomWalkIndex, TrendDetectionIndex, TrendIntensityIndex,
     VerticalHorizontalFilter, VortexIndicator,
 };
 
-// Volatility
+// ============================================================================
+// Volatility Exports
+// ============================================================================
 pub use volatility::{
-    HistoricalVolatility, ChaikinVolatility, MassIndex, ParkinsonVolatility,
+    ATR, HistoricalVolatility, ChaikinVolatility, MassIndex, ParkinsonVolatility,
     GarmanKlassVolatility, RogersSatchellVolatility, YangZhangVolatility,
     RealizedVolatility, NormalizedATR, ChoppinessIndex, UlcerIndex,
 };
 
-// Volume
+// ============================================================================
+// Volume Exports
+// ============================================================================
 pub use volume::{
-    VWMA, ADLine, ForceIndex, KlingerOscillator, BalanceOfPower, EaseOfMovement,
-    VROC, PVT, NVI, PVI, WilliamsAD, TwiggsMoneyFlow, VolumeOscillator, NetVolume,
-    ChaikinOscillator, TWAP,
+    VWAP, OBV, MFI, CMF, VWMA, ADLine, ForceIndex, KlingerOscillator,
+    BalanceOfPower, EaseOfMovement, VROC, PVT, NVI, PVI, WilliamsAD,
+    TwiggsMoneyFlow, VolumeOscillator, NetVolume, ChaikinOscillator, TWAP,
 };
 
-// Statistical
+// ============================================================================
+// Bands Exports
+// ============================================================================
+pub use bands::{
+    BollingerBands, KeltnerChannels, DonchianChannels,
+    AccelerationBands, ChandelierExit, Envelope, HighLowBands, PriceChannel,
+    ProjectionBands, STARCBands, StandardErrorBands, TironeLevels, TironeLevelsOutput,
+};
+
+// ============================================================================
+// Support/Resistance Exports
+// ============================================================================
+pub use support_resistance::{PivotPoints, Fibonacci, FibonacciLevels};
+
+// ============================================================================
+// Statistical Exports
+// ============================================================================
 pub use statistical::{
     StandardDeviation, Variance, ZScore, LinearRegression, LinearRegressionOutput,
     Correlation, Spread, Ratio, ZScoreSpread, Autocorrelation, Skewness, Kurtosis,
 };
 
-// Pattern
+// ============================================================================
+// Pattern Exports
+// ============================================================================
 pub use pattern::{
     ZigZag, HeikinAshi, HeikinAshiOutput, DarvasBox, Fractals, Doji, Hammer, Engulfing,
     Harami, MorningStar, ThreeSoldiers, Marubozu, Piercing, SpinningTop, Tweezer,
@@ -245,28 +113,29 @@ pub use pattern::{
     TasukiGap, RisingFallingMethods,
 };
 
-// Risk
+// ============================================================================
+// Risk Exports
+// ============================================================================
 pub use risk::{
     SharpeRatio, SortinoRatio, CalmarRatio, MaxDrawdown, ValueAtRisk, VaRMethod,
     ConditionalVaR, Beta, Alpha, TreynorRatio, InformationRatio, OmegaRatio, GainLossRatio,
 };
 
-// Bands
-pub use bands::{
-    AccelerationBands, ChandelierExit, Envelope, HighLowBands, PriceChannel,
-    ProjectionBands, STARCBands, StandardErrorBands, TironeLevels, TironeLevelsOutput,
-};
-
-// DSP
+// ============================================================================
+// DSP Exports
+// ============================================================================
 pub use dsp::{
     MESA, MAMA, SineWave, HilbertTransform, CyberCycle, CGOscillator,
     LaguerreRSI, RoofingFilter, Supersmoother, Decycler,
 };
 
-// Composite
+// ============================================================================
+// Composite Exports
+// ============================================================================
 pub use composite::{
     TTMSqueeze, TTMSqueezeConfig, TTMSqueezeOutput,
     ElderImpulse, ElderImpulseConfig, ElderImpulseOutput,
+    ElderRay,
     SchaffTrendCycle, SchaffConfig, SchaffOutput,
     ElderTripleScreen, ElderTripleScreenConfig, ElderTripleScreenOutput,
     CommoditySelectionIndex, CommoditySelectionConfig, CommoditySelectionOutput,
@@ -275,7 +144,9 @@ pub use composite::{
     RegimeDetector, RegimeDetectorConfig, RegimeDetectorOutput, MarketRegime,
 };
 
-// Breadth
+// ============================================================================
+// Breadth Exports
+// ============================================================================
 pub use breadth::{
     AdvanceDeclineLine, BreadthThrust, CumulativeVolumeIndex, UpDownVolume,
     HighLowData, HighLowIndex, HighLowMethod, HighLowSeries,
@@ -286,7 +157,9 @@ pub use breadth::{
     TRINSignal, TRIN, BreadthData, BreadthSeries, BreadthIndicator,
 };
 
-// Swing
+// ============================================================================
+// Swing Exports
+// ============================================================================
 pub use swing::{
     SwingIndex, AccumulativeSwingIndex, GannSwing, GannSwingState,
     MarketStructure, MarketTrend, StructurePoint,
@@ -298,7 +171,9 @@ pub use swing::{
     PivotHighsLows, PivotPoint, PivotType as SwingPivotType,
 };
 
-// DeMark
+// ============================================================================
+// DeMark Exports
+// ============================================================================
 pub use demark::{
     TDSetup, TDSetupOutput, TDSetupConfig, SetupPhase,
     TDCountdown, TDCountdownOutput, TDCountdownConfig, CountdownPhase,
@@ -309,4 +184,39 @@ pub use demark::{
     TDPressure, TDPressureOutput, TDPressureConfig,
     TDDWave, TDDWaveOutput, TDDWaveConfig, WaveDirection, DWavePhase, PivotType as DWavePivotType,
     TDTrendFactor, TDTrendFactorOutput, TDTrendFactorConfig, TrendState,
+};
+
+// ============================================================================
+// Re-export SPI types
+// ============================================================================
+pub use indicator_spi::{
+    TechnicalIndicator, StreamingIndicator, SignalIndicator,
+    IndicatorOutput, IndicatorSignal, IndicatorError, Result,
+    OHLCV, OHLCVSeries,
+};
+
+// ============================================================================
+// Re-export API configs
+// ============================================================================
+pub use indicator_api::{
+    // Moving Averages
+    SMAConfig, EMAConfig, WMAConfig, DEMAConfig, TEMAConfig,
+    HMAConfig, KAMAConfig, ZLEMAConfig,
+    SMMAConfig, ALMAConfig, FRAMAConfig, VIDYAConfig,
+    T3Config, TRIMAConfig, GMMAConfig, SineWMAConfig,
+    // Filters
+    KalmanConfig, MedianConfig, GaussianConfig,
+    SVHMAConfig, SVHMAThresholdMode, SVHMAUpdateMode,
+    DeviationFilteredAverageConfig, StepVhfAdaptiveVMAConfig,
+    // Oscillators
+    RSIConfig, StochasticConfig, WilliamsRConfig, CCIConfig,
+    TRIXConfig, UltimateOscillatorConfig,
+    // Trend
+    MACDConfig, ADXConfig, IchimokuConfig, SuperTrendConfig, ParabolicSARConfig,
+    // Volatility
+    BollingerConfig, ATRConfig, DonchianConfig, KeltnerConfig,
+    // Volume
+    VWAPConfig, OBVConfig, MFIConfig, CMFConfig,
+    // Other
+    ElderRayConfig, PivotType,
 };

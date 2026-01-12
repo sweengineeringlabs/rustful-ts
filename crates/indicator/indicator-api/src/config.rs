@@ -1109,3 +1109,228 @@ impl Default for SineWMAConfig {
         Self { period: 14 }
     }
 }
+
+// ============================================================================
+// Step-Based Filters (SVHMA Framework)
+// ============================================================================
+
+/// Threshold mode for SVHMA - determines when to update the filter.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum SVHMAThresholdMode {
+    /// Fixed threshold value.
+    Fixed,
+    /// Percentage of current price.
+    Percentage,
+    /// ATR-based threshold: θ = k × ATR.
+    Atr,
+    /// Standard deviation of prices: θ = k × σ(x).
+    StdDev,
+    /// Standard deviation of price changes: θ = k × σ(Δx).
+    ChangeVolatility,
+    /// Donchian range: θ = k × (H_n - L_n).
+    Donchian,
+    /// VHF-based: θ = k × (1 - VHF) × ATR.
+    Vhf,
+}
+
+impl Default for SVHMAThresholdMode {
+    fn default() -> Self {
+        Self::Atr
+    }
+}
+
+/// Update function for SVHMA - determines the new value on update.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum SVHMAUpdateMode {
+    /// Snap directly to current price.
+    SnapToPrice,
+    /// Snap to moving average (default).
+    SnapToMA,
+    /// Damped step: y + α(x - y).
+    Damped,
+    /// Quantized step: y + ⌊δ/s⌋ × s.
+    Quantized,
+    /// VHF-adaptive VMA with dynamic smoothing.
+    VhfAdaptive,
+}
+
+impl Default for SVHMAUpdateMode {
+    fn default() -> Self {
+        Self::SnapToMA
+    }
+}
+
+/// Step Variable Horizontal Moving Average (SVHMA) configuration.
+///
+/// A unified framework for step-based moving averages that only update
+/// when price deviations exceed a configurable threshold.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SVHMAConfig {
+    /// Period for MA and threshold calculations.
+    pub period: usize,
+    /// Threshold mode (how to calculate θ).
+    pub threshold_mode: SVHMAThresholdMode,
+    /// Threshold multiplier (k).
+    pub threshold_multiplier: f64,
+    /// Fixed threshold value (for Fixed mode).
+    pub fixed_threshold: f64,
+    /// Update mode (how to calculate new value).
+    pub update_mode: SVHMAUpdateMode,
+    /// Step size for Quantized mode.
+    pub step_size: f64,
+    /// Damping factor for Damped mode (α).
+    pub damping_factor: f64,
+    /// Enable directional constraint (only move in trend direction).
+    pub directional: bool,
+}
+
+impl SVHMAConfig {
+    pub fn new(period: usize) -> Self {
+        Self {
+            period,
+            threshold_mode: SVHMAThresholdMode::default(),
+            threshold_multiplier: 2.0,
+            fixed_threshold: 0.0,
+            update_mode: SVHMAUpdateMode::default(),
+            step_size: 1.0,
+            damping_factor: 0.5,
+            directional: false,
+        }
+    }
+
+    /// Create config matching filtered_averages.mq5 behavior.
+    /// Uses Change Volatility threshold with Snap-to-MA update.
+    pub fn filtered_average(period: usize, filter: f64) -> Self {
+        Self {
+            period,
+            threshold_mode: SVHMAThresholdMode::ChangeVolatility,
+            threshold_multiplier: filter,
+            fixed_threshold: 0.0,
+            update_mode: SVHMAUpdateMode::SnapToMA,
+            step_size: 1.0,
+            damping_factor: 0.5,
+            directional: false,
+        }
+    }
+
+    /// Create config matching step_vhf_adaptive_vma.mq5 behavior.
+    /// Uses Fixed threshold with VHF-adaptive + quantized update.
+    pub fn step_vhf_adaptive(period: usize, step_size: f64) -> Self {
+        Self {
+            period,
+            threshold_mode: SVHMAThresholdMode::Fixed,
+            threshold_multiplier: 1.0,
+            fixed_threshold: step_size,
+            update_mode: SVHMAUpdateMode::VhfAdaptive,
+            step_size,
+            damping_factor: 0.5,
+            directional: false,
+        }
+    }
+
+    pub fn with_threshold_mode(mut self, mode: SVHMAThresholdMode) -> Self {
+        self.threshold_mode = mode;
+        self
+    }
+
+    pub fn with_threshold_multiplier(mut self, k: f64) -> Self {
+        self.threshold_multiplier = k;
+        self
+    }
+
+    pub fn with_update_mode(mut self, mode: SVHMAUpdateMode) -> Self {
+        self.update_mode = mode;
+        self
+    }
+
+    pub fn with_directional(mut self, directional: bool) -> Self {
+        self.directional = directional;
+        self
+    }
+}
+
+impl Default for SVHMAConfig {
+    fn default() -> Self {
+        Self::new(14)
+    }
+}
+
+/// Deviation Filtered Average configuration.
+///
+/// A step-based moving average that only updates when price changes exceed
+/// a threshold based on the standard deviation of recent price changes.
+/// Based on: filtered_averages.mq5 by mladen (2018)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviationFilteredAverageConfig {
+    /// Period for MA and filter calculations.
+    pub period: usize,
+    /// Filter multiplier (k in θ = k × σ(Δ)).
+    pub filter: f64,
+    /// Use EMA (true) or SMA (false) as base.
+    pub use_ema: bool,
+}
+
+impl DeviationFilteredAverageConfig {
+    pub fn new(period: usize, filter: f64) -> Self {
+        Self {
+            period,
+            filter,
+            use_ema: true,
+        }
+    }
+
+    pub fn with_sma(mut self) -> Self {
+        self.use_ema = false;
+        self
+    }
+}
+
+impl Default for DeviationFilteredAverageConfig {
+    fn default() -> Self {
+        Self {
+            period: 14,
+            filter: 2.5,
+            use_ema: true,
+        }
+    }
+}
+
+/// Step VHF Adaptive VMA configuration.
+///
+/// A step-based variable moving average that uses the Vertical Horizontal Filter
+/// to modulate the smoothing factor, with quantized step output.
+/// Based on: step_vhf_adaptive_vma.mq5 by mladen (2018)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepVhfAdaptiveVMAConfig {
+    /// VMA period (smoothing base).
+    pub vma_period: usize,
+    /// VHF period (can differ from VMA period).
+    pub vhf_period: usize,
+    /// Step size for quantization (0 = no stepping).
+    pub step_size: f64,
+}
+
+impl StepVhfAdaptiveVMAConfig {
+    pub fn new(period: usize, step_size: f64) -> Self {
+        Self {
+            vma_period: period,
+            vhf_period: period,
+            step_size,
+        }
+    }
+
+    pub fn with_vhf_period(mut self, vhf_period: usize) -> Self {
+        self.vhf_period = vhf_period;
+        self
+    }
+}
+
+impl Default for StepVhfAdaptiveVMAConfig {
+    fn default() -> Self {
+        Self {
+            vma_period: 14,
+            vhf_period: 14,
+            step_size: 1.0,
+        }
+    }
+}

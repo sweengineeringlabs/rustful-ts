@@ -2,6 +2,7 @@
 //!
 //! Indicators for measuring market volatility and risk.
 
+pub mod atr;
 pub mod historical;
 pub mod chaikin_vol;
 pub mod mass_index;
@@ -15,6 +16,7 @@ pub mod choppiness;
 pub mod ulcer;
 
 // Re-exports
+pub use atr::ATR;
 pub use historical::HistoricalVolatility;
 pub use chaikin_vol::ChaikinVolatility;
 pub use mass_index::MassIndex;

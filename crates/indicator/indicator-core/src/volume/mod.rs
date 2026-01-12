@@ -2,6 +2,10 @@
 //!
 //! Indicators measuring volume-price relationships.
 
+pub mod vwap;
+pub mod obv;
+pub mod mfi;
+pub mod cmf;
 pub mod vwma;
 pub mod ad_line;
 pub mod force_index;
@@ -20,6 +24,10 @@ pub mod chaikin_oscillator;
 pub mod twap;
 
 // Re-exports
+pub use vwap::VWAP;
+pub use obv::OBV;
+pub use mfi::MFI;
+pub use cmf::CMF;
 pub use vwma::VWMA;
 pub use ad_line::ADLine;
 pub use force_index::ForceIndex;

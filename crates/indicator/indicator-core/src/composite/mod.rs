@@ -20,6 +20,7 @@
 
 pub mod commodity_selection;
 pub mod elder_impulse;
+pub mod elder_ray;
 pub mod elder_triple_screen;
 pub mod regime_detector;
 pub mod schaff;
@@ -54,3 +55,6 @@ pub use trend_strength::{TrendStrengthIndex, TrendStrengthConfig, TrendStrengthO
 
 // Regime Detector
 pub use regime_detector::{RegimeDetector, RegimeDetectorConfig, RegimeDetectorOutput, MarketRegime};
+
+// Elder Ray
+pub use elder_ray::ElderRay;

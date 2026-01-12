@@ -2,6 +2,12 @@
 //!
 //! Oscillator-type indicators that measure momentum and overbought/oversold conditions.
 
+pub mod rsi;
+pub mod stochastic;
+pub mod williams_r;
+pub mod cci;
+pub mod trix;
+pub mod ultimate_oscillator;
 pub mod roc;
 pub mod momentum;
 pub mod chande;
@@ -31,6 +37,12 @@ pub mod relative_volatility;
 pub mod double_stochastic;
 
 // Re-exports
+pub use rsi::RSI;
+pub use stochastic::Stochastic;
+pub use williams_r::WilliamsR;
+pub use cci::CCI;
+pub use trix::TRIX;
+pub use ultimate_oscillator::UltimateOscillator;
 pub use roc::ROC;
 pub use momentum::Momentum;
 pub use chande::ChandeMomentum;

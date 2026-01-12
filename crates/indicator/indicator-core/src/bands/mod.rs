@@ -2,6 +2,9 @@
 //!
 //! Price band and channel indicators.
 
+pub mod bollinger;
+pub mod keltner;
+pub mod donchian;
 pub mod acceleration_bands;
 pub mod chandelier;
 pub mod envelope;
@@ -13,6 +16,9 @@ pub mod std_error_bands;
 pub mod tirone;
 
 // Re-exports
+pub use bollinger::BollingerBands;
+pub use keltner::KeltnerChannels;
+pub use donchian::DonchianChannels;
 pub use acceleration_bands::AccelerationBands;
 pub use chandelier::ChandelierExit;
 pub use envelope::Envelope;
