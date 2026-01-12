@@ -1,9 +1,16 @@
 //! Optimizer API
 //!
+//! **WARNING: This is an internal crate. Do not depend on it directly.**
+//! **Use `optimizer-facade` instead for a stable public API.**
+//!
 //! Configuration types and builders for optimization.
+
+mod evaluator;
 
 use serde::{Deserialize, Serialize};
 use optimizer_spi::{Objective, ValidationStrategy, OptimizationMethod, SignalCombination};
+
+pub use evaluator::{Evaluator, IndicatorSpec};
 
 // ============================================================================
 // Optimizer Configuration

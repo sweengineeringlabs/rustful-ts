@@ -3,10 +3,12 @@
 mod grid;
 mod genetic;
 mod bayesian;
+mod parallel;
 
-pub use grid::*;
-pub use genetic::*;
-pub use bayesian::*;
+pub use grid::{GridSearchOptimizer, IndicatorGridSearch, GridSearchConfig};
+pub use genetic::{GeneticOptimizer, IndicatorGeneticOptimizer, GeneticConfig};
+pub use bayesian::{BayesianOptimizer, IndicatorBayesianOptimizer, BayesianConfig};
+pub use parallel::{ParallelOptimizerRunner, ParallelOptimizationResult, OptimizerType};
 
 use optimizer_spi::{Optimizer, OptimizationMethod, OptimizationResult, ObjectiveFunction, Validator, Result};
 

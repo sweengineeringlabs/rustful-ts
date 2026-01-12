@@ -1,5 +1,8 @@
 //! Optimizer Service Provider Interface
 //!
+//! **WARNING: This is an internal crate. Do not depend on it directly.**
+//! **Use `optimizer-facade` instead for a stable public API.**
+//!
 //! Defines traits for optimization, validation, and objective functions.
 //! This is the extension point for custom optimizers, validators, and objectives.
 
@@ -342,4 +345,278 @@ pub trait Optimizer: Send + Sync {
 
     /// Optimization method type.
     fn method(&self) -> OptimizationMethod;
+}
+
+// ============================================================================
+// Timeframe
+// ============================================================================
+
+/// Market data timeframe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Timeframe {
+    M1,   // 1 minute
+    M5,   // 5 minutes
+    M15,  // 15 minutes
+    M30,  // 30 minutes
+    H1,   // 1 hour
+    H4,   // 4 hours
+    D1,   // 1 day
+    W1,   // 1 week
+}
+
+impl Timeframe {
+    /// Returns the timeframe in minutes.
+    pub fn minutes(&self) -> u32 {
+        match self {
+            Timeframe::M1 => 1,
+            Timeframe::M5 => 5,
+            Timeframe::M15 => 15,
+            Timeframe::M30 => 30,
+            Timeframe::H1 => 60,
+            Timeframe::H4 => 240,
+            Timeframe::D1 => 1440,
+            Timeframe::W1 => 10080,
+        }
+    }
+
+    /// Returns the aggregation factor from H1 to this timeframe.
+    pub fn aggregation_factor(&self) -> Option<usize> {
+        match self {
+            Timeframe::H1 => Some(1),
+            Timeframe::H4 => Some(4),
+            Timeframe::D1 => Some(24),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for Timeframe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Timeframe::M1 => write!(f, "M1"),
+            Timeframe::M5 => write!(f, "M5"),
+            Timeframe::M15 => write!(f, "M15"),
+            Timeframe::M30 => write!(f, "M30"),
+            Timeframe::H1 => write!(f, "H1"),
+            Timeframe::H4 => write!(f, "H4"),
+            Timeframe::D1 => write!(f, "D1"),
+            Timeframe::W1 => write!(f, "W1"),
+        }
+    }
+}
+
+// ============================================================================
+// Market Data
+// ============================================================================
+
+/// OHLCV market data for optimization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketData {
+    pub symbol: String,
+    pub timeframe: Timeframe,
+    pub timestamps: Vec<i64>,
+    pub open: Vec<f64>,
+    pub high: Vec<f64>,
+    pub low: Vec<f64>,
+    pub close: Vec<f64>,
+    pub volume: Vec<f64>,
+}
+
+impl MarketData {
+    /// Create new MarketData.
+    pub fn new(symbol: &str, timeframe: Timeframe) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            timeframe,
+            timestamps: Vec::new(),
+            open: Vec::new(),
+            high: Vec::new(),
+            low: Vec::new(),
+            close: Vec::new(),
+            volume: Vec::new(),
+        }
+    }
+
+    /// Number of bars.
+    pub fn len(&self) -> usize {
+        self.close.len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.close.is_empty()
+    }
+
+    /// Compute simple returns from close prices.
+    pub fn returns(&self) -> Vec<f64> {
+        if self.close.len() < 2 {
+            return Vec::new();
+        }
+        self.close
+            .windows(2)
+            .map(|w| (w[1] - w[0]) / w[0])
+            .collect()
+    }
+
+    /// Compute log returns from close prices.
+    pub fn log_returns(&self) -> Vec<f64> {
+        if self.close.len() < 2 {
+            return Vec::new();
+        }
+        self.close
+            .windows(2)
+            .map(|w| (w[1] / w[0]).ln())
+            .collect()
+    }
+
+    /// Slice data to a range of indices.
+    pub fn slice(&self, start: usize, end: usize) -> MarketData {
+        MarketData {
+            symbol: self.symbol.clone(),
+            timeframe: self.timeframe,
+            timestamps: self.timestamps[start..end].to_vec(),
+            open: self.open[start..end].to_vec(),
+            high: self.high[start..end].to_vec(),
+            low: self.low[start..end].to_vec(),
+            close: self.close[start..end].to_vec(),
+            volume: self.volume[start..end].to_vec(),
+        }
+    }
+
+    /// Aggregate to higher timeframe (e.g., H1 -> H4).
+    pub fn aggregate(&self, factor: usize) -> MarketData {
+        if factor <= 1 {
+            return self.clone();
+        }
+
+        let new_len = self.len() / factor;
+        let mut result = MarketData::new(&self.symbol, self.timeframe);
+
+        for i in 0..new_len {
+            let start = i * factor;
+            let end = start + factor;
+
+            result.timestamps.push(self.timestamps[start]);
+            result.open.push(self.open[start]);
+            result.high.push(
+                self.high[start..end]
+                    .iter()
+                    .cloned()
+                    .fold(f64::NEG_INFINITY, f64::max),
+            );
+            result.low.push(
+                self.low[start..end]
+                    .iter()
+                    .cloned()
+                    .fold(f64::INFINITY, f64::min),
+            );
+            result.close.push(self.close[end - 1]);
+            result.volume.push(self.volume[start..end].iter().sum());
+        }
+
+        result
+    }
+}
+
+// ============================================================================
+// Data Source Trait
+// ============================================================================
+
+/// Trait for loading market data.
+pub trait DataSource: Send + Sync {
+    /// Load market data for a symbol and timeframe.
+    fn load(&self, symbol: &str, timeframe: Timeframe) -> Result<MarketData>;
+
+    /// List available symbols.
+    fn symbols(&self) -> Vec<String>;
+
+    /// List available timeframes for a symbol.
+    fn timeframes(&self, symbol: &str) -> Vec<Timeframe>;
+}
+
+// ============================================================================
+// Indicator Evaluation
+// ============================================================================
+
+/// Parameters for an indicator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndicatorParams {
+    pub indicator_name: String,
+    pub params: Vec<(String, f64)>,
+}
+
+impl IndicatorParams {
+    pub fn new(name: &str) -> Self {
+        Self {
+            indicator_name: name.to_string(),
+            params: Vec::new(),
+        }
+    }
+
+    pub fn with_param(mut self, name: &str, value: f64) -> Self {
+        self.params.push((name.to_string(), value));
+        self
+    }
+
+    pub fn get(&self, name: &str) -> Option<f64> {
+        self.params.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
+    }
+
+    pub fn get_usize(&self, name: &str) -> Option<usize> {
+        self.get(name).map(|v| v as usize)
+    }
+}
+
+/// Trading signal.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum Signal {
+    Buy,
+    Sell,
+    Hold,
+}
+
+impl Signal {
+    /// Convert to position multiplier (-1, 0, +1).
+    pub fn as_position(&self) -> f64 {
+        match self {
+            Signal::Buy => 1.0,
+            Signal::Sell => -1.0,
+            Signal::Hold => 0.0,
+        }
+    }
+}
+
+/// Result of indicator evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluationResult {
+    pub params: IndicatorParams,
+    pub signals: Vec<Signal>,
+    pub indicator_values: Vec<f64>,
+}
+
+impl EvaluationResult {
+    pub fn new(params: IndicatorParams) -> Self {
+        Self {
+            params,
+            signals: Vec::new(),
+            indicator_values: Vec::new(),
+        }
+    }
+}
+
+/// Trait for indicator evaluation during optimization.
+pub trait IndicatorEvaluator: Send + Sync {
+    /// Indicator name.
+    fn name(&self) -> &str;
+
+    /// Evaluate indicator with given parameters on market data.
+    fn evaluate(&self, params: &IndicatorParams, data: &MarketData) -> Result<EvaluationResult>;
+
+    /// Get the parameter space for this indicator.
+    fn parameter_space(&self) -> Vec<(String, ParamRange)>;
+
+    /// Get float parameter space if any.
+    fn float_parameter_space(&self) -> Vec<(String, FloatParamRange)> {
+        Vec::new()
+    }
 }
