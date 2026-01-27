@@ -50,7 +50,8 @@ pub use oscillators::{
     KST, PPO, RVI, StochasticRSI, ConnorsRSI, TSI, SMI, RMI, FisherTransform,
     InverseFisherTransform, Qstick, PMO, SpecialK, DisparityIndex, PrettyGoodOscillator,
     APO, ErgodicOscillator, PolarizedFractalEfficiency, IntradayMomentumIndex,
-    RelativeVolatilityIndex, DoubleStochastic,
+    RelativeVolatilityIndex, DoubleStochastic, PriceOscillator, RainbowOscillator,
+    KasePermissionStochastic, ProjectionOscillator, KasePeakOscillator,
 };
 
 // ============================================================================

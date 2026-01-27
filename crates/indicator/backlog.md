@@ -1,6 +1,6 @@
 # Indicator Backlog
 
-> **Current:** 44 indicators | **Target:** 2148+ indicators
+> **Current:** 49 indicators | **Target:** 2148+ indicators
 >
 > **200 priority groups** covering technical analysis, quantitative finance, machine learning, alternative data, and industry-specific metrics.
 
@@ -146,16 +146,16 @@ These indicators are already implemented in indicator-core but were not listed i
 
 ## Priority 11: Additional Specialized
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-077 | Rainbow MA | Trend | 10 recursive SMAs visualization | Low |
-| IND-078 | Rainbow Oscillator | Oscillator | Rainbow deviation | Medium |
-| IND-079 | Projection Oscillator | Oscillator | Linear regression oscillator | Medium |
-| IND-080 | Price Oscillator | Oscillator | MA difference (absolute) | Low |
-| IND-081 | Percentage Bands | Volatility | Fixed percentage from MA | Low |
-| IND-082 | Darvas Box | Pattern | Breakout boxes | Medium |
-| IND-083 | Keltner Original | Volatility | Original 10-day ATR version | Low |
-| IND-084 | Commodity Selection Index | Composite | ADXR + ATR composite | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-077 | Rainbow MA | Trend | 10 recursive SMAs visualization | Low | |
+| IND-078 | Rainbow Oscillator | Oscillator | Rainbow deviation | Medium | ✅ Done |
+| IND-079 | Projection Oscillator | Oscillator | Linear regression oscillator | Medium | ✅ Done |
+| IND-080 | Price Oscillator | Oscillator | MA difference (absolute) | Low | ✅ Done |
+| IND-081 | Percentage Bands | Volatility | Fixed percentage from MA | Low | |
+| IND-082 | Darvas Box | Pattern | Breakout boxes | Medium | |
+| IND-083 | Keltner Original | Volatility | Original 10-day ATR version | Low | |
+| IND-084 | Commodity Selection Index | Composite | ADXR + ATR composite | Medium | |
 
 ## Priority 12: Crypto & Modern
 
@@ -315,13 +315,13 @@ These indicators are already implemented in indicator-core but were not listed i
 
 ## Priority 24: Kase Indicators
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-181 | Kase Peak Oscillator | Oscillator | Volatility-adjusted momentum | High |
-| IND-182 | Kase Dev Stops | Stop | Deviation-based stops | High |
-| IND-183 | Kase Permission Stochastic | Oscillator | Modified stochastic | High |
-| IND-184 | Kase CD | Trend | Convergence/Divergence | High |
-| IND-185 | Kase Bars | Transform | Volatility-normalized bars | High |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-181 | Kase Peak Oscillator | Oscillator | Volatility-adjusted momentum | High | ✅ Done |
+| IND-182 | Kase Dev Stops | Stop | Deviation-based stops | High | |
+| IND-183 | Kase Permission Stochastic | Oscillator | Modified stochastic | High | ✅ Done |
+| IND-184 | Kase CD | Trend | Convergence/Divergence | High | ✅ Done |
+| IND-185 | Kase Bars | Transform | Volatility-normalized bars | High | |
 
 ## Priority 25: Miscellaneous Advanced
 

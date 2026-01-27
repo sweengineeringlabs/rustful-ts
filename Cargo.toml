@@ -151,15 +151,15 @@ optimizer-core = { path = "crates/optimizer/optimizer-core" }
 optimizer-facade = { path = "crates/optimizer/optimizer-facade" }
 
 # Rustboot framework (infrastructure) - local path for development
-rustboot-config = { path = "../rustboot/crates/rustboot-config", package = "dev-engineeringlabs-rustboot-config" }
-rustboot-health = { path = "../rustboot/crates/rustboot-health", package = "dev-engineeringlabs-rustboot-health" }
-rustboot-middleware = { path = "../rustboot/crates/rustboot-middleware", package = "dev-engineeringlabs-rustboot-middleware" }
-rustboot-error = { path = "../rustboot/crates/rustboot-error" }
-bench = { path = "../rustboot/crates/swe-doctor/bench" }
-loc-core = { path = "../rustboot/crates/swe-doctor/loc/loc-core" }
-load = { path = "../rustboot/crates/swe-doctor/load" }
-mem = { path = "../rustboot/crates/swe-doctor/mem" }
-prof = { path = "../rustboot/crates/swe-doctor/prof" }
+rustboot-config = { path = "../langboot/rustboot/crates/rustboot-config", package = "dev-engineeringlabs-rustboot-config" }
+rustboot-health = { path = "../langboot/rustboot/crates/rustboot-health", package = "dev-engineeringlabs-rustboot-health" }
+rustboot-middleware = { path = "../langboot/rustboot/crates/rustboot-middleware", package = "dev-engineeringlabs-rustboot-middleware" }
+rustboot-error = { path = "../langboot/rustboot/crates/rustboot-error" }
+bench = { path = "../langboot/rustboot/crates/swe-doctor/bench" }
+loc-core = { path = "../langboot/rustboot/crates/swe-doctor/loc/loc-core" }
+load = { path = "../langboot/rustboot/crates/swe-doctor/load" }
+mem = { path = "../langboot/rustboot/crates/swe-doctor/mem" }
+prof = { path = "../langboot/rustboot/crates/swe-doctor/prof" }
 
 # Internal crates - Anomaly domain
 anomaly-spi = { path = "crates/anomaly/anomaly-spi" }

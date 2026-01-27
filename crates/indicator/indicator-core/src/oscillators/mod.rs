@@ -35,6 +35,11 @@ pub mod pfe;
 pub mod imi;
 pub mod relative_volatility;
 pub mod double_stochastic;
+pub mod price_oscillator;
+pub mod rainbow_oscillator;
+pub mod kase_peak;
+pub mod kase_permission;
+pub mod projection_oscillator;
 
 // Re-exports
 pub use rsi::RSI;
@@ -70,3 +75,8 @@ pub use pfe::PolarizedFractalEfficiency;
 pub use imi::IntradayMomentumIndex;
 pub use relative_volatility::RelativeVolatilityIndex;
 pub use double_stochastic::DoubleStochastic;
+pub use price_oscillator::PriceOscillator;
+pub use rainbow_oscillator::RainbowOscillator;
+pub use kase_peak::KasePeakOscillator;
+pub use kase_permission::KasePermissionStochastic;
+pub use projection_oscillator::ProjectionOscillator;
