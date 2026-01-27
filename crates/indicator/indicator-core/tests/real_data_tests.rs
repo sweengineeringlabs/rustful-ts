@@ -273,6 +273,141 @@ fn test_adx_real_data() {
     }
 }
 
+#[test]
+fn test_efficiency_ratio_real_data() {
+    let data = spy_daily();
+    let er = EfficiencyRatio::new(10);
+    let result = er.calculate(&data.close);
+
+    // ER should be between 0 and 1
+    for (i, &val) in result.iter().enumerate() {
+        if !val.is_nan() {
+            assert!(
+                val >= 0.0 && val <= 1.0,
+                "ER {} out of range at {}",
+                val,
+                i
+            );
+        }
+    }
+
+    // Calculate average ER to understand market trending behavior
+    let valid_values: Vec<f64> = result.iter().filter(|x| !x.is_nan()).cloned().collect();
+    let avg_er: f64 = valid_values.iter().sum::<f64>() / valid_values.len() as f64;
+    println!("SPY average Efficiency Ratio: {:.4}", avg_er);
+
+    // SPY should have moderate efficiency (not purely trending or ranging)
+    assert!(
+        avg_er > 0.1 && avg_er < 0.8,
+        "Expected moderate ER for SPY, got {:.4}",
+        avg_er
+    );
+
+    // Count strong trend periods (ER > 0.6)
+    let strong_trend_count = valid_values.iter().filter(|&&x| x > 0.6).count();
+    let strong_trend_pct = strong_trend_count as f64 / valid_values.len() as f64 * 100.0;
+    println!("SPY strong trend periods (ER > 0.6): {:.1}%", strong_trend_pct);
+}
+
+#[test]
+fn test_efficiency_ratio_btc_vs_spy() {
+    // Compare ER between volatile (BTC) and stable (SPY) assets
+    let spy = spy_daily();
+    let btc = btc_daily();
+
+    let er = EfficiencyRatio::new(10);
+    let spy_er = er.calculate(&spy.close);
+    let btc_er = er.calculate(&btc.close);
+
+    let spy_avg: f64 = spy_er.iter().filter(|x| !x.is_nan()).sum::<f64>()
+        / spy_er.iter().filter(|x| !x.is_nan()).count() as f64;
+    let btc_avg: f64 = btc_er.iter().filter(|x| !x.is_nan()).sum::<f64>()
+        / btc_er.iter().filter(|x| !x.is_nan()).count() as f64;
+
+    println!("SPY avg ER: {:.4}", spy_avg);
+    println!("BTC avg ER: {:.4}", btc_avg);
+
+    // Both should have valid ER values
+    assert!(spy_avg > 0.0 && spy_avg < 1.0, "SPY ER should be in valid range");
+    assert!(btc_avg > 0.0 && btc_avg < 1.0, "BTC ER should be in valid range");
+}
+
+#[test]
+fn test_kase_cd_real_data() {
+    let data = spy_daily();
+    let kase = KaseCD::default();
+    let result = kase.calculate(&data.high, &data.low, &data.close);
+
+    // Verify output lengths match input
+    assert_eq!(result.cd.len(), data.close.len());
+    assert_eq!(result.signal.len(), data.close.len());
+    assert_eq!(result.histogram.len(), data.close.len());
+
+    // Count valid values
+    let valid_cd = result.cd.iter().filter(|x| !x.is_nan()).count();
+    let valid_signal = result.signal.iter().filter(|x| !x.is_nan()).count();
+    println!("Kase CD valid values: CD={}, Signal={}", valid_cd, valid_signal);
+
+    assert!(valid_cd > 0, "Should have valid CD values");
+    assert!(valid_signal > 0, "Should have valid signal values");
+
+    // Verify histogram = CD - Signal
+    for i in 0..result.cd.len() {
+        if !result.cd[i].is_nan() && !result.signal[i].is_nan() && !result.histogram[i].is_nan() {
+            let expected = result.cd[i] - result.signal[i];
+            assert!(
+                (result.histogram[i] - expected).abs() < 1e-10,
+                "Kase histogram mismatch at {}: {} vs {}",
+                i,
+                result.histogram[i],
+                expected
+            );
+        }
+    }
+
+    // Count crossovers (trading signals)
+    let mut bullish_crossovers = 0;
+    let mut bearish_crossovers = 0;
+    for i in 1..result.cd.len() {
+        if !result.cd[i].is_nan() && !result.cd[i - 1].is_nan()
+            && !result.signal[i].is_nan() && !result.signal[i - 1].is_nan()
+        {
+            if result.cd[i] > result.signal[i] && result.cd[i - 1] <= result.signal[i - 1] {
+                bullish_crossovers += 1;
+            } else if result.cd[i] < result.signal[i] && result.cd[i - 1] >= result.signal[i - 1] {
+                bearish_crossovers += 1;
+            }
+        }
+    }
+    println!("Kase CD crossovers: {} bullish, {} bearish", bullish_crossovers, bearish_crossovers);
+}
+
+#[test]
+fn test_kase_cd_forex() {
+    // Test Kase CD on forex data
+    let data = eurusd_daily();
+    let kase = KaseCD::new(14, 8, 21, 9);
+    let result = kase.calculate(&data.high, &data.low, &data.close);
+
+    // Should have valid values
+    let valid_cd = result.cd.iter().filter(|x| !x.is_nan()).count();
+    assert!(valid_cd > 0, "Kase CD should work on forex data");
+
+    // Check signal generation
+    let data_series = OHLCVSeries {
+        open: data.open.clone(),
+        high: data.high.clone(),
+        low: data.low.clone(),
+        close: data.close.clone(),
+        volume: data.volume.clone(),
+    };
+    let signals = kase.signals(&data_series).unwrap();
+
+    let bullish = signals.iter().filter(|s| **s == IndicatorSignal::Bullish).count();
+    let bearish = signals.iter().filter(|s| **s == IndicatorSignal::Bearish).count();
+    println!("EURUSD Kase CD signals: {} bullish, {} bearish", bullish, bearish);
+}
+
 // ============================================================================
 // Volatility Tests with Real Data
 // ============================================================================

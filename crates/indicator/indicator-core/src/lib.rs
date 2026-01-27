@@ -58,7 +58,8 @@ pub use oscillators::{
 // ============================================================================
 pub use trend::{
     MACD, ADX, Ichimoku, IchimokuOutput, SuperTrend, ParabolicSAR,
-    Alligator, AlligatorOutput, Aroon, AroonOutput, CoppockCurve, DPO, GatorOscillator,
+    Alligator, AlligatorOutput, Aroon, AroonOutput, CoppockCurve, DPO,
+    EfficiencyRatio, GatorOscillator, KaseCD,
     McGinleyDynamic, RainbowMA, RandomWalkIndex, TrendDetectionIndex, TrendIntensityIndex,
     VerticalHorizontalFilter, VortexIndicator,
 };

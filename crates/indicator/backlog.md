@@ -1,8 +1,22 @@
 # Indicator Backlog
 
-> **Current:** 33 indicators | **Target:** 2141+ indicators
+> **Current:** 44 indicators | **Target:** 2148+ indicators
 >
 > **200 priority groups** covering technical analysis, quantitative finance, machine learning, alternative data, and industry-specific metrics.
+
+## Priority 0: Core Implemented Indicators (Not Listed Elsewhere)
+
+These indicators are already implemented in indicator-core but were not listed in early priorities.
+
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-A01 | ADX | Trend | Average Directional Index - trend strength | Medium | ✅ Done |
+| IND-A02 | MACD | Trend | Moving Average Convergence Divergence | Medium | ✅ Done |
+| IND-A03 | Ichimoku | Trend | Ichimoku Kinko Hyo cloud system | High | ✅ Done |
+| IND-A04 | SuperTrend | Trend | ATR-based trend following | Medium | ✅ Done |
+| IND-A05 | Parabolic SAR | Trend | Stop and Reverse trend system | Medium | ✅ Done |
+| IND-A06 | McGinley Dynamic | Trend | Self-adjusting trend MA | Medium | ✅ Done |
+| IND-A07 | Gator Oscillator | Trend | Alligator momentum histogram | Medium | ✅ Done |
 
 ## Priority 1: High-Value Additions
 
@@ -81,8 +95,8 @@
 
 | ID | Indicator | Category | Description | Complexity |
 |----|-----------|----------|-------------|------------|
-| IND-044 | MESA | Trend | MESA Adaptive Moving Average | High |
-| IND-045 | MAMA | Trend | MESA Adaptive Moving Average with FAMA | High |
+| IND-044 | MESA | DSP | MESA Adaptive Moving Average | High |
+| IND-045 | MAMA | DSP | MESA Adaptive Moving Average with FAMA | High |
 | IND-046 | Sine Wave | Oscillator | Ehlers cycle detection | High |
 | IND-047 | Hilbert Transform | Filter | Phase/amplitude extraction | High |
 | IND-048 | Cyber Cycle | Oscillator | Ehlers bandpass cycle | High |
@@ -3160,7 +3174,7 @@
 | **Technical Analysis** | | | |
 | Oscillators | 6 | 60 | 66 |
 | Moving Averages | 8 | 40 | 48 |
-| Trend | 5 | 25 | 30 |
+| Trend | 19 | 16 | 35 |
 | Volatility | 4 | 80 | 84 |
 | Volume | 4 | 45 | 49 |
 | Pattern | 0 | 80 | 80 |
@@ -3174,7 +3188,7 @@
 | Wyckoff | 0 | 12 | 12 |
 | VSA | 0 | 15 | 15 |
 | **Digital Signal Processing** | | | |
-| DSP/Ehlers | 0 | 60 | 60 |
+| DSP/Ehlers | 2 | 60 | 62 |
 | Wavelet | 0 | 10 | 10 |
 | Spectral/FFT | 0 | 10 | 10 |
 | **Market Structure** | | | |
@@ -3261,7 +3275,7 @@
 | Events | 0 | 15 | 15 |
 | Weather/Seasonal | 0 | 10 | 10 |
 | Supply Chain | 0 | 10 | 10 |
-| **Total** | **33** | **2108** | **2141** |
+| **Total** | **44** | **2104** | **2148** |
 
 ---
 
