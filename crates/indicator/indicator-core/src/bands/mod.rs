@@ -14,6 +14,11 @@ pub mod projection_bands;
 pub mod starc;
 pub mod std_error_bands;
 pub mod tirone;
+pub mod percentage_bands;
+pub mod vwap_bands;
+pub mod auto_envelope;
+pub mod fractal_chaos_bands;
+pub mod prime_number_bands;
 
 // Re-exports
 pub use bollinger::BollingerBands;
@@ -28,3 +33,8 @@ pub use projection_bands::ProjectionBands;
 pub use starc::STARCBands;
 pub use std_error_bands::StandardErrorBands;
 pub use tirone::{TironeLevels, TironeLevelsOutput};
+pub use percentage_bands::PercentageBands;
+pub use vwap_bands::VWAPBands;
+pub use auto_envelope::AutoEnvelope;
+pub use fractal_chaos_bands::FractalChaosBands;
+pub use prime_number_bands::PrimeNumberBands;

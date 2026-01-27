@@ -24,6 +24,7 @@ pub mod kicking;
 pub mod three_line_strike;
 pub mod tasuki_gap;
 pub mod rising_falling_methods;
+pub mod kase_bars;
 
 // Re-exports
 pub use zigzag::ZigZag;
@@ -48,3 +49,4 @@ pub use kicking::Kicking;
 pub use three_line_strike::ThreeLineStrike;
 pub use tasuki_gap::TasukiGap;
 pub use rising_falling_methods::RisingFallingMethods;
+pub use kase_bars::{KaseBars, KaseBarsOutput, KaseBarsStats};

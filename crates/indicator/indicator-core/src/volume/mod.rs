@@ -22,6 +22,11 @@ pub mod volume_oscillator;
 pub mod net_volume;
 pub mod chaikin_oscillator;
 pub mod twap;
+pub mod trade_volume_index;
+pub mod volume_zone;
+pub mod elder_thermometer;
+pub mod volume_price_confirm;
+pub mod vwmacd;
 
 // Re-exports
 pub use vwap::VWAP;
@@ -44,3 +49,8 @@ pub use volume_oscillator::VolumeOscillator;
 pub use net_volume::NetVolume;
 pub use chaikin_oscillator::ChaikinOscillator;
 pub use twap::TWAP;
+pub use trade_volume_index::TradeVolumeIndex;
+pub use volume_zone::VolumeZoneOscillator;
+pub use elder_thermometer::ElderThermometer;
+pub use volume_price_confirm::VolumePriceConfirm;
+pub use vwmacd::VWMACD;

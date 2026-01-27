@@ -18,6 +18,8 @@ pub mod t3;
 pub mod triangular;
 pub mod gmma;
 pub mod sine_wma;
+pub mod jurik_ma;
+pub mod evwma;
 
 // Re-exports
 pub use sma::SMA;
@@ -36,3 +38,5 @@ pub use t3::T3;
 pub use triangular::TRIMA;
 pub use gmma::GMMA;
 pub use sine_wma::SineWMA;
+pub use jurik_ma::JurikMA;
+pub use evwma::EVWMA;

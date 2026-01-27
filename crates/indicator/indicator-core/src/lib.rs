@@ -21,6 +21,7 @@ pub mod composite;
 pub mod breadth;
 pub mod swing;
 pub mod demark;
+pub mod intermarket;
 
 #[cfg(feature = "simd")]
 pub mod simd;
@@ -186,6 +187,16 @@ pub use demark::{
     TDPressure, TDPressureOutput, TDPressureConfig,
     TDDWave, TDDWaveOutput, TDDWaveConfig, WaveDirection, DWavePhase, PivotType as DWavePivotType,
     TDTrendFactor, TDTrendFactorOutput, TDTrendFactorConfig, TrendState,
+};
+
+// ============================================================================
+// Intermarket Exports
+// ============================================================================
+pub use intermarket::{
+    DualSeries, MultiSeries,
+    Cointegration, CointegrationOutput, CointegrationSignal,
+    CurrencyStrength, CurrencyPair, CurrencyStrengthOutput,
+    SectorRotation, SectorRank, SectorRotationOutput,
 };
 
 // ============================================================================

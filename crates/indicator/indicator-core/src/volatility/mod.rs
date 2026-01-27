@@ -14,6 +14,10 @@ pub mod realized;
 pub mod normalized_atr;
 pub mod choppiness;
 pub mod ulcer;
+pub mod keltner_original;
+pub mod volatility_cone;
+pub mod close_to_close;
+pub mod market_thermometer;
 
 // Re-exports
 pub use atr::ATR;
@@ -28,3 +32,7 @@ pub use realized::RealizedVolatility;
 pub use normalized_atr::NormalizedATR;
 pub use choppiness::ChoppinessIndex;
 pub use ulcer::UlcerIndex;
+pub use keltner_original::KeltnerOriginal;
+pub use volatility_cone::VolatilityCone;
+pub use close_to_close::CloseToCloseVolatility;
+pub use market_thermometer::MarketThermometer;

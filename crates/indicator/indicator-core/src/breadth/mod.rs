@@ -5,6 +5,7 @@
 
 pub mod advance_decline;
 pub mod breadth_thrust;
+pub mod bullish_percent;
 pub mod cumulative_volume;
 pub mod high_low_index;
 pub mod mcclellan;
@@ -17,6 +18,7 @@ pub mod trin;
 // Re-exports - Primary indicators
 pub use advance_decline::AdvanceDeclineLine;
 pub use breadth_thrust::BreadthThrust;
+pub use bullish_percent::{BPISeries, BPISignal, BPIStatus, BullishPercent};
 pub use cumulative_volume::{CumulativeVolumeIndex, UpDownVolume};
 pub use high_low_index::{HighLowData, HighLowIndex, HighLowMethod, HighLowSeries};
 pub use mcclellan::McClellanOscillator;

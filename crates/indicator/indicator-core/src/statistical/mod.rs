@@ -13,6 +13,10 @@ pub mod zscore_spread;
 pub mod autocorrelation;
 pub mod skewness;
 pub mod kurtosis;
+pub mod fractal_dimension;
+pub mod hurst;
+pub mod dfa;
+pub mod entropy;
 
 // Re-exports
 pub use std_dev::StandardDeviation;
@@ -26,3 +30,7 @@ pub use zscore_spread::ZScoreSpread;
 pub use autocorrelation::Autocorrelation;
 pub use skewness::Skewness;
 pub use kurtosis::Kurtosis;
+pub use fractal_dimension::{FractalDimension, FractalDimensionMethod};
+pub use hurst::{HurstExponent, HurstMethod};
+pub use dfa::DetrendedFluctuationAnalysis;
+pub use entropy::{MarketEntropy, EntropyMethod};
