@@ -15,6 +15,7 @@ pub mod information_ratio;
 pub mod omega;
 pub mod gain_loss;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use sharpe::SharpeRatio;
@@ -32,4 +33,8 @@ pub use gain_loss::GainLossRatio;
 pub use extended::{
     SterlingRatio, BurkeRatio, UlcerPerformanceIndex,
     PainIndex, RecoveryFactor, TailRatio,
+};
+pub use advanced::{
+    DownsideDeviation, UpsidePotentialRatio, KappaRatio,
+    WinRate, ProfitFactor, Expectancy,
 };

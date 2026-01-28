@@ -16,6 +16,7 @@ pub mod supersmoother;
 pub mod decycler;
 pub mod cycles;
 pub mod extended;
+pub mod signal_analysis;
 
 // Re-exports
 pub use mesa::MESA;
@@ -35,4 +36,8 @@ pub use cycles::{
 pub use extended::{
     SpectralDensity, PhaseIndicator, InstantaneousFrequency,
     AdaptiveBandwidthFilter, ZeroLagIndicator, SignalToNoiseRatio,
+};
+pub use signal_analysis::{
+    AutoCorrelationPeriod, TrendStrengthFFT, CycleDeviationAmplitude,
+    PhaseAccumulator, SpectralNoiseRatio, AdaptiveCycleFilter,
 };

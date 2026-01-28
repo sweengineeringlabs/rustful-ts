@@ -28,6 +28,7 @@ pub mod kase_bars;
 pub mod minervini;
 pub mod price_patterns;
 pub mod extended;
+pub mod r#final;
 
 // Re-exports
 pub use zigzag::ZigZag;
@@ -63,4 +64,7 @@ pub use price_patterns::{
 pub use extended::{
     GapAnalysis, InsideBar, OutsideBar, NarrowRange,
     WideRangeBar, TrendBar, ConsolidationPattern,
+};
+pub use r#final::{
+    PriceMomentumPattern, RangeContractionExpansion,
 };

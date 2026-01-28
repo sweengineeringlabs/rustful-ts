@@ -16,6 +16,7 @@ pub mod put_call;
 pub mod tick_index;
 pub mod trin;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports - Primary indicators
 pub use advance_decline::AdvanceDeclineLine;
@@ -33,6 +34,10 @@ pub use trin::{TRINSignal, TRIN};
 pub use extended::{
     ADThrust, ZweigBreadthThrust, TRINSmoothed, BreadthMomentum,
     VolumeBreadth, PercentageBreadth,
+};
+pub use advanced::{
+    MarketMomentumBreadth, BreadthOscillator, CumulativeBreadthIndex,
+    VolumeBreadthRatio, BreadthDivergence, ParticipationRate,
 };
 
 // Re-export SPI types from crate root

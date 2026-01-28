@@ -8,6 +8,7 @@ pub mod sopr;
 pub mod hash_ribbons;
 pub mod fear_greed;
 pub mod advanced;
+pub mod extended;
 
 // Re-exports
 pub use nvt::{NVTRatio, NVTRatioOutput, NVTSignal};
@@ -18,4 +19,8 @@ pub use fear_greed::{FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedW
 pub use advanced::{
     PuellMultiple, ReserveRisk, StockToFlow, ThermocapMultiple,
     CoinDaysDestroyed, RealizedCapAge,
+};
+pub use extended::{
+    ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,
+    NetworkValueMomentum, TransactionVelocityProxy, CryptoMomentumScore,
 };

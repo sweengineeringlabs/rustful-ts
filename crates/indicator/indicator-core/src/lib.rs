@@ -62,6 +62,8 @@ pub use oscillators::{
     ElderPower, ElderPowerOutput,
     PriceVelocity, PriceAcceleration, MomentumDivergence, SmoothedROC,
     ComparativeMomentum, DynamicMomentumIndex, MomentumQuality, NormalizedMomentum,
+    AdaptiveRSI, VolumeWeightedRSI, StochasticMomentum,
+    TrendIntensityOscillator, RangeOscillator, MomentumDivergenceOscillator,
 };
 
 // ============================================================================
@@ -116,7 +118,11 @@ pub use bands::{
 // ============================================================================
 // Support/Resistance Exports
 // ============================================================================
-pub use support_resistance::{PivotPoints, Fibonacci, FibonacciLevels};
+pub use support_resistance::{
+    PivotPoints, Fibonacci, FibonacciLevels,
+    DynamicSupportResistance, PriceClusters, VolumeSupportResistance,
+    SwingLevelDetector, TrendlineBreak, PsychologicalLevels,
+};
 
 // ============================================================================
 // Statistical Exports
@@ -142,6 +148,7 @@ pub use pattern::{
     TasukiGap, RisingFallingMethods, KaseBars, KaseBarsOutput, KaseBarsStats,
     GapAnalysis, InsideBar, OutsideBar, NarrowRange,
     WideRangeBar, TrendBar, ConsolidationPattern,
+    PriceMomentumPattern, RangeContractionExpansion,
 };
 
 // ============================================================================
@@ -151,6 +158,8 @@ pub use risk::{
     SharpeRatio, SortinoRatio, CalmarRatio, MaxDrawdown, ValueAtRisk, VaRMethod,
     ConditionalVaR, Beta, Alpha, TreynorRatio, InformationRatio, OmegaRatio, GainLossRatio,
     SterlingRatio, BurkeRatio, UlcerPerformanceIndex, PainIndex, RecoveryFactor, TailRatio,
+    DownsideDeviation, UpsidePotentialRatio, KappaRatio,
+    WinRate, ProfitFactor, Expectancy,
 };
 
 // ============================================================================
@@ -161,6 +170,8 @@ pub use dsp::{
     LaguerreRSI, RoofingFilter, Supersmoother, Decycler,
     SpectralDensity, PhaseIndicator, InstantaneousFrequency,
     AdaptiveBandwidthFilter, ZeroLagIndicator, SignalToNoiseRatio,
+    AutoCorrelationPeriod, TrendStrengthFFT, CycleDeviationAmplitude,
+    PhaseAccumulator, SpectralNoiseRatio, AdaptiveCycleFilter,
 };
 
 // ============================================================================
@@ -178,6 +189,8 @@ pub use composite::{
     RegimeDetector, RegimeDetectorConfig, RegimeDetectorOutput, MarketRegime,
     TrendMomentumScore, VolatilityTrendCombo, MultiPeriodMomentum,
     MomentumStrengthIndex, MarketConditionScore, PriceActionScore,
+    QualityMomentumFactor, ValueMomentumComposite, RiskAdjustedTrend,
+    BreakoutStrengthIndex, TrendReversalProbability, MultiFactorAlphaScore,
 };
 
 // ============================================================================
@@ -193,6 +206,8 @@ pub use breadth::{
     TickBias, TickIndex, TickSeries, TickSignal, TickStats,
     TRINSignal, TRIN, BreadthData, BreadthSeries, BreadthIndicator,
     BullishPercent, BPISeries, BPISignal, BPIStatus,
+    MarketMomentumBreadth, BreadthOscillator, CumulativeBreadthIndex,
+    VolumeBreadthRatio, BreadthDivergence, ParticipationRate,
 };
 
 // ============================================================================
@@ -224,6 +239,8 @@ pub use demark::{
     TDPressure, TDPressureOutput, TDPressureConfig,
     TDDWave, TDDWaveOutput, TDDWaveConfig, WaveDirection, DWavePhase, PivotType as DWavePivotType,
     TDTrendFactor, TDTrendFactorOutput, TDTrendFactorConfig, TrendState,
+    TDCamouflage, TDCLOP, TDMovingAverageQualifier,
+    TDRiskLevel, TDMomentum, TDDifferential,
 };
 
 // ============================================================================
@@ -250,6 +267,8 @@ pub use crypto::{
     FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedWeights,
     PuellMultiple, ReserveRisk, StockToFlow, ThermocapMultiple,
     CoinDaysDestroyed, RealizedCapAge,
+    ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,
+    NetworkValueMomentum, TransactionVelocityProxy, CryptoMomentumScore,
 };
 
 // ============================================================================

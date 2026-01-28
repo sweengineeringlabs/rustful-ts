@@ -28,6 +28,7 @@ pub mod squeeze_momentum;
 pub mod trend_strength;
 pub mod ttm_squeeze;
 pub mod extended;
+pub mod multi_factor;
 
 // ============================================================================
 // Re-exports
@@ -64,4 +65,10 @@ pub use elder_ray::ElderRay;
 pub use extended::{
     TrendMomentumScore, VolatilityTrendCombo, MultiPeriodMomentum,
     MomentumStrengthIndex, MarketConditionScore, PriceActionScore,
+};
+
+// Multi-factor composites
+pub use multi_factor::{
+    QualityMomentumFactor, ValueMomentumComposite, RiskAdjustedTrend,
+    BreakoutStrengthIndex, TrendReversalProbability, MultiFactorAlphaScore,
 };
