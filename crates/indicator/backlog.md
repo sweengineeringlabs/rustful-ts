@@ -1,6 +1,6 @@
 # Indicator Backlog
 
-> **Current:** 218 indicators | **Target:** 2148+ indicators
+> **Current:** 172 indicators | **Target:** 2148+ indicators
 >
 > **200 priority groups** covering technical analysis, quantitative finance, machine learning, alternative data, and industry-specific metrics.
 
@@ -170,138 +170,138 @@ These indicators are already implemented in indicator-core but were not listed i
 
 ## Priority 13: DeMark Indicators
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-091 | TD Sequential | Pattern | DeMark 9-13 count exhaustion | High |
-| IND-092 | TD Combo | Pattern | Alternative DeMark count | High |
-| IND-093 | TD Setup | Pattern | Setup phase of Sequential | Medium |
-| IND-094 | TD Countdown | Pattern | Countdown phase of Sequential | Medium |
-| IND-095 | TD REI | Oscillator | Range Expansion Index | Medium |
-| IND-096 | TD POQ | Oscillator | Price Oscillator Qualifier | Medium |
-| IND-097 | TD Pressure | Oscillator | Buying/selling pressure | Medium |
-| IND-098 | TD D-Wave | Pattern | DeMark wave analysis | High |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-091 | TD Sequential | Pattern | DeMark 9-13 count exhaustion | High | ✅ Done |
+| IND-092 | TD Combo | Pattern | Alternative DeMark count | High | ✅ Done |
+| IND-093 | TD Setup | Pattern | Setup phase of Sequential | Medium | ✅ Done |
+| IND-094 | TD Countdown | Pattern | Countdown phase of Sequential | Medium | ✅ Done |
+| IND-095 | TD REI | Oscillator | Range Expansion Index | Medium | ✅ Done |
+| IND-096 | TD POQ | Oscillator | Price Oscillator Qualifier | Medium | ✅ Done |
+| IND-097 | TD Pressure | Oscillator | Buying/selling pressure | Medium | ✅ Done |
+| IND-098 | TD D-Wave | Pattern | DeMark wave analysis | High | ✅ Done |
 
 ## Priority 14: Volatility Models
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-099 | Parkinson Volatility | Volatility | High-low range estimator | Low |
-| IND-100 | Garman-Klass Volatility | Volatility | OHLC volatility estimator | Medium |
-| IND-101 | Rogers-Satchell Volatility | Volatility | Drift-independent estimator | Medium |
-| IND-102 | Yang-Zhang Volatility | Volatility | Overnight + open-close + HL | Medium |
-| IND-103 | Realized Volatility | Volatility | Sum of squared returns | Low |
-| IND-104 | Close-to-Close Volatility | Volatility | Simple log return std dev | Low |
-| IND-105 | Volatility Cone | Volatility | Percentile bands over time | Medium |
-| IND-106 | Normalized ATR | Volatility | ATR as percentage of price | Low |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-099 | Parkinson Volatility | Volatility | High-low range estimator | Low | ✅ Done |
+| IND-100 | Garman-Klass Volatility | Volatility | OHLC volatility estimator | Medium | ✅ Done |
+| IND-101 | Rogers-Satchell Volatility | Volatility | Drift-independent estimator | Medium | ✅ Done |
+| IND-102 | Yang-Zhang Volatility | Volatility | Overnight + open-close + HL | Medium | ✅ Done |
+| IND-103 | Realized Volatility | Volatility | Sum of squared returns | Low | ✅ Done |
+| IND-104 | Close-to-Close Volatility | Volatility | Simple log return std dev | Low | |
+| IND-105 | Volatility Cone | Volatility | Percentile bands over time | Medium | |
+| IND-106 | Normalized ATR | Volatility | ATR as percentage of price | Low | ✅ Done |
 
 ## Priority 15: Risk Metrics
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-107 | Sharpe Ratio | Risk | Risk-adjusted return | Low |
-| IND-108 | Sortino Ratio | Risk | Downside risk-adjusted return | Medium |
-| IND-109 | Calmar Ratio | Risk | Return / max drawdown | Medium |
-| IND-110 | Information Ratio | Risk | Active return / tracking error | Medium |
-| IND-111 | Maximum Drawdown | Risk | Peak-to-trough decline | Low |
-| IND-112 | Value at Risk | Risk | VaR at confidence level | Medium |
-| IND-113 | Conditional VaR | Risk | Expected shortfall / CVaR | Medium |
-| IND-114 | Beta | Risk | Market sensitivity | Medium |
-| IND-115 | Alpha | Risk | Risk-adjusted excess return | Medium |
-| IND-116 | Treynor Ratio | Risk | Return per unit of beta | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-107 | Sharpe Ratio | Risk | Risk-adjusted return | Low | ✅ Done |
+| IND-108 | Sortino Ratio | Risk | Downside risk-adjusted return | Medium | ✅ Done |
+| IND-109 | Calmar Ratio | Risk | Return / max drawdown | Medium | ✅ Done |
+| IND-110 | Information Ratio | Risk | Active return / tracking error | Medium | ✅ Done |
+| IND-111 | Maximum Drawdown | Risk | Peak-to-trough decline | Low | ✅ Done |
+| IND-112 | Value at Risk | Risk | VaR at confidence level | Medium | ✅ Done |
+| IND-113 | Conditional VaR | Risk | Expected shortfall / CVaR | Medium | ✅ Done |
+| IND-114 | Beta | Risk | Market sensitivity | Medium | ✅ Done |
+| IND-115 | Alpha | Risk | Risk-adjusted excess return | Medium | ✅ Done |
+| IND-116 | Treynor Ratio | Risk | Return per unit of beta | Medium | ✅ Done |
 
 ## Priority 16: Intermarket & Relative
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-117 | Relative Strength (Comparative) | Intermarket | Asset vs benchmark ratio | Low |
-| IND-118 | Correlation | Intermarket | Rolling correlation coefficient | Medium |
-| IND-119 | Cointegration Score | Intermarket | Pair trading stationarity test | High |
-| IND-120 | Spread | Intermarket | Price difference between assets | Low |
-| IND-121 | Ratio | Intermarket | Price ratio between assets | Low |
-| IND-122 | Z-Score Spread | Intermarket | Normalized spread for mean reversion | Medium |
-| IND-123 | Currency Strength | Intermarket | Multi-pair currency ranking | High |
-| IND-124 | Sector Rotation | Intermarket | Relative performance ranking | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-117 | Relative Strength (Comparative) | Intermarket | Asset vs benchmark ratio | Low | |
+| IND-118 | Correlation | Intermarket | Rolling correlation coefficient | Medium | ✅ Done |
+| IND-119 | Cointegration Score | Intermarket | Pair trading stationarity test | High | ✅ Done |
+| IND-120 | Spread | Intermarket | Price difference between assets | Low | ✅ Done |
+| IND-121 | Ratio | Intermarket | Price ratio between assets | Low | ✅ Done |
+| IND-122 | Z-Score Spread | Intermarket | Normalized spread for mean reversion | Medium | ✅ Done |
+| IND-123 | Currency Strength | Intermarket | Multi-pair currency ranking | High | ✅ Done |
+| IND-124 | Sector Rotation | Intermarket | Relative performance ranking | Medium | ✅ Done |
 
 ## Priority 17: Market Breadth Extended
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-125 | Advance/Decline Line | Breadth | Cumulative A/D difference | Low |
-| IND-126 | McClellan Summation | Breadth | Cumulative McClellan Oscillator | Medium |
-| IND-127 | Breadth Thrust | Breadth | 10-day A/D thrust | Medium |
-| IND-128 | High-Low Index | Breadth | New highs vs new lows | Medium |
-| IND-129 | Percent Above MA | Breadth | % of stocks above 200 SMA | Medium |
-| IND-130 | Bullish Percent Index | Breadth | % of stocks with P&F buy signals | High |
-| IND-131 | Cumulative Volume Index | Breadth | Volume-weighted A/D | Medium |
-| IND-132 | New Highs/New Lows | Breadth | Daily NH-NL difference | Low |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-125 | Advance/Decline Line | Breadth | Cumulative A/D difference | Low | ✅ Done |
+| IND-126 | McClellan Summation | Breadth | Cumulative McClellan Oscillator | Medium | ✅ Done |
+| IND-127 | Breadth Thrust | Breadth | 10-day A/D thrust | Medium | ✅ Done |
+| IND-128 | High-Low Index | Breadth | New highs vs new lows | Medium | ✅ Done |
+| IND-129 | Percent Above MA | Breadth | % of stocks above 200 SMA | Medium | ✅ Done |
+| IND-130 | Bullish Percent Index | Breadth | % of stocks with P&F buy signals | High | |
+| IND-131 | Cumulative Volume Index | Breadth | Volume-weighted A/D | Medium | ✅ Done |
+| IND-132 | New Highs/New Lows | Breadth | Daily NH-NL difference | Low | |
 
 ## Priority 18: Swing & Price Structure
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-133 | Swing Index | Swing | Wilder's swing index | Medium |
-| IND-134 | Accumulative Swing Index | Swing | Cumulative swing index | Medium |
-| IND-135 | Gann Swing | Swing | Gann-based swing detection | Medium |
-| IND-136 | Market Structure | Pattern | Higher highs/lower lows detection | Medium |
-| IND-137 | Order Blocks | Pattern | Institutional supply/demand zones | High |
-| IND-138 | Fair Value Gap | Pattern | Imbalance detection | Medium |
-| IND-139 | Liquidity Voids | Pattern | Unfilled price gaps | Medium |
-| IND-140 | Break of Structure | Pattern | Trend change detection | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-133 | Swing Index | Swing | Wilder's swing index | Medium | ✅ Done |
+| IND-134 | Accumulative Swing Index | Swing | Cumulative swing index | Medium | ✅ Done |
+| IND-135 | Gann Swing | Swing | Gann-based swing detection | Medium | ✅ Done |
+| IND-136 | Market Structure | Pattern | Higher highs/lower lows detection | Medium | ✅ Done |
+| IND-137 | Order Blocks | Pattern | Institutional supply/demand zones | High | ✅ Done |
+| IND-138 | Fair Value Gap | Pattern | Imbalance detection | Medium | ✅ Done |
+| IND-139 | Liquidity Voids | Pattern | Unfilled price gaps | Medium | ✅ Done |
+| IND-140 | Break of Structure | Pattern | Trend change detection | Medium | ✅ Done |
 
 ## Priority 19: Additional Bands & Channels
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-141 | STARC Bands | Volatility | Stoller Average Range Channel | Medium |
-| IND-142 | Tirone Levels | Support/Resistance | 1/3 - 2/3 retracement levels | Low |
-| IND-143 | Acceleration Bands | Volatility | Price Headley's bands | Medium |
-| IND-144 | Moving Average Envelope | Volatility | Percentage bands around MA | Low |
-| IND-145 | Projection Bands | Volatility | Linear regression bands | Medium |
-| IND-146 | Fractal Chaos Bands | Volatility | Williams fractal-based bands | Medium |
-| IND-147 | High-Low Bands | Volatility | Highest/lowest with MA | Low |
-| IND-148 | Prime Number Bands | Volatility | Prime number-based levels | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-141 | STARC Bands | Volatility | Stoller Average Range Channel | Medium | ✅ Done |
+| IND-142 | Tirone Levels | Support/Resistance | 1/3 - 2/3 retracement levels | Low | ✅ Done |
+| IND-143 | Acceleration Bands | Volatility | Price Headley's bands | Medium | ✅ Done |
+| IND-144 | Moving Average Envelope | Volatility | Percentage bands around MA | Low | ✅ Done |
+| IND-145 | Projection Bands | Volatility | Linear regression bands | Medium | ✅ Done |
+| IND-146 | Fractal Chaos Bands | Volatility | Williams fractal-based bands | Medium | ✅ Done |
+| IND-147 | High-Low Bands | Volatility | Highest/lowest with MA | Low | ✅ Done |
+| IND-148 | Prime Number Bands | Volatility | Prime number-based levels | Medium | ✅ Done |
 
 ## Priority 20: Additional Oscillators
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-149 | PMO | Oscillator | Price Momentum Oscillator (DecisionPoint) | Medium |
-| IND-150 | Special K | Oscillator | Pring's summed ROC oscillator | Medium |
-| IND-151 | Disparity Index | Oscillator | Distance from MA as percentage | Low |
-| IND-152 | Pretty Good Oscillator | Oscillator | ATR-normalized distance from SMA | Low |
-| IND-153 | Absolute Price Oscillator | Oscillator | Fast MA - Slow MA (absolute) | Low |
-| IND-154 | Ergodic Oscillator | Oscillator | True Strength Index signal line | Medium |
-| IND-155 | Polarized Fractal Efficiency | Oscillator | Trend efficiency measure | Medium |
-| IND-156 | Intraday Momentum Index | Oscillator | Intraday RSI variant | Medium |
-| IND-157 | Relative Volatility Index | Oscillator | Volatility direction oscillator | Medium |
-| IND-158 | Double Stochastic | Oscillator | Stochastic of stochastic | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-149 | PMO | Oscillator | Price Momentum Oscillator (DecisionPoint) | Medium | ✅ Done |
+| IND-150 | Special K | Oscillator | Pring's summed ROC oscillator | Medium | ✅ Done |
+| IND-151 | Disparity Index | Oscillator | Distance from MA as percentage | Low | ✅ Done |
+| IND-152 | Pretty Good Oscillator | Oscillator | ATR-normalized distance from SMA | Low | ✅ Done |
+| IND-153 | Absolute Price Oscillator | Oscillator | Fast MA - Slow MA (absolute) | Low | ✅ Done |
+| IND-154 | Ergodic Oscillator | Oscillator | True Strength Index signal line | Medium | ✅ Done |
+| IND-155 | Polarized Fractal Efficiency | Oscillator | Trend efficiency measure | Medium | ✅ Done |
+| IND-156 | Intraday Momentum Index | Oscillator | Intraday RSI variant | Medium | ✅ Done |
+| IND-157 | Relative Volatility Index | Oscillator | Volatility direction oscillator | Medium | ✅ Done |
+| IND-158 | Double Stochastic | Oscillator | Stochastic of stochastic | Medium | ✅ Done |
 
 ## Priority 21: Volume Extended
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-159 | TWAP | Volume | Time Weighted Average Price | Low |
-| IND-160 | Trade Volume Index | Volume | Tick-based accumulation | Medium |
-| IND-161 | Volume Zone Oscillator | Volume | Volume flow direction | Medium |
-| IND-162 | Net Volume | Volume | Up volume - down volume | Low |
-| IND-163 | Chaikin Oscillator | Volume | MACD of A/D line | Medium |
-| IND-164 | Elder's Thermometer | Volume | Price volatility measure | Medium |
-| IND-165 | Volume Price Confirmation | Volume | Price/volume trend agreement | Medium |
-| IND-166 | Volume Weighted MACD | Volume | VWMA-based MACD | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-159 | TWAP | Volume | Time Weighted Average Price | Low | ✅ Done |
+| IND-160 | Trade Volume Index | Volume | Tick-based accumulation | Medium | ✅ Done |
+| IND-161 | Volume Zone Oscillator | Volume | Volume flow direction | Medium | ✅ Done |
+| IND-162 | Net Volume | Volume | Up volume - down volume | Low | ✅ Done |
+| IND-163 | Chaikin Oscillator | Volume | MACD of A/D line | Medium | ✅ Done |
+| IND-164 | Elder's Thermometer | Volume | Price volatility measure | Medium | ✅ Done |
+| IND-165 | Volume Price Confirmation | Volume | Price/volume trend agreement | Medium | ✅ Done |
+| IND-166 | Volume Weighted MACD | Volume | VWMA-based MACD | Medium | ✅ Done |
 
 ## Priority 22: Moving Averages Extended
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-167 | GMMA | Moving Average | Guppy Multiple MA (12 MAs) | Medium |
-| IND-168 | Rainbow MA | Moving Average | 10 recursive SMAs | Low |
-| IND-169 | Jurik MA | Moving Average | JMA approximation (low lag) | High |
-| IND-170 | Ehlers Supersmoother | Moving Average | 2-pole Butterworth filter | Medium |
-| IND-171 | Ehlers Decycler | Moving Average | High-pass complement | Medium |
-| IND-172 | Triangular MA | Moving Average | Double-smoothed SMA | Low |
-| IND-173 | LWMA | Moving Average | Linear Weighted MA (same as WMA) | Low |
-| IND-174 | Sine Weighted MA | Moving Average | Sine wave weighted | Medium |
-| IND-175 | Elastic Volume Weighted MA | Moving Average | Volume-elastic smoothing | High |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-167 | GMMA | Moving Average | Guppy Multiple MA (12 MAs) | Medium | ✅ Done |
+| IND-168 | Rainbow MA | Moving Average | 10 recursive SMAs | Low | ✅ Done |
+| IND-169 | Jurik MA | Moving Average | JMA approximation (low lag) | High | |
+| IND-170 | Ehlers Supersmoother | Moving Average | 2-pole Butterworth filter | Medium | ✅ Done |
+| IND-171 | Ehlers Decycler | Moving Average | High-pass complement | Medium | ✅ Done |
+| IND-172 | Triangular MA | Moving Average | Double-smoothed SMA | Low | ✅ Done |
+| IND-173 | LWMA | Moving Average | Linear Weighted MA (same as WMA) | Low | ✅ Done |
+| IND-174 | Sine Weighted MA | Moving Average | Sine wave weighted | Medium | ✅ Done |
+| IND-175 | Elastic Volume Weighted MA | Moving Average | Volume-elastic smoothing | High | |
 
 ## Priority 23: Elder Indicators
 
