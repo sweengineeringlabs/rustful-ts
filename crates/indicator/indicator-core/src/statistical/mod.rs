@@ -17,6 +17,12 @@ pub mod fractal_dimension;
 pub mod hurst;
 pub mod dfa;
 pub mod entropy;
+pub mod mean;
+pub mod median;
+pub mod descriptive;
+pub mod tests_stat;
+pub mod diagnostics;
+pub mod stationarity;
 
 // Re-exports
 pub use std_dev::StandardDeviation;
@@ -34,3 +40,19 @@ pub use fractal_dimension::{FractalDimension, FractalDimensionMethod};
 pub use hurst::{HurstExponent, HurstMethod};
 pub use dfa::DetrendedFluctuationAnalysis;
 pub use entropy::{MarketEntropy, EntropyMethod};
+pub use mean::Mean;
+pub use median::Median;
+pub use descriptive::{
+    Mode, Range, CoefficientOfVariation, Percentile, Quartiles, QuartilesOutput, IQR,
+};
+pub use tests_stat::{
+    MAD, TStatistic, PValue, ConfidenceInterval, ConfidenceIntervalOutput,
+    RSquared, AdjustedRSquared,
+};
+pub use diagnostics::{
+    FStatistic, AIC, BIC, DurbinWatson, JarqueBera, ShapiroWilk,
+};
+pub use stationarity::{
+    KolmogorovSmirnov, AndersonDarling, AugmentedDickeyFuller, KPSS, PhillipsPerron,
+    TRINMovingAverage,
+};

@@ -22,6 +22,7 @@ pub mod tii;
 pub mod vhf;
 pub mod vortex;
 pub mod safezone_stop;
+pub mod weinstein;
 
 // Re-exports
 pub use macd::MACD;
@@ -44,3 +45,8 @@ pub use tii::TrendIntensityIndex;
 pub use vhf::VerticalHorizontalFilter;
 pub use vortex::VortexIndicator;
 pub use safezone_stop::{SafeZoneStop, SafeZoneStopOutput};
+pub use weinstein::{
+    StageAnalysis, StageAnalysisOutput, WeinStage, WeinsteinMA,
+    MansfieldRS, RelativePriceStrength, VolumeConfirmation,
+    SupportResistanceLevels, BreakoutValidation, TrendScore,
+};

@@ -41,6 +41,7 @@ pub mod kase_peak;
 pub mod kase_permission;
 pub mod projection_oscillator;
 pub mod elder_power;
+pub mod lane;
 
 // Re-exports
 pub use rsi::RSI;
@@ -82,3 +83,9 @@ pub use kase_peak::KasePeakOscillator;
 pub use kase_permission::KasePermissionStochastic;
 pub use projection_oscillator::ProjectionOscillator;
 pub use elder_power::{ElderPower, ElderPowerOutput};
+pub use lane::{
+    FastStochasticK, FastStochasticD, SlowStochasticK, SlowStochasticD,
+    FullStochastic, FullStochasticOutput, LaneStochastic,
+    StochasticDivergence, DivergenceType, DivergenceOutput,
+    StochasticPop, StochasticDrop, StochasticCrossover, CrossoverOutput,
+};
