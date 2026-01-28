@@ -68,4 +68,7 @@ pub use advanced::{
     // 6 ADDITIONAL NEW volatility indicators
     VolatilityTrendIndex, RelativeVolatilityIndex, VolatilityMomentumOscillator,
     VolatilityBandwidthOscillator, ImpliedVolatilityEstimator, VolatilityPersistenceRatio,
+    // 6 THIRD BATCH volatility indicators
+    VolatilityHalfLife, VolatilityCorrelation, GARCHVolatility,
+    VolatilityRangeIndicator, VolatilityAutoCorrelation, ExponentialVolatility,
 };

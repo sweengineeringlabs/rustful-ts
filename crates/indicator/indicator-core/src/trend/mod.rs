@@ -69,4 +69,7 @@ pub use advanced::{
     // Newest trend indicators
     TrendPersistenceIndex, TrendStrengthOscillator, MultiScaleTrendIndex,
     TrendEfficiencyRatio, TrendVelocityIndex, TrendRegimeDetector,
+    // 6 additional trend indicators
+    TrendAngle, TrendChannel, TrendCurvature, TrendVolatilityBand,
+    TrendQualityRating, TrendExhaustionSignal,
 };

@@ -18,4 +18,10 @@ pub use advanced::{
     WeightedMomentum,
     MomentumSmoothed,
     MomentumTrend,
+    MomentumRank,
+    MomentumZScore,
+    MomentumVolatility,
+    MomentumBias,
+    MomentumCycle,
+    MomentumQuality,
 };

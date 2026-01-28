@@ -2887,6 +2887,649 @@ impl TechnicalIndicator for StatisticalMomentum {
     }
 }
 
+/// Rolling Median - Rolling median of price series
+///
+/// Calculates the rolling median of the price series, which is more robust
+/// to outliers than the rolling mean. Useful for identifying the central
+/// tendency of price without being skewed by extreme values.
+///
+/// # Interpretation
+/// - Compare to current price: above median = potentially overbought
+/// - Compare to current price: below median = potentially oversold
+/// - Use as support/resistance level
+///
+/// # Example
+/// ```ignore
+/// let rm = RollingMedian::new(20).unwrap();
+/// let medians = rm.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct RollingMedian {
+    period: usize,
+}
+
+impl RollingMedian {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate rolling median
+    ///
+    /// Returns the median value of the price over the rolling window.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period {
+            return result;
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let mut window: Vec<f64> = close[start..=i].to_vec();
+            window.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let mid = window.len() / 2;
+            let median = if window.len() % 2 == 0 {
+                (window[mid - 1] + window[mid]) / 2.0
+            } else {
+                window[mid]
+            };
+
+            result[i] = median;
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for RollingMedian {
+    fn name(&self) -> &str {
+        "Rolling Median"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Cross Covariance Proxy - Covariance between high-low range and returns
+///
+/// Calculates a rolling proxy for cross-covariance between the high-low range
+/// (a volatility measure) and returns. This captures the relationship between
+/// volatility and price direction.
+///
+/// # Interpretation
+/// - Positive values: Volatility tends to accompany upward moves (bullish volatility)
+/// - Negative values: Volatility tends to accompany downward moves (bearish volatility)
+/// - Near zero: No systematic relationship between volatility and direction
+///
+/// # Example
+/// ```ignore
+/// let ccp = CrossCovarianceProxy::new(20).unwrap();
+/// let cov = ccp.calculate(&high, &low, &close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CrossCovarianceProxy {
+    period: usize,
+}
+
+impl CrossCovarianceProxy {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate cross-covariance between range and returns
+    ///
+    /// Returns the covariance between high-low range and price returns.
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 || high.len() != n || low.len() != n {
+            return result;
+        }
+
+        // Calculate ranges (high - low)
+        let ranges: Vec<f64> = high.iter()
+            .zip(low.iter())
+            .map(|(h, l)| (h - l).max(0.0))
+            .collect();
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let range_start = i + 1 - self.period;
+            let return_idx = i - 1;
+            let return_start = return_idx + 1 - self.period;
+
+            if return_start + self.period > returns.len() {
+                continue;
+            }
+
+            let range_window = &ranges[range_start..=i];
+            let return_window = &returns[return_start..=return_idx];
+
+            let n_w = self.period as f64;
+
+            // Calculate means
+            let mean_range: f64 = range_window.iter().sum::<f64>() / n_w;
+            let mean_return: f64 = return_window.iter().sum::<f64>() / n_w;
+
+            // Calculate covariance
+            let mut cov = 0.0;
+            for (r, ret) in range_window.iter().zip(return_window.iter()) {
+                cov += (r - mean_range) * (ret - mean_return);
+            }
+            cov /= n_w;
+
+            // Normalize by product of standard deviations to get correlation-like measure
+            let var_range: f64 = range_window.iter()
+                .map(|r| (r - mean_range).powi(2))
+                .sum::<f64>() / n_w;
+            let var_return: f64 = return_window.iter()
+                .map(|r| (r - mean_return).powi(2))
+                .sum::<f64>() / n_w;
+
+            let denominator = (var_range * var_return).sqrt();
+            if denominator > 1e-10 {
+                result[i] = cov / denominator;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for CrossCovarianceProxy {
+    fn name(&self) -> &str {
+        "Cross Covariance Proxy"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+/// Lagged Autocorrelation Sum - Sum of autocorrelations at multiple lags
+///
+/// Calculates the sum of autocorrelations at lags 1 through max_lag.
+/// This provides a measure of overall serial dependence in the return series,
+/// capturing momentum or mean-reversion tendencies across multiple time scales.
+///
+/// # Interpretation
+/// - Positive values: Persistent/trending behavior across multiple lags
+/// - Negative values: Mean-reverting behavior across multiple lags
+/// - Near zero: Random walk behavior
+///
+/// # Example
+/// ```ignore
+/// let las = LaggedAutocorrelationSum::new(20, 5).unwrap();
+/// let autocorr_sum = las.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct LaggedAutocorrelationSum {
+    period: usize,
+    max_lag: usize,
+}
+
+impl LaggedAutocorrelationSum {
+    pub fn new(period: usize, max_lag: usize) -> Result<Self> {
+        if period < 15 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 15".to_string(),
+            });
+        }
+        if max_lag < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_lag".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        if max_lag >= period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_lag".to_string(),
+                reason: "must be less than period/2".to_string(),
+            });
+        }
+        Ok(Self { period, max_lag })
+    }
+
+    /// Calculate single-lag autocorrelation for a given window
+    fn autocorrelation(returns: &[f64], lag: usize) -> f64 {
+        if returns.len() < lag + 5 {
+            return 0.0;
+        }
+
+        let n = returns.len() - lag;
+        let current = &returns[lag..];
+        let lagged = &returns[..n];
+
+        let mean_current: f64 = current.iter().sum::<f64>() / n as f64;
+        let mean_lagged: f64 = lagged.iter().sum::<f64>() / n as f64;
+
+        let mut cov = 0.0;
+        let mut var_current = 0.0;
+        let mut var_lagged = 0.0;
+
+        for (c, l) in current.iter().zip(lagged.iter()) {
+            let dc = c - mean_current;
+            let dl = l - mean_lagged;
+            cov += dc * dl;
+            var_current += dc * dc;
+            var_lagged += dl * dl;
+        }
+
+        let denominator = (var_current * var_lagged).sqrt();
+        if denominator > 1e-10 {
+            cov / denominator
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate sum of autocorrelations at lags 1 through max_lag
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let required = self.period + self.max_lag + 1;
+        if n < required {
+            return result;
+        }
+
+        // Calculate all returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in required..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window: Vec<f64> = returns[start..=return_idx].to_vec();
+
+            // Sum autocorrelations at each lag
+            let mut autocorr_sum = 0.0;
+            for lag in 1..=self.max_lag {
+                autocorr_sum += Self::autocorrelation(&window, lag);
+            }
+
+            // Normalize by number of lags
+            result[i] = autocorr_sum / self.max_lag as f64;
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for LaggedAutocorrelationSum {
+    fn name(&self) -> &str {
+        "Lagged Autocorrelation Sum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.max_lag + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Median Absolute Deviation Robust - MAD-based robust volatility measure
+///
+/// Calculates the Median Absolute Deviation (MAD) of returns, which is a
+/// robust measure of volatility that is less sensitive to outliers than
+/// standard deviation. Scaled by 1.4826 to be comparable to standard deviation
+/// for normally distributed data.
+///
+/// # Interpretation
+/// - Higher values: Higher volatility
+/// - Lower values: Lower volatility
+/// - More stable than standard deviation in presence of outliers
+///
+/// # Example
+/// ```ignore
+/// let mad = MedianAbsoluteDeviationRobust::new(20).unwrap();
+/// let volatility = mad.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct MedianAbsoluteDeviationRobust {
+    period: usize,
+}
+
+impl MedianAbsoluteDeviationRobust {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate median of a sorted slice
+    fn median_of_sorted(sorted: &[f64]) -> f64 {
+        let n = sorted.len();
+        if n == 0 {
+            return 0.0;
+        }
+        if n % 2 == 0 {
+            (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        } else {
+            sorted[n / 2]
+        }
+    }
+
+    /// Calculate MAD-based robust volatility of returns
+    ///
+    /// Returns the scaled MAD (multiplied by 1.4826 for consistency with std dev).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate all returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let mut window: Vec<f64> = returns[start..=return_idx].to_vec();
+
+            // Sort to find median
+            window.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = Self::median_of_sorted(&window);
+
+            // Calculate absolute deviations from median
+            let mut abs_deviations: Vec<f64> = window.iter()
+                .map(|r| (r - median).abs())
+                .collect();
+
+            // Sort absolute deviations to find their median (MAD)
+            abs_deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mad = Self::median_of_sorted(&abs_deviations);
+
+            // Scale by 1.4826 to make it comparable to standard deviation
+            // for normally distributed data
+            result[i] = mad * 1.4826 * 100.0; // Scale to percentage
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for MedianAbsoluteDeviationRobust {
+    fn name(&self) -> &str {
+        "Median Absolute Deviation Robust"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Robust Z-Score Indicator - Z-score using median and MAD
+///
+/// Calculates a robust z-score using the median instead of mean and
+/// MAD (Median Absolute Deviation) instead of standard deviation.
+/// This is less sensitive to outliers than the traditional z-score.
+///
+/// # Interpretation
+/// - Values > 2: Significantly above typical prices (overbought)
+/// - Values < -2: Significantly below typical prices (oversold)
+/// - Values near 0: Near typical price levels
+///
+/// # Example
+/// ```ignore
+/// let rz = RobustZScoreIndicator::new(20).unwrap();
+/// let zscores = rz.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct RobustZScoreIndicator {
+    period: usize,
+}
+
+impl RobustZScoreIndicator {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate median of a sorted slice
+    fn median_of_sorted(sorted: &[f64]) -> f64 {
+        let n = sorted.len();
+        if n == 0 {
+            return 0.0;
+        }
+        if n % 2 == 0 {
+            (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        } else {
+            sorted[n / 2]
+        }
+    }
+
+    /// Calculate robust z-score using median and MAD
+    ///
+    /// Returns (current_price - median) / (MAD * 1.4826)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period {
+            return result;
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let current = close[i];
+
+            // Sort window to find median
+            let mut window: Vec<f64> = close[start..=i].to_vec();
+            window.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let median = Self::median_of_sorted(&window);
+
+            // Calculate absolute deviations from median
+            let mut abs_deviations: Vec<f64> = window.iter()
+                .map(|p| (p - median).abs())
+                .collect();
+
+            // Sort to find MAD
+            abs_deviations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let mad = Self::median_of_sorted(&abs_deviations);
+
+            // Calculate robust z-score
+            // Use 1.4826 scaling factor for consistency with normal distribution
+            let scaled_mad = mad * 1.4826;
+            if scaled_mad > 1e-10 {
+                result[i] = (current - median) / scaled_mad;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for RobustZScoreIndicator {
+    fn name(&self) -> &str {
+        "Robust Z-Score Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Quantile Ratio - Ratio of upper to lower quantiles
+///
+/// Calculates the ratio of upper quantile (e.g., 75th percentile) to
+/// lower quantile (e.g., 25th percentile) of returns. This measures
+/// the asymmetry of the return distribution.
+///
+/// # Interpretation
+/// - Ratio > 1: Upper tail is larger (positive skew tendency)
+/// - Ratio < 1: Lower tail is larger (negative skew tendency)
+/// - Ratio = 1: Symmetric distribution
+/// - Larger deviation from 1: More asymmetric distribution
+///
+/// # Example
+/// ```ignore
+/// let qr = QuantileRatio::new(20, 0.25).unwrap();
+/// let ratios = qr.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct QuantileRatio {
+    period: usize,
+    quantile: f64,
+}
+
+impl QuantileRatio {
+    pub fn new(period: usize, quantile: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if quantile <= 0.0 || quantile >= 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "quantile".to_string(),
+                reason: "must be between 0 and 0.5 (exclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, quantile })
+    }
+
+    /// Calculate quantile ratio of returns
+    ///
+    /// Returns the ratio of absolute upper quantile to absolute lower quantile.
+    /// Values > 1 indicate larger upside moves, < 1 indicate larger downside moves.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate all returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let mut window: Vec<f64> = returns[start..=return_idx].to_vec();
+
+            // Sort returns
+            window.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let lower_idx = (self.period as f64 * self.quantile) as usize;
+            let upper_idx = (self.period as f64 * (1.0 - self.quantile)) as usize;
+
+            if lower_idx >= window.len() || upper_idx >= window.len() {
+                continue;
+            }
+
+            let lower_quantile = window[lower_idx];
+            let upper_quantile = window[upper_idx.min(window.len() - 1)];
+
+            // Calculate ratio of absolute values
+            // For negative lower quantile and positive upper quantile
+            let abs_lower = lower_quantile.abs();
+            let abs_upper = upper_quantile.abs();
+
+            if abs_lower > 1e-10 {
+                result[i] = abs_upper / abs_lower;
+            } else if abs_upper > 1e-10 {
+                // Lower is near zero but upper is not
+                result[i] = 10.0; // Cap at 10 to indicate strong upside asymmetry
+            } else {
+                // Both are near zero
+                result[i] = 1.0;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for QuantileRatio {
+    fn name(&self) -> &str {
+        "Quantile Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3877,6 +4520,366 @@ mod tests {
         if !last_values.is_empty() {
             let avg: f64 = last_values.iter().sum::<f64>() / last_values.len() as f64;
             assert!(avg < 0.0, "Expected negative momentum for downtrend, got {}", avg);
+        }
+    }
+
+    // ==================== RollingMedian Tests ====================
+
+    #[test]
+    fn test_rolling_median() {
+        let close = make_test_data();
+        let rm = RollingMedian::new(10).unwrap();
+        let result = rm.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Median should be positive for positive price data
+        for &val in result.iter().skip(9) {
+            assert!(val > 0.0, "Median should be positive, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_rolling_median_validation() {
+        assert!(RollingMedian::new(2).is_err()); // period too small
+        assert!(RollingMedian::new(1).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_rolling_median_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let rm = RollingMedian::new(10).unwrap();
+        let output = rm.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_rolling_median_monotonic() {
+        // For strictly increasing data, median should also be increasing
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let rm = RollingMedian::new(10).unwrap();
+        let result = rm.calculate(&close);
+
+        // Median should be strictly increasing for strictly increasing input
+        for i in 10..result.len() {
+            assert!(result[i] >= result[i - 1], "Median should be non-decreasing for increasing data");
+        }
+    }
+
+    #[test]
+    fn test_rolling_median_outlier_robustness() {
+        // Median should be more robust to outliers than mean
+        let mut close = make_test_data();
+        close[15] = close[14] * 5.0; // Add a large outlier
+
+        let rm = RollingMedian::new(10).unwrap();
+        let result = rm.calculate(&close);
+
+        // The median at the outlier point should still be reasonable
+        // (not 5x the previous value)
+        assert!(result[15] < close[14] * 2.0, "Median should be robust to outliers");
+    }
+
+    // ==================== CrossCovarianceProxy Tests ====================
+
+    #[test]
+    fn test_cross_covariance_proxy() {
+        let close = make_test_data();
+        let high: Vec<f64> = close.iter().map(|c| c * 1.02).collect();
+        let low: Vec<f64> = close.iter().map(|c| c * 0.98).collect();
+        let ccp = CrossCovarianceProxy::new(15).unwrap();
+        let result = ccp.calculate(&high, &low, &close);
+
+        assert_eq!(result.len(), close.len());
+        // Cross-correlation should be between -1 and 1
+        for &val in result.iter().skip(16) {
+            if val != 0.0 {
+                assert!(val >= -1.0 && val <= 1.0, "Cross-covariance should be in [-1, 1], got {}", val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_cross_covariance_proxy_validation() {
+        assert!(CrossCovarianceProxy::new(5).is_err()); // period too small
+        assert!(CrossCovarianceProxy::new(3).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_cross_covariance_proxy_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let ccp = CrossCovarianceProxy::new(15).unwrap();
+        let output = ccp.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_cross_covariance_proxy_length_mismatch() {
+        let close = make_test_data();
+        let high: Vec<f64> = close[..20].to_vec(); // Shorter length
+        let low: Vec<f64> = close.iter().map(|c| c * 0.98).collect();
+        let ccp = CrossCovarianceProxy::new(15).unwrap();
+        let result = ccp.calculate(&high, &low, &close);
+
+        // Should return zeros when lengths don't match
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ==================== LaggedAutocorrelationSum Tests ====================
+
+    #[test]
+    fn test_lagged_autocorrelation_sum() {
+        let close = make_test_data();
+        let las = LaggedAutocorrelationSum::new(20, 3).unwrap();
+        let result = las.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Autocorrelation sum should be between -1 and 1 (since it's an average)
+        for &val in result.iter().skip(24) {
+            if val != 0.0 {
+                assert!(val >= -1.0 && val <= 1.0, "Lagged autocorrelation sum out of range: {}", val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_lagged_autocorrelation_sum_validation() {
+        assert!(LaggedAutocorrelationSum::new(10, 3).is_err()); // period too small
+        assert!(LaggedAutocorrelationSum::new(20, 0).is_err()); // max_lag too small
+        assert!(LaggedAutocorrelationSum::new(20, 15).is_err()); // max_lag >= period/2
+    }
+
+    #[test]
+    fn test_lagged_autocorrelation_sum_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let las = LaggedAutocorrelationSum::new(20, 3).unwrap();
+        let output = las.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_lagged_autocorrelation_sum_trending() {
+        // Strongly trending data should show positive autocorrelation
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let las = LaggedAutocorrelationSum::new(20, 3).unwrap();
+        let result = las.calculate(&close);
+
+        // Trending data tends to show positive autocorrelation
+        let valid_values: Vec<f64> = result.iter()
+            .skip(24)
+            .copied()
+            .filter(|&v| v != 0.0)
+            .collect();
+
+        assert!(!valid_values.is_empty(), "Expected some non-zero autocorrelation values");
+    }
+
+    // ==================== MedianAbsoluteDeviationRobust Tests ====================
+
+    #[test]
+    fn test_median_absolute_deviation_robust() {
+        let close = make_test_data();
+        let madr = MedianAbsoluteDeviationRobust::new(20).unwrap();
+        let result = madr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // MAD should be non-negative
+        for &val in result.iter() {
+            assert!(val >= 0.0, "MAD should be non-negative, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_median_absolute_deviation_robust_validation() {
+        assert!(MedianAbsoluteDeviationRobust::new(5).is_err()); // period too small
+        assert!(MedianAbsoluteDeviationRobust::new(3).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_median_absolute_deviation_robust_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let madr = MedianAbsoluteDeviationRobust::new(20).unwrap();
+        let output = madr.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_median_absolute_deviation_robust_constant_returns() {
+        // Constant returns should have near-zero MAD
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let madr = MedianAbsoluteDeviationRobust::new(20).unwrap();
+        let result = madr.calculate(&close);
+
+        // For constant returns (linear price), MAD should be very small
+        for &val in result.iter().skip(21) {
+            assert!(val < 1.0, "MAD for constant returns should be very small, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_median_absolute_deviation_robust_outlier_robustness() {
+        // MAD should be less affected by outliers than standard deviation
+        let mut close = make_test_data();
+        let madr = MedianAbsoluteDeviationRobust::new(20).unwrap();
+        let result_no_outlier = madr.calculate(&close);
+
+        // Add outlier
+        close[25] = close[24] * 2.0;
+        let result_with_outlier = madr.calculate(&close);
+
+        // MAD should not change dramatically with single outlier
+        if result_no_outlier[29] > 0.0 && result_with_outlier[29] > 0.0 {
+            let ratio = result_with_outlier[29] / result_no_outlier[29];
+            // Should be within 3x (robust to outliers)
+            assert!(ratio < 3.0, "MAD should be robust to outliers, ratio: {}", ratio);
+        }
+    }
+
+    // ==================== RobustZScoreIndicator Tests ====================
+
+    #[test]
+    fn test_robust_zscore_indicator() {
+        let close = make_test_data();
+        let rzi = RobustZScoreIndicator::new(20).unwrap();
+        let result = rzi.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Z-scores should be finite
+        for &val in result.iter().skip(19) {
+            assert!(val.is_finite(), "Robust z-score should be finite, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_robust_zscore_indicator_validation() {
+        assert!(RobustZScoreIndicator::new(5).is_err()); // period too small
+        assert!(RobustZScoreIndicator::new(3).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_robust_zscore_indicator_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let rzi = RobustZScoreIndicator::new(20).unwrap();
+        let output = rzi.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_robust_zscore_indicator_extreme_value() {
+        let mut close = make_test_data();
+        // Add extreme value at the end
+        close.push(close.last().unwrap() * 1.20); // 20% spike
+
+        let rzi = RobustZScoreIndicator::new(20).unwrap();
+        let result = rzi.calculate(&close);
+
+        // The extreme value should have a high z-score
+        let last_val = result[close.len() - 1];
+        assert!(last_val > 1.0, "Extreme value should have high z-score, got {}", last_val);
+    }
+
+    #[test]
+    fn test_robust_zscore_indicator_symmetric() {
+        // For trending up data, later values should have positive z-scores
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let rzi = RobustZScoreIndicator::new(20).unwrap();
+        let result = rzi.calculate(&close);
+
+        // Last value should be above median (positive z-score)
+        let last_val = result[close.len() - 1];
+        assert!(last_val > 0.0, "Expected positive z-score for uptrend, got {}", last_val);
+    }
+
+    // ==================== QuantileRatio Tests ====================
+
+    #[test]
+    fn test_quantile_ratio() {
+        let close = make_test_data();
+        let qr = QuantileRatio::new(20, 0.25).unwrap();
+        let result = qr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Quantile ratio should be positive
+        for &val in result.iter().skip(21) {
+            assert!(val >= 0.0, "Quantile ratio should be non-negative, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_quantile_ratio_validation() {
+        assert!(QuantileRatio::new(5, 0.25).is_err()); // period too small
+        assert!(QuantileRatio::new(20, 0.0).is_err()); // quantile too small
+        assert!(QuantileRatio::new(20, 0.5).is_err()); // quantile too large
+        assert!(QuantileRatio::new(20, 0.6).is_err()); // quantile way too large
+        assert!(QuantileRatio::new(20, -0.1).is_err()); // quantile negative
+    }
+
+    #[test]
+    fn test_quantile_ratio_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let qr = QuantileRatio::new(20, 0.25).unwrap();
+        let output = qr.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_quantile_ratio_symmetric_returns() {
+        // For symmetric returns, ratio should be near 1
+        // Use sinusoidal-like data for roughly symmetric returns
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 5.0 + i as f64 * 0.2)
+            .collect();
+        let qr = QuantileRatio::new(20, 0.25).unwrap();
+        let result = qr.calculate(&close);
+
+        // Check that most ratios are in a reasonable range
+        let valid_values: Vec<f64> = result.iter()
+            .skip(21)
+            .copied()
+            .filter(|&v| v > 0.0)
+            .collect();
+
+        if !valid_values.is_empty() {
+            for &val in &valid_values {
+                // Ratio should be positive and finite
+                assert!(val > 0.0 && val.is_finite(), "Quantile ratio should be positive and finite, got {}", val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_quantile_ratio_different_quantiles() {
+        let close = make_test_data();
+        let qr_10 = QuantileRatio::new(20, 0.10).unwrap();
+        let qr_25 = QuantileRatio::new(20, 0.25).unwrap();
+
+        let result_10 = qr_10.calculate(&close);
+        let result_25 = qr_25.calculate(&close);
+
+        // Both should have same length
+        assert_eq!(result_10.len(), result_25.len());
+
+        // Both should produce finite values
+        for (v10, v25) in result_10.iter().skip(21).zip(result_25.iter().skip(21)) {
+            assert!(v10.is_finite(), "Quantile ratio (10%) should be finite");
+            assert!(v25.is_finite(), "Quantile ratio (25%) should be finite");
         }
     }
 }

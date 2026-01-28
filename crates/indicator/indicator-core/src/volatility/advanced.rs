@@ -4178,6 +4178,854 @@ impl TechnicalIndicator for VolatilityPersistenceRatio {
     }
 }
 
+// ============================================================================
+// 6 THIRD BATCH VOLATILITY INDICATORS
+// ============================================================================
+
+/// Volatility Half Life - Estimates mean reversion half-life of volatility.
+///
+/// Calculates the half-life of volatility mean reversion using an AR(1) model.
+/// The half-life indicates how many periods it takes for a volatility deviation
+/// to decay to half its original distance from the mean.
+///
+/// # Output
+/// Returns half-life in periods:
+/// - Lower values: Faster mean reversion (volatility quickly returns to normal)
+/// - Higher values: Slower mean reversion (volatility deviations persist)
+/// - Very high values: Volatility may be trending rather than mean reverting
+///
+/// # Example
+/// ```ignore
+/// let vhl = VolatilityHalfLife::new(10, 30)?;
+/// let half_life = vhl.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityHalfLife {
+    /// Period for calculating rolling volatility
+    volatility_period: usize,
+    /// Period for regression/estimation
+    regression_period: usize,
+}
+
+impl VolatilityHalfLife {
+    /// Create a new VolatilityHalfLife indicator.
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for rolling volatility (minimum 5)
+    /// * `regression_period` - Period for half-life estimation (minimum 20)
+    pub fn new(volatility_period: usize, regression_period: usize) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if regression_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "regression_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self {
+            volatility_period,
+            regression_period,
+        })
+    }
+
+    /// Calculate volatility half-life.
+    ///
+    /// Returns half-life in periods. Higher values indicate slower mean reversion.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let total_period = self.volatility_period + self.regression_period;
+
+        if n < total_period + 1 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Calculate rolling volatility
+        let mut volatility = vec![0.0; n];
+        for i in self.volatility_period..n {
+            let start = i.saturating_sub(self.volatility_period);
+            let returns: Vec<f64> = ((start + 1)..=i)
+                .filter_map(|j| {
+                    if close[j - 1] > 1e-10 {
+                        Some((close[j] / close[j - 1]).ln())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if returns.len() >= 2 {
+                let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+                let var: f64 = returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / returns.len() as f64;
+                volatility[i] = var.sqrt() * (252.0_f64).sqrt();
+            }
+        }
+
+        // Calculate half-life using AR(1) model
+        for i in total_period..n {
+            let reg_start = i.saturating_sub(self.regression_period);
+
+            // Calculate mean volatility
+            let vol_slice: Vec<f64> = (reg_start..=i)
+                .filter(|&j| volatility[j] > 1e-10)
+                .map(|j| volatility[j])
+                .collect();
+
+            if vol_slice.len() < 10 {
+                continue;
+            }
+
+            let mean_vol: f64 = vol_slice.iter().sum::<f64>() / vol_slice.len() as f64;
+
+            // Calculate AR(1) coefficient using OLS
+            // y_t - mean = phi * (y_{t-1} - mean) + epsilon
+            let mut sum_xy = 0.0;
+            let mut sum_x2 = 0.0;
+
+            for j in (reg_start + 1)..=i {
+                if volatility[j] > 1e-10 && volatility[j - 1] > 1e-10 {
+                    let x = volatility[j - 1] - mean_vol;
+                    let y = volatility[j] - mean_vol;
+                    sum_xy += x * y;
+                    sum_x2 += x * x;
+                }
+            }
+
+            if sum_x2 > 1e-10 {
+                let phi = (sum_xy / sum_x2).max(-0.999).min(0.999);
+
+                // Half-life = -ln(2) / ln(phi) for 0 < phi < 1
+                if phi > 0.0 && phi < 1.0 {
+                    let half_life = -std::f64::consts::LN_2 / phi.ln();
+                    result[i] = half_life.max(1.0).min(100.0); // Clamp to reasonable range
+                } else if phi <= 0.0 {
+                    result[i] = 1.0; // Very fast mean reversion
+                } else {
+                    result[i] = 100.0; // No mean reversion (unit root)
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilityHalfLife {
+    fn name(&self) -> &str {
+        "Volatility Half Life"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volatility_period + self.regression_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Volatility Correlation - Correlation between returns and volatility.
+///
+/// Measures the correlation between price returns and subsequent volatility.
+/// This captures the "leverage effect" where negative returns often lead to
+/// higher volatility (common in equity markets).
+///
+/// # Output
+/// Returns correlation coefficient between -1 and 1:
+/// - Negative: Leverage effect (down moves increase vol)
+/// - Positive: Inverse leverage (up moves increase vol)
+/// - Near zero: No relationship between returns and volatility
+///
+/// # Example
+/// ```ignore
+/// let vc = VolatilityCorrelation::new(20)?;
+/// let correlation = vc.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityCorrelation {
+    /// Lookback period for correlation calculation
+    period: usize,
+}
+
+impl VolatilityCorrelation {
+    /// Create a new VolatilityCorrelation indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period (minimum 10)
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate volatility correlation (leverage effect).
+    ///
+    /// Returns correlation between returns and subsequent volatility changes.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+
+        if n < self.period + 1 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Calculate returns and absolute returns (proxy for volatility)
+        let mut returns = vec![0.0; n];
+        let mut abs_returns = vec![0.0; n];
+
+        for i in 1..n {
+            if close[i - 1] > 1e-10 {
+                let ret = (close[i] / close[i - 1]).ln();
+                returns[i] = ret;
+                abs_returns[i] = ret.abs();
+            }
+        }
+
+        // Calculate rolling correlation between returns and lagged absolute returns
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Collect return and subsequent volatility pairs
+            let rets: Vec<f64> = (start..i).map(|j| returns[j]).collect();
+            let vols: Vec<f64> = (start..i).map(|j| abs_returns[j + 1]).collect();
+
+            if rets.len() < 5 {
+                continue;
+            }
+
+            // Calculate correlation
+            let mean_ret: f64 = rets.iter().sum::<f64>() / rets.len() as f64;
+            let mean_vol: f64 = vols.iter().sum::<f64>() / vols.len() as f64;
+
+            let mut cov = 0.0;
+            let mut var_ret = 0.0;
+            let mut var_vol = 0.0;
+
+            for (r, v) in rets.iter().zip(vols.iter()) {
+                cov += (r - mean_ret) * (v - mean_vol);
+                var_ret += (r - mean_ret).powi(2);
+                var_vol += (v - mean_vol).powi(2);
+            }
+
+            let std_ret = (var_ret / rets.len() as f64).sqrt();
+            let std_vol = (var_vol / vols.len() as f64).sqrt();
+
+            if std_ret > 1e-10 && std_vol > 1e-10 {
+                result[i] = (cov / rets.len() as f64) / (std_ret * std_vol);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilityCorrelation {
+    fn name(&self) -> &str {
+        "Volatility Correlation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// GARCH Volatility - GARCH(1,1) model volatility estimation.
+///
+/// Implements a simplified GARCH(1,1) (Generalized Autoregressive Conditional
+/// Heteroskedasticity) model for volatility estimation. This is the most widely
+/// used model for financial volatility.
+///
+/// The model: sigma^2_t = omega + alpha * r^2_{t-1} + beta * sigma^2_{t-1}
+///
+/// # Parameters
+/// - omega: Long-run variance weight (unconditional variance contribution)
+/// - alpha: Weight for recent squared return (shock/news impact)
+/// - beta: Weight for previous variance (persistence)
+///
+/// # Output
+/// Returns annualized volatility estimate as percentage.
+///
+/// # Example
+/// ```ignore
+/// let gv = GARCHVolatility::new(0.05, 0.10, 0.85)?;
+/// let volatility = gv.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct GARCHVolatility {
+    /// Omega: contribution to long-run variance
+    omega: f64,
+    /// Alpha: weight for squared return (ARCH term)
+    alpha: f64,
+    /// Beta: weight for previous variance (GARCH term)
+    beta: f64,
+}
+
+impl GARCHVolatility {
+    /// Create a new GARCHVolatility indicator.
+    ///
+    /// # Arguments
+    /// * `omega` - Long-run variance weight (positive, typically small like 0.01-0.1)
+    /// * `alpha` - Weight for squared return (0 to 1, typically 0.05-0.15)
+    /// * `beta` - Weight for previous variance (0 to 1, typically 0.8-0.95)
+    ///
+    /// Note: alpha + beta should be < 1 for stationarity
+    pub fn new(omega: f64, alpha: f64, beta: f64) -> Result<Self> {
+        if omega < 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "omega".to_string(),
+                reason: "must be non-negative".to_string(),
+            });
+        }
+        if alpha < 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "alpha".to_string(),
+                reason: "must be non-negative".to_string(),
+            });
+        }
+        if beta < 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "beta".to_string(),
+                reason: "must be non-negative".to_string(),
+            });
+        }
+        if alpha + beta >= 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "alpha + beta".to_string(),
+                reason: "sum must be less than 1 for stationarity".to_string(),
+            });
+        }
+        Ok(Self { omega, alpha, beta })
+    }
+
+    /// Create with RiskMetrics parameters (alpha=0.06, beta=0.94).
+    pub fn risk_metrics() -> Result<Self> {
+        Self::new(0.0, 0.06, 0.94)
+    }
+
+    /// Calculate GARCH(1,1) volatility.
+    ///
+    /// Returns annualized volatility as percentage.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+
+        if n < 2 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Calculate unconditional variance for initialization
+        let returns: Vec<f64> = (1..n)
+            .filter_map(|i| {
+                if close[i - 1] > 1e-10 {
+                    Some((close[i] / close[i - 1]).ln())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let uncond_var = if returns.len() >= 2 {
+            let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+            returns
+                .iter()
+                .map(|r| (r - mean).powi(2))
+                .sum::<f64>()
+                / returns.len() as f64
+        } else {
+            0.0001 // Default small variance
+        };
+
+        // Initialize variance
+        let mut variance = uncond_var;
+
+        for i in 1..n {
+            let ret = if close[i - 1] > 1e-10 {
+                (close[i] / close[i - 1]).ln()
+            } else {
+                0.0
+            };
+
+            // GARCH(1,1) update
+            variance = self.omega + self.alpha * ret.powi(2) + self.beta * variance;
+
+            // Ensure variance stays positive
+            variance = variance.max(1e-10);
+
+            // Annualize and convert to percentage
+            result[i] = variance.sqrt() * (252.0_f64).sqrt() * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for GARCHVolatility {
+    fn name(&self) -> &str {
+        "GARCH Volatility"
+    }
+
+    fn min_periods(&self) -> usize {
+        2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Volatility Range Indicator - Historical range of volatility.
+///
+/// Tracks the minimum and maximum volatility over a lookback period,
+/// and calculates where current volatility stands within this range.
+/// Useful for identifying volatility extremes and potential mean reversion points.
+///
+/// # Output
+/// Returns four values per period:
+/// - Current volatility
+/// - Minimum volatility in range
+/// - Maximum volatility in range
+/// - Position within range (0-100%)
+///
+/// # Example
+/// ```ignore
+/// let vri = VolatilityRangeIndicator::new(10, 40)?;
+/// let (current, min_vol, max_vol, range_pos) = vri.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityRangeIndicator {
+    /// Period for calculating rolling volatility
+    volatility_period: usize,
+    /// Period for tracking volatility range
+    range_period: usize,
+}
+
+impl VolatilityRangeIndicator {
+    /// Create a new VolatilityRangeIndicator.
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for rolling volatility (minimum 5)
+    /// * `range_period` - Period for range tracking (minimum 20)
+    pub fn new(volatility_period: usize, range_period: usize) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if range_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "range_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self {
+            volatility_period,
+            range_period,
+        })
+    }
+
+    /// Calculate volatility range indicator.
+    ///
+    /// Returns (current_vol, min_vol, max_vol, range_position).
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let total_period = self.volatility_period + self.range_period;
+
+        let mut current = vec![0.0; n];
+        let mut min_vol = vec![0.0; n];
+        let mut max_vol = vec![0.0; n];
+        let mut range_position = vec![0.0; n];
+
+        if n < total_period + 1 {
+            return (current, min_vol, max_vol, range_position);
+        }
+
+        // Calculate rolling volatility
+        let mut volatility = vec![0.0; n];
+        for i in self.volatility_period..n {
+            let start = i.saturating_sub(self.volatility_period);
+            let returns: Vec<f64> = ((start + 1)..=i)
+                .filter_map(|j| {
+                    if close[j - 1] > 1e-10 {
+                        Some((close[j] / close[j - 1]).ln())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if returns.len() >= 2 {
+                let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+                let var: f64 = returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / returns.len() as f64;
+                volatility[i] = var.sqrt() * (252.0_f64).sqrt() * 100.0;
+            }
+        }
+
+        // Calculate range statistics
+        for i in total_period..n {
+            let range_start = i.saturating_sub(self.range_period);
+
+            current[i] = volatility[i];
+
+            // Find min and max in range
+            let vol_slice = &volatility[range_start..=i];
+            let valid_vols: Vec<f64> = vol_slice.iter().filter(|&&v| v > 1e-10).cloned().collect();
+
+            if valid_vols.is_empty() {
+                continue;
+            }
+
+            let min_v = valid_vols.iter().cloned().fold(f64::MAX, f64::min);
+            let max_v = valid_vols.iter().cloned().fold(f64::MIN, f64::max);
+
+            min_vol[i] = min_v;
+            max_vol[i] = max_v;
+
+            // Calculate position within range (0 to 100)
+            let range = max_v - min_v;
+            if range > 1e-10 {
+                range_position[i] = ((volatility[i] - min_v) / range * 100.0)
+                    .max(0.0)
+                    .min(100.0);
+            } else {
+                range_position[i] = 50.0; // Default to middle when no range
+            }
+        }
+
+        (current, min_vol, max_vol, range_position)
+    }
+}
+
+impl TechnicalIndicator for VolatilityRangeIndicator {
+    fn name(&self) -> &str {
+        "Volatility Range Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volatility_period + self.range_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        let (current, _, _, range_position) = self.calculate(&data.close);
+
+        // Return current volatility as primary, range position as secondary
+        Ok(IndicatorOutput::dual(current, range_position))
+    }
+
+    fn output_features(&self) -> usize {
+        2 // current_volatility, range_position
+    }
+}
+
+/// Volatility Auto Correlation - Multi-lag autocorrelation of volatility.
+///
+/// Calculates the weighted average autocorrelation of volatility across
+/// multiple lags. This provides a robust measure of volatility persistence
+/// that accounts for multi-period effects.
+///
+/// # Output
+/// Returns weighted autocorrelation between -1 and 1:
+/// - Near 1: Strong positive persistence (high vol follows high vol)
+/// - Near 0: No persistence (random volatility)
+/// - Negative: Mean reverting (rare in practice)
+///
+/// # Example
+/// ```ignore
+/// let vac = VolatilityAutoCorrelation::new(10, 30, 5)?;
+/// let autocorr = vac.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityAutoCorrelation {
+    /// Period for calculating rolling volatility
+    volatility_period: usize,
+    /// Period for correlation calculation
+    correlation_period: usize,
+    /// Maximum lag to consider
+    max_lag: usize,
+}
+
+impl VolatilityAutoCorrelation {
+    /// Create a new VolatilityAutoCorrelation indicator.
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for rolling volatility (minimum 5)
+    /// * `correlation_period` - Period for correlation (minimum 20)
+    /// * `max_lag` - Maximum lag to consider (1-10)
+    pub fn new(volatility_period: usize, correlation_period: usize, max_lag: usize) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if correlation_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "correlation_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if max_lag < 1 || max_lag > 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_lag".to_string(),
+                reason: "must be between 1 and 10".to_string(),
+            });
+        }
+        Ok(Self {
+            volatility_period,
+            correlation_period,
+            max_lag,
+        })
+    }
+
+    /// Calculate weighted multi-lag autocorrelation.
+    ///
+    /// Returns autocorrelation coefficient between -1 and 1.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let total_period = self.volatility_period + self.correlation_period + self.max_lag;
+
+        if n < total_period + 1 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Calculate rolling volatility (using squared returns for ARCH effects)
+        let mut vol_proxy = vec![0.0; n];
+        for i in 1..n {
+            if close[i - 1] > 1e-10 {
+                let ret = (close[i] / close[i - 1]).ln();
+                vol_proxy[i] = ret.powi(2);
+            }
+        }
+
+        // Calculate weighted autocorrelation
+        for i in total_period..n {
+            let start = i.saturating_sub(self.correlation_period);
+
+            // Get volatility slice
+            let vol_slice: Vec<f64> = (start..=i).map(|j| vol_proxy[j]).collect();
+
+            if vol_slice.len() < 10 {
+                continue;
+            }
+
+            let mean_vol: f64 = vol_slice.iter().sum::<f64>() / vol_slice.len() as f64;
+            let var_vol: f64 = vol_slice
+                .iter()
+                .map(|v| (v - mean_vol).powi(2))
+                .sum::<f64>()
+                / vol_slice.len() as f64;
+
+            if var_vol < 1e-20 {
+                continue;
+            }
+
+            // Calculate weighted autocorrelation across lags
+            let mut total_autocorr = 0.0;
+            let mut total_weight = 0.0;
+
+            for lag in 1..=self.max_lag {
+                let mut cov = 0.0;
+                let mut count = 0;
+
+                for j in (start + lag)..=i {
+                    let x = vol_proxy[j] - mean_vol;
+                    let y = vol_proxy[j - lag] - mean_vol;
+                    cov += x * y;
+                    count += 1;
+                }
+
+                if count > 0 {
+                    let autocorr = (cov / count as f64) / var_vol;
+                    // Weight earlier lags more heavily (exponential decay)
+                    let weight = 0.5_f64.powi((lag - 1) as i32);
+                    total_autocorr += autocorr * weight;
+                    total_weight += weight;
+                }
+            }
+
+            if total_weight > 1e-10 {
+                result[i] = (total_autocorr / total_weight).max(-1.0).min(1.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilityAutoCorrelation {
+    fn name(&self) -> &str {
+        "Volatility Auto Correlation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volatility_period + self.correlation_period + self.max_lag + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Exponential Volatility - Exponentially weighted moving volatility.
+///
+/// Calculates volatility using exponentially weighted moving average of
+/// squared returns, similar to the RiskMetrics approach. Recent observations
+/// receive more weight than older ones.
+///
+/// # Output
+/// Returns annualized volatility as percentage.
+///
+/// # Example
+/// ```ignore
+/// let ev = ExponentialVolatility::new(0.94)?; // RiskMetrics decay
+/// let volatility = ev.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ExponentialVolatility {
+    /// Decay factor (lambda), typically 0.94 for daily data
+    decay_factor: f64,
+}
+
+impl ExponentialVolatility {
+    /// Create a new ExponentialVolatility indicator.
+    ///
+    /// # Arguments
+    /// * `decay_factor` - Decay/smoothing factor (0 < lambda < 1)
+    ///   - Higher values (e.g., 0.97): More weight on history, smoother
+    ///   - Lower values (e.g., 0.90): More weight on recent, reactive
+    ///   - 0.94 is the RiskMetrics standard for daily data
+    pub fn new(decay_factor: f64) -> Result<Self> {
+        if decay_factor <= 0.0 || decay_factor >= 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "decay_factor".to_string(),
+                reason: "must be between 0 and 1 (exclusive)".to_string(),
+            });
+        }
+        Ok(Self { decay_factor })
+    }
+
+    /// Create with RiskMetrics standard decay factor (0.94).
+    pub fn risk_metrics() -> Result<Self> {
+        Self::new(0.94)
+    }
+
+    /// Calculate exponentially weighted volatility.
+    ///
+    /// Returns annualized volatility as percentage.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+
+        if n < 2 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Initialize with first squared return
+        let first_return = if close[0] > 1e-10 {
+            (close[1] / close[0]).ln()
+        } else {
+            0.0
+        };
+
+        let mut ewma_var = first_return.powi(2);
+
+        for i in 1..n {
+            let ret = if close[i - 1] > 1e-10 {
+                (close[i] / close[i - 1]).ln()
+            } else {
+                0.0
+            };
+
+            // EWMA update: var_t = lambda * var_{t-1} + (1-lambda) * r^2_t
+            ewma_var = self.decay_factor * ewma_var + (1.0 - self.decay_factor) * ret.powi(2);
+
+            // Ensure variance stays positive
+            ewma_var = ewma_var.max(1e-10);
+
+            // Annualize and convert to percentage
+            result[i] = ewma_var.sqrt() * (252.0_f64).sqrt() * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for ExponentialVolatility {
+    fn name(&self) -> &str {
+        "Exponential Volatility"
+    }
+
+    fn min_periods(&self) -> usize {
+        2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5916,5 +6764,360 @@ mod tests {
         let vpr_clone = vpr.clone();
         assert_eq!(vpr.volatility_period, vpr_clone.volatility_period);
         assert_eq!(vpr.lookback_period, vpr_clone.lookback_period);
+    }
+
+    // ========================================================================
+    // Tests for 6 THIRD BATCH volatility indicators
+    // ========================================================================
+
+    #[test]
+    fn test_volatility_half_life() {
+        let (_, _, close) = make_test_data();
+        let vhl = VolatilityHalfLife::new(10, 30).unwrap();
+        let result = vhl.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Half-life values should be positive after warmup
+        let min_period = vhl.min_periods();
+        for i in min_period..close.len() {
+            assert!(
+                result[i] >= 0.0,
+                "Half-life at {} should be non-negative, got {}",
+                i,
+                result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatility_half_life_invalid_params() {
+        assert!(VolatilityHalfLife::new(2, 30).is_err()); // volatility_period < 5
+        assert!(VolatilityHalfLife::new(10, 15).is_err()); // regression_period < 20
+    }
+
+    #[test]
+    fn test_volatility_half_life_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let vhl = VolatilityHalfLife::new(10, 30).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(vhl.name(), "Volatility Half Life");
+        assert_eq!(vhl.min_periods(), 41); // 10 + 30 + 1
+
+        let result = vhl.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_correlation() {
+        let (_, _, close) = make_test_data();
+        let vc = VolatilityCorrelation::new(20).unwrap();
+        let result = vc.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Correlation should be between -1 and 1
+        let min_period = vc.min_periods();
+        for i in min_period..close.len() {
+            assert!(
+                result[i] >= -1.0 && result[i] <= 1.0,
+                "Correlation at {} should be between -1 and 1, got {}",
+                i,
+                result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatility_correlation_invalid_params() {
+        assert!(VolatilityCorrelation::new(5).is_err()); // period < 10
+    }
+
+    #[test]
+    fn test_volatility_correlation_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let vc = VolatilityCorrelation::new(20).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(vc.name(), "Volatility Correlation");
+        assert_eq!(vc.min_periods(), 21); // period + 1
+
+        let result = vc.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_garch_volatility() {
+        let (_, _, close) = make_test_data();
+        let gv = GARCHVolatility::new(0.05, 0.10, 0.85).unwrap();
+        let result = gv.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // GARCH volatility should be positive
+        for i in 1..close.len() {
+            assert!(
+                result[i] >= 0.0,
+                "GARCH vol at {} should be non-negative, got {}",
+                i,
+                result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_garch_volatility_invalid_params() {
+        assert!(GARCHVolatility::new(-0.01, 0.10, 0.85).is_err()); // omega < 0
+        assert!(GARCHVolatility::new(0.05, -0.01, 0.85).is_err()); // alpha < 0
+        assert!(GARCHVolatility::new(0.05, 0.10, -0.01).is_err()); // beta < 0
+        assert!(GARCHVolatility::new(0.05, 0.60, 0.60).is_err()); // alpha + beta >= 1
+    }
+
+    #[test]
+    fn test_garch_volatility_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let gv = GARCHVolatility::new(0.05, 0.10, 0.85).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(gv.name(), "GARCH Volatility");
+        assert_eq!(gv.min_periods(), 2);
+
+        let result = gv.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_range_indicator() {
+        let (_, _, close) = make_test_data();
+        let vri = VolatilityRangeIndicator::new(10, 40).unwrap();
+        let (current, min_vol, max_vol, range_position) = vri.calculate(&close);
+
+        assert_eq!(current.len(), close.len());
+        assert_eq!(min_vol.len(), close.len());
+        assert_eq!(max_vol.len(), close.len());
+        assert_eq!(range_position.len(), close.len());
+
+        let min_period = vri.min_periods();
+        for i in min_period..close.len() {
+            // Min should be <= current <= max
+            assert!(
+                min_vol[i] <= current[i] + 1e-10,
+                "Min vol should be <= current at {}",
+                i
+            );
+            assert!(
+                max_vol[i] >= current[i] - 1e-10,
+                "Max vol should be >= current at {}",
+                i
+            );
+            // Range position should be between 0 and 100
+            assert!(
+                range_position[i] >= 0.0 && range_position[i] <= 100.0,
+                "Range position at {} should be between 0 and 100, got {}",
+                i,
+                range_position[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatility_range_indicator_invalid_params() {
+        assert!(VolatilityRangeIndicator::new(2, 40).is_err()); // volatility_period < 5
+        assert!(VolatilityRangeIndicator::new(10, 15).is_err()); // range_period < 20
+    }
+
+    #[test]
+    fn test_volatility_range_indicator_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let vri = VolatilityRangeIndicator::new(10, 40).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(vri.name(), "Volatility Range Indicator");
+        assert_eq!(vri.min_periods(), 51); // 10 + 40 + 1
+
+        let result = vri.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_autocorrelation() {
+        let (_, _, close) = make_test_data();
+        let vac = VolatilityAutoCorrelation::new(10, 30, 5).unwrap();
+        let result = vac.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Autocorrelation should be between -1 and 1
+        let min_period = vac.min_periods();
+        for i in min_period..close.len() {
+            assert!(
+                result[i] >= -1.0 && result[i] <= 1.0,
+                "Autocorrelation at {} should be between -1 and 1, got {}",
+                i,
+                result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatility_autocorrelation_invalid_params() {
+        assert!(VolatilityAutoCorrelation::new(2, 30, 5).is_err()); // volatility_period < 5
+        assert!(VolatilityAutoCorrelation::new(10, 15, 5).is_err()); // correlation_period < 20
+        assert!(VolatilityAutoCorrelation::new(10, 30, 0).is_err()); // max_lag < 1
+        assert!(VolatilityAutoCorrelation::new(10, 30, 15).is_err()); // max_lag > 10
+    }
+
+    #[test]
+    fn test_volatility_autocorrelation_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let vac = VolatilityAutoCorrelation::new(10, 30, 5).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(vac.name(), "Volatility Auto Correlation");
+        assert_eq!(vac.min_periods(), 46); // 10 + 30 + 5 + 1
+
+        let result = vac.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_exponential_volatility() {
+        let (_, _, close) = make_test_data();
+        let ev = ExponentialVolatility::new(0.94).unwrap();
+        let result = ev.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Exponential volatility should be non-negative
+        for i in 1..close.len() {
+            assert!(
+                result[i] >= 0.0,
+                "Exponential vol at {} should be non-negative, got {}",
+                i,
+                result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_exponential_volatility_invalid_params() {
+        assert!(ExponentialVolatility::new(0.0).is_err()); // decay <= 0
+        assert!(ExponentialVolatility::new(1.0).is_err()); // decay >= 1
+        assert!(ExponentialVolatility::new(-0.5).is_err()); // decay <= 0
+        assert!(ExponentialVolatility::new(1.5).is_err()); // decay >= 1
+    }
+
+    #[test]
+    fn test_exponential_volatility_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let ev = ExponentialVolatility::new(0.94).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(ev.name(), "Exponential Volatility");
+        assert_eq!(ev.min_periods(), 2);
+
+        let result = ev.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_exponential_volatility_decay_effect() {
+        // Create data with a spike
+        let mut close = vec![100.0; 50];
+        close[25] = 110.0; // Spike
+        close[26] = 100.0; // Return to normal
+
+        let ev_high_decay = ExponentialVolatility::new(0.99).unwrap(); // High persistence
+        let ev_low_decay = ExponentialVolatility::new(0.80).unwrap(); // Low persistence
+
+        let result_high = ev_high_decay.calculate(&close);
+        let result_low = ev_low_decay.calculate(&close);
+
+        // Both should produce valid results
+        assert_eq!(result_high.len(), close.len());
+        assert_eq!(result_low.len(), close.len());
+
+        // After spike, both should show elevated volatility at the spike point
+        assert!(result_high[26] > 0.0, "High decay should produce positive values");
+        assert!(result_low[26] > 0.0, "Low decay should produce positive values");
+
+        // Low decay (lambda=0.80) gives alpha=0.20 (more weight to recent)
+        // High decay (lambda=0.99) gives alpha=0.01 (less weight to recent)
+        // So at the spike, low decay should react more strongly
+        assert!(
+            result_low[26] > result_high[26],
+            "Low decay should react more strongly to spike: low={}, high={}",
+            result_low[26],
+            result_high[26]
+        );
+
+        // But high decay should persist longer - check much later
+        // After many periods with no volatility, both converge to zero
+        // High decay takes longer to converge
+        let ratio_high = result_high[45] / result_high[26];
+        let ratio_low = result_low[45] / result_low[26];
+
+        // High decay should retain more of its value (slower decay to zero)
+        assert!(
+            ratio_high > ratio_low,
+            "High decay should persist longer: ratio_high={}, ratio_low={}",
+            ratio_high,
+            ratio_low
+        );
+    }
+
+    #[test]
+    fn test_third_batch_indicators_insufficient_data() {
+        let short_data = OHLCVSeries::from_close(vec![100.0, 101.0, 102.0]);
+
+        let vhl = VolatilityHalfLife::new(10, 30).unwrap();
+        assert!(vhl.compute(&short_data).is_err());
+
+        let vc = VolatilityCorrelation::new(20).unwrap();
+        assert!(vc.compute(&short_data).is_err());
+
+        // GARCH doesn't error on short data, just returns zeros
+
+        let vri = VolatilityRangeIndicator::new(10, 40).unwrap();
+        assert!(vri.compute(&short_data).is_err());
+
+        let vac = VolatilityAutoCorrelation::new(10, 30, 5).unwrap();
+        assert!(vac.compute(&short_data).is_err());
+
+        // Exponential doesn't error on short data
+    }
+
+    #[test]
+    fn test_third_batch_indicators_clone() {
+        let vhl = VolatilityHalfLife::new(10, 30).unwrap();
+        let vhl_clone = vhl.clone();
+        assert_eq!(vhl.volatility_period, vhl_clone.volatility_period);
+        assert_eq!(vhl.regression_period, vhl_clone.regression_period);
+
+        let vc = VolatilityCorrelation::new(20).unwrap();
+        let vc_clone = vc.clone();
+        assert_eq!(vc.period, vc_clone.period);
+
+        let gv = GARCHVolatility::new(0.05, 0.10, 0.85).unwrap();
+        let gv_clone = gv.clone();
+        assert!((gv.omega - gv_clone.omega).abs() < 1e-10);
+        assert!((gv.alpha - gv_clone.alpha).abs() < 1e-10);
+        assert!((gv.beta - gv_clone.beta).abs() < 1e-10);
+
+        let vri = VolatilityRangeIndicator::new(10, 40).unwrap();
+        let vri_clone = vri.clone();
+        assert_eq!(vri.volatility_period, vri_clone.volatility_period);
+        assert_eq!(vri.range_period, vri_clone.range_period);
+
+        let vac = VolatilityAutoCorrelation::new(10, 30, 5).unwrap();
+        let vac_clone = vac.clone();
+        assert_eq!(vac.volatility_period, vac_clone.volatility_period);
+        assert_eq!(vac.correlation_period, vac_clone.correlation_period);
+        assert_eq!(vac.max_lag, vac_clone.max_lag);
+
+        let ev = ExponentialVolatility::new(0.94).unwrap();
+        let ev_clone = ev.clone();
+        assert!((ev.decay_factor - ev_clone.decay_factor).abs() < 1e-10);
     }
 }

@@ -76,4 +76,6 @@ pub use advanced::{
     AutocorrelationIndex, HurstExponentMA, EntropyMeasure,
     VarianceRatio, MeanReversionSpeed, TrendStationarity,
     ExcessKurtosis, CoefficientsOfVariation, StatisticalMomentum,
+    RollingMedian, CrossCovarianceProxy, LaggedAutocorrelationSum,
+    MedianAbsoluteDeviationRobust, RobustZScoreIndicator, QuantileRatio,
 };

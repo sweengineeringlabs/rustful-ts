@@ -77,6 +77,12 @@ pub use oscillators::{
     PriceActionOscillator, VolumeFlowOscillator, MomentumFlowOscillator,
     AdaptiveCCI, SmoothedTSI, VolatilityAdjustedRSI,
     CycleTunedOscillator, MomentumAccumulator, PriceStrengthIndex,
+    DynamicOscillator, TrendOptimizedOscillator, RangeOptimizedOscillator,
+    CompositeOscillator, AdaptiveStochastic, MomentumWaveOscillator,
+    UltimateOscillatorEnhanced, PercentRankOscillator, ZScoreOscillator,
+    VelocityOscillator, AccelerationOscillator, HarmonicOscillator,
+    WilliamsREnhanced, StochasticMomentumIndex, PercentagePriceOscillator,
+    VolumeOscillatorEnhanced, TrendOscillatorIndex, CycleMomentumOscillator,
 };
 
 // ============================================================================

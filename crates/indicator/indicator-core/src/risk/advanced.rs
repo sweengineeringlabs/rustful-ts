@@ -2669,6 +2669,782 @@ impl TechnicalIndicator for KellyFraction {
     }
 }
 
+// ============================================================
+// 6 NEWEST RISK INDICATORS
+// ============================================================
+
+/// Tail Risk Ratio - Ratio of tail loss to typical loss
+///
+/// Measures the severity of tail risk by comparing the average loss
+/// in the tail of the distribution to the average loss overall.
+/// A higher ratio indicates fatter tails and more extreme risk events.
+///
+/// # Formula
+/// TRR = Average(Losses beyond VaR threshold) / Average(All losses)
+///
+/// # Interpretation
+/// - Values close to 1 indicate normal distribution-like behavior
+/// - Values > 1 indicate fat tails with more severe tail events
+/// - Higher values suggest more tail risk than expected
+/// - Useful for detecting non-normal return distributions
+///
+/// # Example
+/// ```ignore
+/// let trr = TailRiskRatio::new(50, 0.95).unwrap();
+/// let result = trr.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TailRiskRatio {
+    /// Rolling window period for calculation
+    period: usize,
+    /// Confidence level for tail threshold (e.g., 0.95 for 5% tail)
+    confidence: f64,
+}
+
+impl TailRiskRatio {
+    /// Create a new Tail Risk Ratio indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    /// * `confidence` - Confidence level for tail threshold (0.9 to 0.999)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, confidence: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for meaningful tail analysis".to_string(),
+            });
+        }
+        if confidence < 0.9 || confidence > 0.999 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "confidence".to_string(),
+                reason: "must be between 0.9 and 0.999".to_string(),
+            });
+        }
+        Ok(Self { period, confidence })
+    }
+
+    /// Calculate Tail Risk Ratio values
+    ///
+    /// Returns the ratio of tail losses to average losses for each point.
+    /// Higher values indicate more severe tail risk.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() < 10 {
+                continue;
+            }
+
+            // Separate losses (negative returns)
+            let mut losses: Vec<f64> = returns
+                .iter()
+                .filter(|&&r| r < 0.0)
+                .map(|r| r.abs())
+                .collect();
+
+            if losses.len() < 5 {
+                continue;
+            }
+
+            // Calculate average loss
+            let avg_loss: f64 = losses.iter().sum::<f64>() / losses.len() as f64;
+
+            // Sort losses to find tail threshold
+            losses.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Find tail losses (beyond confidence threshold)
+            let tail_idx = ((1.0 - self.confidence) * losses.len() as f64).ceil() as usize;
+            let tail_idx = tail_idx.max(1).min(losses.len());
+
+            // Calculate average tail loss
+            let tail_losses: Vec<f64> = losses[..tail_idx].to_vec();
+            let avg_tail_loss: f64 = if !tail_losses.is_empty() {
+                tail_losses.iter().sum::<f64>() / tail_losses.len() as f64
+            } else {
+                avg_loss
+            };
+
+            // Calculate ratio
+            if avg_loss > 1e-10 {
+                result[i] = avg_tail_loss / avg_loss;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TailRiskRatio {
+    fn name(&self) -> &str {
+        "Tail Risk Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// VaR Breach Rate - Frequency of Value at Risk breaches
+///
+/// Measures how often actual losses exceed the predicted VaR threshold.
+/// This is a key metric for VaR model validation and risk management
+/// effectiveness assessment.
+///
+/// # Formula
+/// Breach Rate = (Number of VaR breaches / Total observations) * 100
+///
+/// # Interpretation
+/// - At 95% confidence, expected breach rate is ~5%
+/// - Breach rate > expected suggests model underestimates risk
+/// - Breach rate < expected suggests model overestimates risk
+/// - Used for regulatory backtesting requirements
+///
+/// # Example
+/// ```ignore
+/// let vbr = VaRBreachRate::new(50, 0.95).unwrap();
+/// let result = vbr.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VaRBreachRate {
+    /// Rolling window period for calculation
+    period: usize,
+    /// Confidence level for VaR (e.g., 0.95 for 95% VaR)
+    confidence: f64,
+}
+
+impl VaRBreachRate {
+    /// Create a new VaR Breach Rate indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    /// * `confidence` - Confidence level for VaR (0.9 to 0.999)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, confidence: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for meaningful breach analysis".to_string(),
+            });
+        }
+        if confidence < 0.9 || confidence > 0.999 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "confidence".to_string(),
+                reason: "must be between 0.9 and 0.999".to_string(),
+            });
+        }
+        Ok(Self { period, confidence })
+    }
+
+    /// Calculate VaR Breach Rate values
+    ///
+    /// Returns the percentage of observations that breached VaR (0-100 scale).
+    /// Compare to expected rate: (1 - confidence) * 100.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() < 10 {
+                continue;
+            }
+
+            // Calculate historical VaR
+            let mut sorted_returns = returns.clone();
+            sorted_returns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let var_idx = ((1.0 - self.confidence) * sorted_returns.len() as f64).floor() as usize;
+            let var_idx = var_idx.min(sorted_returns.len().saturating_sub(1));
+            let var_threshold = sorted_returns[var_idx];
+
+            // Count breaches (returns worse than VaR)
+            let breach_count = returns.iter().filter(|&&r| r < var_threshold).count();
+
+            // Calculate breach rate as percentage
+            result[i] = (breach_count as f64 / returns.len() as f64) * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VaRBreachRate {
+    fn name(&self) -> &str {
+        "VaR Breach Rate"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Volatility of Volatility - Measures volatility clustering and instability
+///
+/// Calculates the standard deviation of rolling volatility values,
+/// indicating how stable or unstable volatility is over time.
+/// High values suggest volatility clustering and regime changes.
+///
+/// # Formula
+/// VoV = StdDev(Rolling_Volatility over outer_period)
+///
+/// # Interpretation
+/// - Low VoV indicates stable, predictable volatility
+/// - High VoV indicates volatility clustering and regime shifts
+/// - Useful for options pricing and dynamic hedging strategies
+/// - Important for GARCH-type model selection
+///
+/// # Example
+/// ```ignore
+/// let vov = VolatilityOfVolatility::new(50, 10).unwrap();
+/// let result = vov.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityOfVolatility {
+    /// Outer window for calculating VoV
+    period: usize,
+    /// Inner window for calculating base volatility
+    vol_period: usize,
+}
+
+impl VolatilityOfVolatility {
+    /// Create a new Volatility of Volatility indicator
+    ///
+    /// # Arguments
+    /// * `period` - Outer window for VoV calculation (minimum 20)
+    /// * `vol_period` - Inner window for volatility calculation (minimum 5, < period)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, vol_period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if vol_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "vol_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if vol_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "vol_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, vol_period })
+    }
+
+    /// Calculate Volatility of Volatility values
+    ///
+    /// Returns the standard deviation of rolling volatility values,
+    /// annualized as a percentage.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // First, calculate rolling volatility
+        let mut volatilities: Vec<f64> = vec![0.0; n];
+
+        for i in self.vol_period..n {
+            let start = i.saturating_sub(self.vol_period);
+            let mut returns: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() > 1 {
+                let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+                let variance: f64 = returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>() / returns.len() as f64;
+                volatilities[i] = variance.sqrt();
+            }
+        }
+
+        // Calculate volatility of volatility
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Collect valid volatilities in the window
+            let vols: Vec<f64> = volatilities[(start + self.vol_period)..=i]
+                .iter()
+                .filter(|&&v| v > 0.0)
+                .copied()
+                .collect();
+
+            if vols.len() < 5 {
+                continue;
+            }
+
+            // Calculate mean volatility
+            let mean_vol: f64 = vols.iter().sum::<f64>() / vols.len() as f64;
+
+            // Calculate standard deviation of volatility
+            let vol_variance: f64 = vols
+                .iter()
+                .map(|v| (v - mean_vol).powi(2))
+                .sum::<f64>() / vols.len() as f64;
+
+            // Annualize and convert to percentage
+            result[i] = vol_variance.sqrt() * (252.0_f64).sqrt() * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilityOfVolatility {
+    fn name(&self) -> &str {
+        "Volatility of Volatility"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Asymmetric Beta - Separate beta for up and down markets
+///
+/// Calculates different beta values for positive and negative benchmark returns,
+/// capturing the asymmetric response of an asset to market movements.
+/// Returns the ratio of downside beta to upside beta.
+///
+/// # Formula
+/// Asymmetric Beta Ratio = Downside_Beta / Upside_Beta
+///
+/// where:
+/// - Upside_Beta = Cov(R_asset, R_bench | R_bench > 0) / Var(R_bench | R_bench > 0)
+/// - Downside_Beta = Cov(R_asset, R_bench | R_bench < 0) / Var(R_bench | R_bench < 0)
+///
+/// # Interpretation
+/// - Ratio = 1: Symmetric response to market movements
+/// - Ratio > 1: More sensitive to down markets (higher risk)
+/// - Ratio < 1: More sensitive to up markets (defensive asset)
+/// - Important for tail risk hedging and portfolio construction
+///
+/// # Example
+/// ```ignore
+/// let ab = AsymmetricBeta::new(50).unwrap();
+/// let result = ab.calculate(&close_prices, &benchmark_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct AsymmetricBeta {
+    /// Rolling window period for calculation
+    period: usize,
+}
+
+impl AsymmetricBeta {
+    /// Create a new Asymmetric Beta indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for robust beta calculation".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Asymmetric Beta ratio values
+    ///
+    /// Returns the ratio of downside beta to upside beta.
+    /// Values > 1 indicate higher sensitivity to down markets.
+    pub fn calculate(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if benchmark.len() != n {
+            return result;
+        }
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Separate up and down market returns
+            let mut up_asset: Vec<f64> = Vec::new();
+            let mut up_bench: Vec<f64> = Vec::new();
+            let mut down_asset: Vec<f64> = Vec::new();
+            let mut down_bench: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 && benchmark[j - 1] > 1e-10 {
+                    let asset_ret = close[j] / close[j - 1] - 1.0;
+                    let bench_ret = benchmark[j] / benchmark[j - 1] - 1.0;
+
+                    if bench_ret > 0.0 {
+                        up_asset.push(asset_ret);
+                        up_bench.push(bench_ret);
+                    } else if bench_ret < 0.0 {
+                        down_asset.push(asset_ret);
+                        down_bench.push(bench_ret);
+                    }
+                }
+            }
+
+            // Need sufficient samples in both directions
+            if up_asset.len() < 5 || down_asset.len() < 5 {
+                continue;
+            }
+
+            // Calculate upside beta
+            let up_asset_mean: f64 = up_asset.iter().sum::<f64>() / up_asset.len() as f64;
+            let up_bench_mean: f64 = up_bench.iter().sum::<f64>() / up_bench.len() as f64;
+
+            let mut up_cov = 0.0;
+            let mut up_var = 0.0;
+            for k in 0..up_asset.len() {
+                let asset_dev = up_asset[k] - up_asset_mean;
+                let bench_dev = up_bench[k] - up_bench_mean;
+                up_cov += asset_dev * bench_dev;
+                up_var += bench_dev * bench_dev;
+            }
+
+            let upside_beta = if up_var > 1e-10 {
+                up_cov / up_var
+            } else {
+                1.0
+            };
+
+            // Calculate downside beta
+            let down_asset_mean: f64 = down_asset.iter().sum::<f64>() / down_asset.len() as f64;
+            let down_bench_mean: f64 = down_bench.iter().sum::<f64>() / down_bench.len() as f64;
+
+            let mut down_cov = 0.0;
+            let mut down_var = 0.0;
+            for k in 0..down_asset.len() {
+                let asset_dev = down_asset[k] - down_asset_mean;
+                let bench_dev = down_bench[k] - down_bench_mean;
+                down_cov += asset_dev * bench_dev;
+                down_var += bench_dev * bench_dev;
+            }
+
+            let downside_beta = if down_var > 1e-10 {
+                down_cov / down_var
+            } else {
+                1.0
+            };
+
+            // Calculate ratio (downside / upside)
+            if upside_beta.abs() > 1e-10 {
+                result[i] = downside_beta / upside_beta;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AsymmetricBeta {
+    fn name(&self) -> &str {
+        "Asymmetric Beta"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        // Use close as benchmark proxy when not provided separately
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Risk Parity Score - Measures risk contribution balance
+///
+/// Calculates a score indicating how balanced the risk contributions
+/// are across time periods in the rolling window. Based on risk parity
+/// principles used in portfolio construction.
+///
+/// # Formula
+/// RPS = 1 - Coefficient of Variation of period risk contributions
+///
+/// # Interpretation
+/// - Score close to 1: Well-balanced, stable risk contribution
+/// - Score close to 0: Unbalanced, concentrated risk in specific periods
+/// - Useful for identifying periods of risk concentration
+/// - Helps in dynamic risk allocation decisions
+///
+/// # Example
+/// ```ignore
+/// let rps = RiskParityScore::new(50).unwrap();
+/// let result = rps.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct RiskParityScore {
+    /// Rolling window period for calculation
+    period: usize,
+}
+
+impl RiskParityScore {
+    /// Create a new Risk Parity Score indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Risk Parity Score values
+    ///
+    /// Returns a score from 0 to 1 indicating risk balance.
+    /// Higher values indicate more balanced risk contribution.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate squared returns (as risk contribution proxy)
+            let mut risk_contributions: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    let ret = close[j] / close[j - 1] - 1.0;
+                    risk_contributions.push(ret * ret);
+                }
+            }
+
+            if risk_contributions.len() < 10 {
+                continue;
+            }
+
+            // Calculate mean and standard deviation of risk contributions
+            let mean_risk: f64 = risk_contributions.iter().sum::<f64>() / risk_contributions.len() as f64;
+
+            if mean_risk < 1e-10 {
+                result[i] = 1.0; // Perfect parity if no variance
+                continue;
+            }
+
+            let risk_variance: f64 = risk_contributions
+                .iter()
+                .map(|r| (r - mean_risk).powi(2))
+                .sum::<f64>() / risk_contributions.len() as f64;
+            let risk_std = risk_variance.sqrt();
+
+            // Calculate coefficient of variation
+            let cv = risk_std / mean_risk;
+
+            // Convert to score (1 - CV, bounded 0 to 1)
+            result[i] = (1.0 - cv).max(0.0).min(1.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for RiskParityScore {
+    fn name(&self) -> &str {
+        "Risk Parity Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Tracking Error Variance - Squared tracking error relative to benchmark
+///
+/// Measures the variance of return differences between an asset and its
+/// benchmark, indicating how closely the asset tracks the benchmark.
+/// Used for index fund evaluation and active risk measurement.
+///
+/// # Formula
+/// TEV = Variance(R_asset - R_benchmark) * 252
+///
+/// # Interpretation
+/// - Low TEV indicates close tracking to benchmark
+/// - High TEV indicates significant deviation from benchmark
+/// - Annualized for comparability across different time frames
+/// - Square root gives tracking error (standard deviation)
+///
+/// # Example
+/// ```ignore
+/// let tev = TrackingErrorVariance::new(50).unwrap();
+/// let result = tev.calculate(&close_prices, &benchmark_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrackingErrorVariance {
+    /// Rolling window period for calculation
+    period: usize,
+}
+
+impl TrackingErrorVariance {
+    /// Create a new Tracking Error Variance indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Tracking Error Variance values
+    ///
+    /// Returns the annualized variance of return differences, expressed
+    /// as a percentage squared. Take square root for tracking error.
+    pub fn calculate(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if benchmark.len() != n {
+            return result;
+        }
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate return differences
+            let mut diffs: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 && benchmark[j - 1] > 1e-10 {
+                    let asset_ret = close[j] / close[j - 1] - 1.0;
+                    let bench_ret = benchmark[j] / benchmark[j - 1] - 1.0;
+                    diffs.push(asset_ret - bench_ret);
+                }
+            }
+
+            if diffs.len() < 10 {
+                continue;
+            }
+
+            // Calculate variance of differences
+            let mean_diff: f64 = diffs.iter().sum::<f64>() / diffs.len() as f64;
+            let variance: f64 = diffs
+                .iter()
+                .map(|d| (d - mean_diff).powi(2))
+                .sum::<f64>() / diffs.len() as f64;
+
+            // Annualize and express as basis points squared
+            result[i] = variance * 252.0 * 10000.0;
+        }
+
+        result
+    }
+
+    /// Calculate Tracking Error (standard deviation)
+    ///
+    /// Returns the annualized tracking error as a percentage.
+    pub fn calculate_tracking_error(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        self.calculate(close, benchmark)
+            .iter()
+            .map(|&v| (v / 10000.0).sqrt() * 100.0)
+            .collect()
+    }
+}
+
+impl TechnicalIndicator for TrackingErrorVariance {
+    fn name(&self) -> &str {
+        "Tracking Error Variance"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        // Use close as benchmark proxy when not provided separately
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3856,5 +4632,276 @@ mod tests {
         assert_eq!(pain_ratio_result.primary.len(), data.close.len());
         assert_eq!(ulcer_result.primary.len(), data.close.len());
         assert_eq!(kelly_result.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // Tests for the 6 NEWEST risk indicators
+    // TailRiskRatio, VaRBreachRate, VolatilityOfVolatility,
+    // AsymmetricBeta, RiskParityScore, TrackingErrorVariance
+    // ============================================================
+
+    #[test]
+    fn test_tail_risk_ratio_basic() {
+        let close = make_volatile_test_data();
+        let trr = TailRiskRatio::new(30, 0.95).unwrap();
+        let result = trr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Tail risk ratio should be non-negative
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0, "TRR should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_tail_risk_ratio_validation() {
+        assert!(TailRiskRatio::new(10, 0.95).is_err());
+        assert!(TailRiskRatio::new(30, 0.5).is_err());
+        assert!(TailRiskRatio::new(30, 0.95).is_ok());
+    }
+
+    #[test]
+    fn test_tail_risk_ratio_indicator_trait() {
+        let data = make_test_data();
+        let trr = TailRiskRatio::new(25, 0.95).unwrap();
+
+        assert_eq!(trr.name(), "Tail Risk Ratio");
+        assert_eq!(trr.min_periods(), 26);
+        assert_eq!(trr.output_features(), 1);
+
+        let output = trr.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_var_breach_rate_basic() {
+        let close = make_volatile_test_data();
+        let vbr = VaRBreachRate::new(30, 0.95).unwrap();
+        let result = vbr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Breach rate should be 0-100
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "Breach rate should be 0-100 at index {}: {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_var_breach_rate_validation() {
+        assert!(VaRBreachRate::new(10, 0.95).is_err());
+        assert!(VaRBreachRate::new(30, 0.5).is_err());
+        assert!(VaRBreachRate::new(30, 0.95).is_ok());
+    }
+
+    #[test]
+    fn test_var_breach_rate_indicator_trait() {
+        let data = make_test_data();
+        let vbr = VaRBreachRate::new(25, 0.95).unwrap();
+
+        assert_eq!(vbr.name(), "VaR Breach Rate");
+        assert_eq!(vbr.min_periods(), 26);
+        assert_eq!(vbr.output_features(), 1);
+
+        let output = vbr.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_of_volatility_basic() {
+        let close = make_volatile_test_data();
+        let vov = VolatilityOfVolatility::new(30, 10).unwrap();
+        let result = vov.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // VoV should be non-negative
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0, "VoV should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_volatility_of_volatility_validation() {
+        assert!(VolatilityOfVolatility::new(10, 5).is_err());
+        assert!(VolatilityOfVolatility::new(30, 2).is_err());
+        assert!(VolatilityOfVolatility::new(30, 30).is_err());
+        assert!(VolatilityOfVolatility::new(30, 10).is_ok());
+    }
+
+    #[test]
+    fn test_volatility_of_volatility_indicator_trait() {
+        let data = make_test_data();
+        let vov = VolatilityOfVolatility::new(30, 10).unwrap();
+
+        assert_eq!(vov.name(), "Volatility of Volatility");
+        assert_eq!(vov.min_periods(), 31);
+        assert_eq!(vov.output_features(), 1);
+
+        let output = vov.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_asymmetric_beta_basic() {
+        let close = make_volatile_test_data();
+        let ab = AsymmetricBeta::new(30).unwrap();
+        let benchmark: Vec<f64> = close.iter().map(|c| c * 0.98).collect();
+        let result = ab.calculate(&close, &benchmark);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_asymmetric_beta_validation() {
+        assert!(AsymmetricBeta::new(10).is_err());
+        assert!(AsymmetricBeta::new(20).is_ok());
+    }
+
+    #[test]
+    fn test_asymmetric_beta_indicator_trait() {
+        let data = make_test_data();
+        let ab = AsymmetricBeta::new(25).unwrap();
+
+        assert_eq!(ab.name(), "Asymmetric Beta");
+        assert_eq!(ab.min_periods(), 26);
+        assert_eq!(ab.output_features(), 1);
+
+        let output = ab.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_risk_parity_score_basic() {
+        let close = make_volatile_test_data();
+        let rps = RiskParityScore::new(30).unwrap();
+        let result = rps.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Score should be non-negative
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0, "RPS should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_risk_parity_score_validation() {
+        assert!(RiskParityScore::new(10).is_err());
+        assert!(RiskParityScore::new(20).is_ok());
+    }
+
+    #[test]
+    fn test_risk_parity_score_indicator_trait() {
+        let data = make_test_data();
+        let rps = RiskParityScore::new(25).unwrap();
+
+        assert_eq!(rps.name(), "Risk Parity Score");
+        assert_eq!(rps.min_periods(), 26);
+        assert_eq!(rps.output_features(), 1);
+
+        let output = rps.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_tracking_error_variance_basic() {
+        let close = make_volatile_test_data();
+        let tev = TrackingErrorVariance::new(30).unwrap();
+        let benchmark: Vec<f64> = close.iter().map(|c| c * 0.98).collect();
+        let result = tev.calculate(&close, &benchmark);
+
+        assert_eq!(result.len(), close.len());
+        // Variance should be non-negative
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0, "TEV should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_tracking_error_variance_validation() {
+        assert!(TrackingErrorVariance::new(10).is_err());
+        assert!(TrackingErrorVariance::new(20).is_ok());
+    }
+
+    #[test]
+    fn test_tracking_error_variance_indicator_trait() {
+        let data = make_test_data();
+        let tev = TrackingErrorVariance::new(25).unwrap();
+
+        assert_eq!(tev.name(), "Tracking Error Variance");
+        assert_eq!(tev.min_periods(), 26);
+        assert_eq!(tev.output_features(), 1);
+
+        let output = tev.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_newest_indicators_names() {
+        let trr = TailRiskRatio::new(25, 0.95).unwrap();
+        assert_eq!(trr.name(), "Tail Risk Ratio");
+
+        let vbr = VaRBreachRate::new(25, 0.95).unwrap();
+        assert_eq!(vbr.name(), "VaR Breach Rate");
+
+        let vov = VolatilityOfVolatility::new(30, 10).unwrap();
+        assert_eq!(vov.name(), "Volatility of Volatility");
+
+        let ab = AsymmetricBeta::new(25).unwrap();
+        assert_eq!(ab.name(), "Asymmetric Beta");
+
+        let rps = RiskParityScore::new(25).unwrap();
+        assert_eq!(rps.name(), "Risk Parity Score");
+
+        let tev = TrackingErrorVariance::new(25).unwrap();
+        assert_eq!(tev.name(), "Tracking Error Variance");
+    }
+
+    #[test]
+    fn test_newest_indicators_empty_data() {
+        let empty: Vec<f64> = Vec::new();
+
+        let trr = TailRiskRatio::new(25, 0.95).unwrap();
+        assert_eq!(trr.calculate(&empty).len(), 0);
+
+        let vbr = VaRBreachRate::new(25, 0.95).unwrap();
+        assert_eq!(vbr.calculate(&empty).len(), 0);
+
+        let vov = VolatilityOfVolatility::new(30, 10).unwrap();
+        assert_eq!(vov.calculate(&empty).len(), 0);
+
+        let ab = AsymmetricBeta::new(25).unwrap();
+        assert_eq!(ab.calculate(&empty, &empty).len(), 0);
+
+        let rps = RiskParityScore::new(25).unwrap();
+        assert_eq!(rps.calculate(&empty).len(), 0);
+
+        let tev = TrackingErrorVariance::new(25).unwrap();
+        assert_eq!(tev.calculate(&empty, &empty).len(), 0);
+    }
+
+    #[test]
+    fn test_newest_indicators_compute_together() {
+        let data = make_test_data();
+
+        let trr = TailRiskRatio::new(25, 0.95).unwrap();
+        let vbr = VaRBreachRate::new(25, 0.95).unwrap();
+        let vov = VolatilityOfVolatility::new(30, 10).unwrap();
+        let ab = AsymmetricBeta::new(25).unwrap();
+        let rps = RiskParityScore::new(25).unwrap();
+        let tev = TrackingErrorVariance::new(25).unwrap();
+
+        let trr_result = trr.compute(&data).unwrap();
+        let vbr_result = vbr.compute(&data).unwrap();
+        let vov_result = vov.compute(&data).unwrap();
+        let ab_result = ab.compute(&data).unwrap();
+        let rps_result = rps.compute(&data).unwrap();
+        let tev_result = tev.compute(&data).unwrap();
+
+        assert_eq!(trr_result.primary.len(), data.close.len());
+        assert_eq!(vbr_result.primary.len(), data.close.len());
+        assert_eq!(vov_result.primary.len(), data.close.len());
+        assert_eq!(ab_result.primary.len(), data.close.len());
+        assert_eq!(rps_result.primary.len(), data.close.len());
+        assert_eq!(tev_result.primary.len(), data.close.len());
     }
 }

@@ -46,4 +46,7 @@ pub use advanced::{
     // New risk indicators
     SortinoRatioAdvanced, CalmarRatioAdvanced, OmegaRatioAdvanced,
     PainRatio, UlcerIndex, KellyFraction,
+    // Newest risk indicators
+    TailRiskRatio, VaRBreachRate, VolatilityOfVolatility,
+    AsymmetricBeta, RiskParityScore, TrackingErrorVariance,
 };

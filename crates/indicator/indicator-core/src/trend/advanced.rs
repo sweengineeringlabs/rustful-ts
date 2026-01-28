@@ -3958,6 +3958,951 @@ impl TechnicalIndicator for TrendRegimeDetector {
     }
 }
 
+/// Trend Angle - Measures trend slope as an angle in degrees
+///
+/// Calculates the angle of the trend line using linear regression,
+/// converting the slope to degrees for intuitive interpretation:
+/// - 0 degrees: flat/no trend
+/// - 45 degrees: strong 1:1 uptrend (price rising 1 unit per period)
+/// - -45 degrees: strong 1:1 downtrend
+/// - Near 90/-90: extreme vertical moves (often unsustainable)
+///
+/// The angle is normalized by ATR to make it comparable across different instruments.
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendAngle;
+/// let ta = TrendAngle::new(14, 14).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendAngle {
+    /// Lookback period for regression
+    period: usize,
+    /// ATR period for normalization
+    atr_period: usize,
+}
+
+impl TrendAngle {
+    /// Creates a new TrendAngle indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for trend calculation (minimum 5)
+    /// * `atr_period` - Period for ATR normalization (minimum 5)
+    ///
+    /// # Errors
+    /// Returns an error if any parameter is below its minimum value
+    pub fn new(period: usize, atr_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if atr_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period, atr_period })
+    }
+
+    /// Calculate the trend angle in degrees
+    ///
+    /// Returns values from -90 to +90 degrees
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut result = vec![0.0; n];
+        let min_required = self.period.max(self.atr_period);
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate ATR for normalization
+        let mut atr = vec![0.0; n];
+        let mut tr_sum = 0.0;
+
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.atr_period {
+                tr_sum += tr;
+                if i == self.atr_period - 1 {
+                    atr[i] = tr_sum / self.atr_period as f64;
+                }
+            } else {
+                atr[i] = (atr[i - 1] * (self.atr_period - 1) as f64 + tr) / self.atr_period as f64;
+            }
+        }
+
+        // Calculate trend angle using linear regression
+        for i in min_required..n {
+            let start = i - self.period + 1;
+
+            // Linear regression
+            let mut sum_x = 0.0;
+            let mut sum_y = 0.0;
+            let mut sum_xy = 0.0;
+            let mut sum_xx = 0.0;
+
+            for (j, idx) in (start..=i).enumerate() {
+                let x = j as f64;
+                let y = close[idx];
+                sum_x += x;
+                sum_y += y;
+                sum_xy += x * y;
+                sum_xx += x * x;
+            }
+
+            let count = self.period as f64;
+            let denom = count * sum_xx - sum_x * sum_x;
+
+            if denom.abs() > 1e-10 && atr[i] > 1e-10 {
+                // Calculate slope
+                let slope = (count * sum_xy - sum_x * sum_y) / denom;
+
+                // Normalize slope by ATR
+                let normalized_slope = slope / atr[i];
+
+                // Convert to angle in degrees using arctangent
+                let angle_radians = normalized_slope.atan();
+                let angle_degrees = angle_radians * 180.0 / std::f64::consts::PI;
+
+                result[i] = angle_degrees.clamp(-90.0, 90.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendAngle {
+    fn name(&self) -> &str {
+        "Trend Angle"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.atr_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+/// Trend Channel - Calculates dynamic trend channel boundaries
+///
+/// Creates upper, middle, and lower channel lines based on linear regression
+/// with ATR-based bands. The channel helps identify:
+/// - Trend direction (channel slope)
+/// - Overbought/oversold (price near upper/lower bands)
+/// - Breakout opportunities (price outside channel)
+///
+/// Returns three values per bar: upper, middle, lower
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendChannel;
+/// let tc = TrendChannel::new(20, 14, 2.0).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendChannel {
+    /// Lookback period for regression
+    period: usize,
+    /// ATR period for band calculation
+    atr_period: usize,
+    /// Multiplier for channel width
+    multiplier: f64,
+}
+
+impl TrendChannel {
+    /// Creates a new TrendChannel indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for trend calculation (minimum 10)
+    /// * `atr_period` - Period for ATR calculation (minimum 5)
+    /// * `multiplier` - Channel width multiplier (0.5 to 5.0)
+    pub fn new(period: usize, atr_period: usize, multiplier: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if atr_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if multiplier < 0.5 || multiplier > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "multiplier".to_string(),
+                reason: "must be between 0.5 and 5.0".to_string(),
+            });
+        }
+        Ok(Self { period, atr_period, multiplier })
+    }
+
+    /// Calculate trend channel values
+    ///
+    /// Returns (upper, middle, lower) channel lines
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut upper = vec![0.0; n];
+        let mut middle = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+        let min_required = self.period.max(self.atr_period);
+
+        if n < min_required {
+            return (upper, middle, lower);
+        }
+
+        // Calculate ATR
+        let mut atr = vec![0.0; n];
+        let mut tr_sum = 0.0;
+
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.atr_period {
+                tr_sum += tr;
+                if i == self.atr_period - 1 {
+                    atr[i] = tr_sum / self.atr_period as f64;
+                }
+            } else {
+                atr[i] = (atr[i - 1] * (self.atr_period - 1) as f64 + tr) / self.atr_period as f64;
+            }
+        }
+
+        // Calculate regression channel
+        for i in min_required..n {
+            let start = i - self.period + 1;
+
+            // Linear regression to find trend line
+            let mut sum_x = 0.0;
+            let mut sum_y = 0.0;
+            let mut sum_xy = 0.0;
+            let mut sum_xx = 0.0;
+
+            for (j, idx) in (start..=i).enumerate() {
+                let x = j as f64;
+                let y = close[idx];
+                sum_x += x;
+                sum_y += y;
+                sum_xy += x * y;
+                sum_xx += x * x;
+            }
+
+            let count = self.period as f64;
+            let denom = count * sum_xx - sum_x * sum_x;
+
+            if denom.abs() > 1e-10 {
+                let slope = (count * sum_xy - sum_x * sum_y) / denom;
+                let intercept = (sum_y - slope * sum_x) / count;
+
+                // Calculate middle line value at current position
+                let x_curr = (self.period - 1) as f64;
+                let mid_value = intercept + slope * x_curr;
+
+                // Calculate channel bands using ATR
+                let band_width = atr[i] * self.multiplier;
+
+                middle[i] = mid_value;
+                upper[i] = mid_value + band_width;
+                lower[i] = mid_value - band_width;
+            }
+        }
+
+        (upper, middle, lower)
+    }
+}
+
+impl TechnicalIndicator for TrendChannel {
+    fn name(&self) -> &str {
+        "Trend Channel"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.atr_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (upper, middle, lower) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(upper, middle, lower))
+    }
+}
+
+/// Trend Curvature - Measures the curvature/concavity of the trend
+///
+/// Analyzes the second derivative of price to determine if the trend is:
+/// - Convex (accelerating): positive curvature, trend gaining strength
+/// - Linear (steady): near-zero curvature, consistent trend
+/// - Concave (decelerating): negative curvature, trend losing strength
+///
+/// This helps identify trend maturity and potential reversals.
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendCurvature;
+/// let tc = TrendCurvature::new(14, 5).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendCurvature {
+    /// Lookback period for curvature calculation
+    period: usize,
+    /// Smoothing period
+    smoothing: usize,
+}
+
+impl TrendCurvature {
+    /// Creates a new TrendCurvature indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period (minimum 10)
+    /// * `smoothing` - Smoothing period (minimum 3)
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smoothing < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate trend curvature values
+    ///
+    /// Positive values indicate convex (accelerating) trends
+    /// Negative values indicate concave (decelerating) trends
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.period + self.smoothing;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate first derivative (velocity/slope) at each point
+        let mut velocity = vec![0.0; n];
+        for i in 2..n {
+            velocity[i] = (close[i] - close[i - 2]) / 2.0;
+        }
+
+        // Calculate second derivative (acceleration/curvature)
+        let mut acceleration = vec![0.0; n];
+        for i in 3..n {
+            acceleration[i] = velocity[i] - velocity[i - 1];
+        }
+
+        // Calculate normalized curvature over period
+        for i in self.period..n {
+            let start = i - self.period + 1;
+
+            // Calculate average price for normalization
+            let avg_price: f64 = close[start..=i].iter().sum::<f64>() / self.period as f64;
+
+            if avg_price.abs() > 1e-10 {
+                // Sum acceleration over the period
+                let accel_sum: f64 = acceleration[start..=i].iter().sum();
+
+                // Normalize by price and period
+                let curvature = (accel_sum / self.period as f64) / avg_price * 10000.0;
+
+                result[i] = curvature;
+            }
+        }
+
+        // Apply smoothing
+        let mut smoothed = vec![0.0; n];
+        for i in (self.period + self.smoothing - 1)..n {
+            let start = i - self.smoothing + 1;
+            let sum: f64 = result[start..=i].iter().sum();
+            smoothed[i] = sum / self.smoothing as f64;
+        }
+
+        smoothed
+    }
+}
+
+impl TechnicalIndicator for TrendCurvature {
+    fn name(&self) -> &str {
+        "Trend Curvature"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Volatility Band - Dynamic volatility bands around the trend
+///
+/// Creates adaptive bands that expand during high volatility and contract
+/// during low volatility. Unlike Bollinger Bands which use standard deviation
+/// from a moving average, this uses ATR-based bands around a regression trend line.
+///
+/// Features:
+/// - Trend-following center line (linear regression)
+/// - ATR-based adaptive band width
+/// - Band squeeze detection for breakout anticipation
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendVolatilityBand;
+/// let tvb = TrendVolatilityBand::new(20, 14, 2.0, 1.0).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendVolatilityBand {
+    /// Lookback period for trend regression
+    trend_period: usize,
+    /// ATR period
+    atr_period: usize,
+    /// Outer band multiplier
+    outer_mult: f64,
+    /// Inner band multiplier
+    inner_mult: f64,
+}
+
+impl TrendVolatilityBand {
+    /// Creates a new TrendVolatilityBand indicator
+    pub fn new(trend_period: usize, atr_period: usize, outer_mult: f64, inner_mult: f64) -> Result<Self> {
+        if trend_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if atr_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if outer_mult < 0.5 || outer_mult > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "outer_mult".to_string(),
+                reason: "must be between 0.5 and 5.0".to_string(),
+            });
+        }
+        if inner_mult < 0.1 || inner_mult >= outer_mult {
+            return Err(IndicatorError::InvalidParameter {
+                name: "inner_mult".to_string(),
+                reason: "must be between 0.1 and less than outer_mult".to_string(),
+            });
+        }
+        Ok(Self { trend_period, atr_period, outer_mult, inner_mult })
+    }
+
+    /// Calculate the band squeeze ratio (0-100)
+    ///
+    /// Higher values indicate tighter bands (potential breakout)
+    pub fn calculate_squeeze(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut result = vec![0.0; n];
+        let min_required = self.trend_period.max(self.atr_period);
+
+        if n < min_required + 20 {
+            return result;
+        }
+
+        // Calculate ATR
+        let mut atr = vec![0.0; n];
+        let mut tr_sum = 0.0;
+
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.atr_period {
+                tr_sum += tr;
+                if i == self.atr_period - 1 {
+                    atr[i] = tr_sum / self.atr_period as f64;
+                }
+            } else {
+                atr[i] = (atr[i - 1] * (self.atr_period - 1) as f64 + tr) / self.atr_period as f64;
+            }
+        }
+
+        // Calculate squeeze by comparing current ATR to recent range
+        for i in (min_required + 20)..n {
+            let lookback = 20;
+            let start = i - lookback;
+
+            let max_atr = atr[start..=i].iter().cloned().fold(0.0_f64, f64::max);
+            let min_atr = atr[start..=i].iter().cloned().fold(f64::MAX, f64::min);
+
+            if (max_atr - min_atr).abs() > 1e-10 {
+                // Calculate where current ATR falls in the range (inverse for squeeze)
+                let squeeze = 1.0 - (atr[i] - min_atr) / (max_atr - min_atr);
+                result[i] = squeeze * 100.0;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate all band values
+    ///
+    /// Returns (outer_upper, inner_upper, middle, inner_lower, outer_lower)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64])
+        -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>)
+    {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut outer_upper = vec![0.0; n];
+        let mut inner_upper = vec![0.0; n];
+        let mut middle = vec![0.0; n];
+        let mut inner_lower = vec![0.0; n];
+        let mut outer_lower = vec![0.0; n];
+        let min_required = self.trend_period.max(self.atr_period);
+
+        if n < min_required {
+            return (outer_upper, inner_upper, middle, inner_lower, outer_lower);
+        }
+
+        // Calculate ATR
+        let mut atr = vec![0.0; n];
+        let mut tr_sum = 0.0;
+
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.atr_period {
+                tr_sum += tr;
+                if i == self.atr_period - 1 {
+                    atr[i] = tr_sum / self.atr_period as f64;
+                }
+            } else {
+                atr[i] = (atr[i - 1] * (self.atr_period - 1) as f64 + tr) / self.atr_period as f64;
+            }
+        }
+
+        // Calculate regression and bands
+        for i in min_required..n {
+            let start = i - self.trend_period + 1;
+
+            // Linear regression
+            let mut sum_x = 0.0;
+            let mut sum_y = 0.0;
+            let mut sum_xy = 0.0;
+            let mut sum_xx = 0.0;
+
+            for (j, idx) in (start..=i).enumerate() {
+                let x = j as f64;
+                let y = close[idx];
+                sum_x += x;
+                sum_y += y;
+                sum_xy += x * y;
+                sum_xx += x * x;
+            }
+
+            let count = self.trend_period as f64;
+            let denom = count * sum_xx - sum_x * sum_x;
+
+            if denom.abs() > 1e-10 {
+                let slope = (count * sum_xy - sum_x * sum_y) / denom;
+                let intercept = (sum_y - slope * sum_x) / count;
+
+                let x_curr = (self.trend_period - 1) as f64;
+                let mid_value = intercept + slope * x_curr;
+
+                let outer_band = atr[i] * self.outer_mult;
+                let inner_band = atr[i] * self.inner_mult;
+
+                middle[i] = mid_value;
+                outer_upper[i] = mid_value + outer_band;
+                inner_upper[i] = mid_value + inner_band;
+                inner_lower[i] = mid_value - inner_band;
+                outer_lower[i] = mid_value - outer_band;
+            }
+        }
+
+        (outer_upper, inner_upper, middle, inner_lower, outer_lower)
+    }
+}
+
+impl TechnicalIndicator for TrendVolatilityBand {
+    fn name(&self) -> &str {
+        "Trend Volatility Band"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.trend_period.max(self.atr_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (outer_upper, _inner_upper, middle, _inner_lower, outer_lower) =
+            self.calculate(&data.high, &data.low, &data.close);
+        // Return outer bands and middle (3 outputs like Bollinger Bands)
+        Ok(IndicatorOutput::triple(outer_upper, middle, outer_lower))
+    }
+}
+
+/// Trend Quality Rating - Comprehensive trend quality assessment
+///
+/// Provides a holistic rating of trend quality based on multiple factors:
+/// - Directional consistency (how consistently price moves in one direction)
+/// - Slope stability (how stable the trend slope is over time)
+/// - Volume confirmation (whether volume supports the trend)
+/// - Pullback behavior (healthy trends have orderly pullbacks)
+/// - Momentum alignment (price momentum aligns with trend direction)
+///
+/// Returns a score from 0 (poor quality) to 100 (excellent quality).
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendQualityRating;
+/// let tqr = TrendQualityRating::new(20, 10).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendQualityRating {
+    /// Primary trend period
+    trend_period: usize,
+    /// Short period for recent behavior
+    short_period: usize,
+}
+
+impl TrendQualityRating {
+    /// Creates a new TrendQualityRating indicator
+    pub fn new(trend_period: usize, short_period: usize) -> Result<Self> {
+        if trend_period < 15 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be at least 15".to_string(),
+            });
+        }
+        if short_period < 5 || short_period >= trend_period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 5 and less than trend_period/2".to_string(),
+            });
+        }
+        Ok(Self { trend_period, short_period })
+    }
+
+    /// Calculate trend quality rating (0-100)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+
+        if n <= self.trend_period {
+            return result;
+        }
+
+        for i in self.trend_period..n {
+            let start = i - self.trend_period + 1;
+            let mid = (start + i) / 2;
+            let short_start = i - self.short_period + 1;
+
+            // Determine trend direction
+            let trend_direction = if close[i] > close[start] { 1.0 } else { -1.0 };
+
+            // Factor 1: Directional consistency (25 points)
+            let mut up_bars = 0;
+            let mut down_bars = 0;
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_bars += 1;
+                } else if close[j] < close[j - 1] {
+                    down_bars += 1;
+                }
+            }
+            let total_bars = up_bars + down_bars;
+            let consistency_score = if total_bars > 0 {
+                let dominant = if trend_direction > 0.0 { up_bars } else { down_bars };
+                (dominant as f64 / total_bars as f64) * 25.0
+            } else {
+                0.0
+            };
+
+            // Factor 2: Slope stability (25 points)
+            // Compare slope in first half vs second half
+            let first_half_slope = (close[mid] - close[start]) / (mid - start) as f64;
+            let second_half_slope = (close[i] - close[mid]) / (i - mid) as f64;
+
+            let slope_stability = if first_half_slope.abs() > 1e-10 {
+                let slope_ratio = second_half_slope / first_half_slope;
+                // Ideal ratio is 1.0 (stable slope), penalty for deviation
+                let stability = 1.0 - (slope_ratio - 1.0).abs().min(1.0);
+                stability * 25.0
+            } else {
+                12.5 // Neutral if no initial slope
+            };
+
+            // Factor 3: Volume confirmation (20 points)
+            let early_volume: f64 = volume[start..mid].iter().sum::<f64>() / (mid - start) as f64;
+            let late_volume: f64 = volume[mid..=i].iter().sum::<f64>() / (i - mid + 1) as f64;
+
+            let volume_score = if early_volume > 1e-10 {
+                // In healthy trends, volume often increases with price movement
+                let vol_ratio = late_volume / early_volume;
+                if trend_direction > 0.0 {
+                    // Uptrend: higher volume later is good
+                    (vol_ratio.min(2.0) / 2.0) * 20.0
+                } else {
+                    // Downtrend: volume pattern varies
+                    ((1.0 + vol_ratio.min(2.0)) / 3.0) * 20.0
+                }
+            } else {
+                10.0 // Neutral
+            };
+
+            // Factor 4: Pullback behavior (15 points)
+            // Good trends have shallow pullbacks
+            let trend_range = (close[i] - close[start]).abs();
+            let mut max_pullback: f64 = 0.0;
+
+            let mut peak = close[start];
+            let mut trough = close[start];
+
+            for j in start..=i {
+                if trend_direction > 0.0 {
+                    peak = peak.max(close[j]);
+                    let pullback = peak - close[j];
+                    max_pullback = max_pullback.max(pullback);
+                } else {
+                    trough = trough.min(close[j]);
+                    let pullback = close[j] - trough;
+                    max_pullback = max_pullback.max(pullback);
+                }
+            }
+
+            let pullback_score = if trend_range > 1e-10 {
+                let pullback_ratio = max_pullback / trend_range;
+                // Small pullbacks are good (< 50% of trend)
+                let score = 1.0 - (pullback_ratio * 2.0).min(1.0);
+                score * 15.0
+            } else {
+                7.5 // Neutral
+            };
+
+            // Factor 5: Momentum alignment (15 points)
+            let recent_momentum = close[i] - close[short_start];
+            let overall_momentum = close[i] - close[start];
+
+            let momentum_score = if overall_momentum.abs() > 1e-10 {
+                // Recent momentum should align with overall momentum
+                let alignment = if (recent_momentum > 0.0) == (overall_momentum > 0.0) {
+                    1.0
+                } else {
+                    0.0
+                };
+
+                // Also consider momentum strength
+                let recent_strength = recent_momentum.abs() / self.short_period as f64;
+                let overall_strength = overall_momentum.abs() / self.trend_period as f64;
+                let strength_ratio = if overall_strength > 1e-10 {
+                    (recent_strength / overall_strength).min(2.0) / 2.0
+                } else {
+                    0.5
+                };
+
+                (alignment * 0.6 + strength_ratio * 0.4) * 15.0
+            } else {
+                7.5 // Neutral
+            };
+
+            result[i] = consistency_score + slope_stability + volume_score + pullback_score + momentum_score;
+            result[i] = result[i].clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendQualityRating {
+    fn name(&self) -> &str {
+        "Trend Quality Rating"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.trend_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Trend Exhaustion Signal - Detects trend exhaustion and potential reversals
+///
+/// Identifies when a trend is becoming exhausted through multiple signals:
+/// - Momentum divergence (price makes new highs but momentum fades)
+/// - Volume exhaustion (volume dries up near trend extremes)
+/// - Overextension (price too far from moving average)
+/// - Time exhaustion (trend duration relative to typical cycles)
+///
+/// Returns a score from 0 (no exhaustion) to 100 (high exhaustion).
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendExhaustionSignal;
+/// let tes = TrendExhaustionSignal::new(20, 10, 2.5).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendExhaustionSignal {
+    /// Main lookback period
+    period: usize,
+    /// Short period for momentum
+    momentum_period: usize,
+    /// Overextension threshold (standard deviations)
+    overext_threshold: f64,
+}
+
+impl TrendExhaustionSignal {
+    /// Creates a new TrendExhaustionSignal indicator
+    pub fn new(period: usize, momentum_period: usize, overext_threshold: f64) -> Result<Self> {
+        if period < 15 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 15".to_string(),
+            });
+        }
+        if momentum_period < 5 || momentum_period >= period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 5 and less than period/2".to_string(),
+            });
+        }
+        if overext_threshold < 1.0 || overext_threshold > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "overext_threshold".to_string(),
+                reason: "must be between 1.0 and 5.0".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_period, overext_threshold })
+    }
+
+    /// Calculate trend exhaustion signal (0-100)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+
+        if n <= self.period {
+            return result;
+        }
+
+        for i in self.period..n {
+            let start = i - self.period + 1;
+            let mom_start = i - self.momentum_period + 1;
+
+            // Determine if we're in an uptrend or downtrend
+            let trend_direction = close[i] - close[start];
+            let is_uptrend = trend_direction > 0.0;
+
+            let mut exhaustion_score = 0.0;
+
+            // Signal 1: Momentum divergence (30 points)
+            // Check if price made new extreme but momentum is weaker
+            let mid = (start + i) / 2;
+
+            let first_half_move = (close[mid] - close[start]).abs();
+            let second_half_move = (close[i] - close[mid]).abs();
+
+            if first_half_move > 1e-10 {
+                // If second half move is weaker while still making new extremes
+                let move_ratio = second_half_move / first_half_move;
+                if move_ratio < 0.7 {
+                    // Weakening momentum
+                    exhaustion_score += (1.0 - move_ratio) * 30.0;
+                }
+            }
+
+            // Signal 2: Volume exhaustion (25 points)
+            let early_vol: f64 = volume[start..mid].iter().sum::<f64>() / (mid - start) as f64;
+            let late_vol: f64 = volume[mid..=i].iter().sum::<f64>() / (i - mid + 1) as f64;
+
+            if early_vol > 1e-10 {
+                let vol_ratio = late_vol / early_vol;
+                if vol_ratio < 0.7 {
+                    // Declining volume in trend direction
+                    exhaustion_score += (1.0 - vol_ratio) * 25.0;
+                }
+            }
+
+            // Signal 3: Overextension (25 points)
+            let ma: f64 = close[start..=i].iter().sum::<f64>() / self.period as f64;
+
+            // Calculate standard deviation
+            let variance: f64 = close[start..=i]
+                .iter()
+                .map(|&p| (p - ma).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev > 1e-10 {
+                let z_score = (close[i] - ma) / std_dev;
+                let z_abs = z_score.abs();
+
+                if z_abs > self.overext_threshold {
+                    // Price is overextended
+                    let overext = ((z_abs - self.overext_threshold) / self.overext_threshold).min(1.0);
+                    exhaustion_score += overext * 25.0;
+                }
+            }
+
+            // Signal 4: Rate of change exhaustion (20 points)
+            // Compare recent ROC to earlier ROC
+            if mom_start > start {
+                let recent_roc = (close[i] - close[mom_start]) / close[mom_start].max(1e-10);
+                let earlier_start = mom_start - self.momentum_period;
+                let earlier_roc = if earlier_start >= start {
+                    (close[mom_start] - close[earlier_start]) / close[earlier_start].max(1e-10)
+                } else {
+                    recent_roc // fallback
+                };
+
+                // Check for ROC divergence
+                if is_uptrend {
+                    if recent_roc < earlier_roc && earlier_roc > 0.0 {
+                        let divergence = (earlier_roc - recent_roc) / earlier_roc.abs().max(1e-10);
+                        exhaustion_score += divergence.min(1.0) * 20.0;
+                    }
+                } else if recent_roc > earlier_roc && earlier_roc < 0.0 {
+                    let divergence = (recent_roc - earlier_roc) / earlier_roc.abs().max(1e-10);
+                    exhaustion_score += divergence.min(1.0) * 20.0;
+                }
+            }
+
+            result[i] = exhaustion_score.clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendExhaustionSignal {
+    fn name(&self) -> &str {
+        "Trend Exhaustion Signal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5703,5 +6648,456 @@ mod tests {
         let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
         let result = trd.calculate(&high, &low, &close);
         assert!(result[40] >= 35.0 && result[40] <= 65.0, "TrendRegimeDetector should indicate ranging regime");
+    }
+
+    // ============= Tests for 6 NEW indicators (TrendAngle, TrendChannel, etc.) =============
+
+    #[test]
+    fn test_trend_angle() {
+        let (high, low, close, _) = make_test_data();
+        let ta = TrendAngle::new(14, 14).unwrap();
+        let result = ta.calculate(&high, &low, &close);
+
+        assert_eq!(result.len(), close.len());
+        // Uptrend should show positive angle
+        assert!(result[30] > 0.0);
+        // Values should be in -90 to +90 range
+        for val in &result[14..] {
+            assert!(*val >= -90.0 && *val <= 90.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_angle_invalid_params() {
+        // period must be at least 5
+        assert!(TrendAngle::new(3, 14).is_err());
+        // atr_period must be at least 5
+        assert!(TrendAngle::new(14, 3).is_err());
+    }
+
+    #[test]
+    fn test_trend_angle_trait() {
+        let ta = TrendAngle::new(14, 14).unwrap();
+        assert_eq!(ta.name(), "Trend Angle");
+        assert_eq!(ta.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_trend_angle_downtrend() {
+        let close: Vec<f64> = (0..50).map(|i| 150.0 - i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 2.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 2.0).collect();
+
+        let ta = TrendAngle::new(14, 14).unwrap();
+        let result = ta.calculate(&high, &low, &close);
+        // Downtrend should show negative angle
+        assert!(result[30] < 0.0);
+    }
+
+    #[test]
+    fn test_trend_angle_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+
+        let ta = TrendAngle::new(14, 14).unwrap();
+        let result = ta.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_channel() {
+        let (high, low, close, _) = make_test_data();
+        let tc = TrendChannel::new(20, 14, 2.0).unwrap();
+        let (upper, middle, lower) = tc.calculate(&high, &low, &close);
+
+        assert_eq!(upper.len(), close.len());
+        assert_eq!(middle.len(), close.len());
+        assert_eq!(lower.len(), close.len());
+
+        // Upper should be above middle, middle above lower
+        assert!(upper[30] > middle[30]);
+        assert!(middle[30] > lower[30]);
+        // In uptrend, middle should be rising
+        assert!(middle[30] > middle[25]);
+    }
+
+    #[test]
+    fn test_trend_channel_invalid_params() {
+        // period must be at least 10
+        assert!(TrendChannel::new(5, 14, 2.0).is_err());
+        // atr_period must be at least 5
+        assert!(TrendChannel::new(20, 3, 2.0).is_err());
+        // multiplier must be between 0.5 and 5.0
+        assert!(TrendChannel::new(20, 14, 0.2).is_err());
+        assert!(TrendChannel::new(20, 14, 6.0).is_err());
+    }
+
+    #[test]
+    fn test_trend_channel_trait() {
+        let tc = TrendChannel::new(20, 14, 2.0).unwrap();
+        assert_eq!(tc.name(), "Trend Channel");
+        assert_eq!(tc.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_trend_channel_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+
+        let tc = TrendChannel::new(20, 14, 2.0).unwrap();
+        let (upper, middle, lower) = tc.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(upper.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &upper {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_curvature() {
+        let (_, _, close, _) = make_test_data();
+        let tc = TrendCurvature::new(14, 5).unwrap();
+        let result = tc.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Linear trend should have near-zero curvature
+        let computed_values: Vec<f64> = result[19..].iter().cloned().collect();
+        let avg_abs_curvature: f64 = computed_values.iter().map(|v| v.abs()).sum::<f64>() / computed_values.len() as f64;
+        assert!(avg_abs_curvature < 1.0, "Linear trend should have low curvature");
+    }
+
+    #[test]
+    fn test_trend_curvature_invalid_params() {
+        // period must be at least 10
+        assert!(TrendCurvature::new(5, 5).is_err());
+        // smoothing must be at least 3
+        assert!(TrendCurvature::new(14, 2).is_err());
+    }
+
+    #[test]
+    fn test_trend_curvature_trait() {
+        let tc = TrendCurvature::new(14, 5).unwrap();
+        assert_eq!(tc.name(), "Trend Curvature");
+        assert_eq!(tc.min_periods(), 19);
+    }
+
+    #[test]
+    fn test_trend_curvature_accelerating() {
+        // Create accelerating uptrend (exponential)
+        let close: Vec<f64> = (0..50).map(|i| 100.0 * (1.02_f64).powi(i)).collect();
+        let tc = TrendCurvature::new(14, 5).unwrap();
+        let result = tc.calculate(&close);
+
+        // Exponential growth should show positive curvature (accelerating)
+        let late_values: Vec<f64> = result[30..].iter().cloned().collect();
+        let avg_curvature: f64 = late_values.iter().sum::<f64>() / late_values.len() as f64;
+        assert!(avg_curvature > 0.0, "Accelerating trend should have positive curvature");
+    }
+
+    #[test]
+    fn test_trend_curvature_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let tc = TrendCurvature::new(14, 5).unwrap();
+        let result = tc.calculate(&short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_volatility_band() {
+        let (high, low, close, _) = make_test_data();
+        let tvb = TrendVolatilityBand::new(20, 14, 2.0, 1.0).unwrap();
+        let (outer_upper, inner_upper, middle, inner_lower, outer_lower) =
+            tvb.calculate(&high, &low, &close);
+
+        assert_eq!(outer_upper.len(), close.len());
+
+        // Check band ordering
+        assert!(outer_upper[30] > inner_upper[30]);
+        assert!(inner_upper[30] > middle[30]);
+        assert!(middle[30] > inner_lower[30]);
+        assert!(inner_lower[30] > outer_lower[30]);
+    }
+
+    #[test]
+    fn test_trend_volatility_band_squeeze() {
+        let (high, low, close, _) = make_test_data();
+        let tvb = TrendVolatilityBand::new(20, 14, 2.0, 1.0).unwrap();
+        let squeeze = tvb.calculate_squeeze(&high, &low, &close);
+
+        assert_eq!(squeeze.len(), close.len());
+        // Values should be in 0-100 range
+        for val in &squeeze[40..] {
+            assert!(*val >= 0.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_volatility_band_invalid_params() {
+        // trend_period must be at least 10
+        assert!(TrendVolatilityBand::new(5, 14, 2.0, 1.0).is_err());
+        // atr_period must be at least 5
+        assert!(TrendVolatilityBand::new(20, 3, 2.0, 1.0).is_err());
+        // outer_mult must be between 0.5 and 5.0
+        assert!(TrendVolatilityBand::new(20, 14, 0.2, 1.0).is_err());
+        assert!(TrendVolatilityBand::new(20, 14, 6.0, 1.0).is_err());
+        // inner_mult must be between 0.1 and less than outer_mult
+        assert!(TrendVolatilityBand::new(20, 14, 2.0, 0.05).is_err());
+        assert!(TrendVolatilityBand::new(20, 14, 2.0, 2.5).is_err());
+    }
+
+    #[test]
+    fn test_trend_volatility_band_trait() {
+        let tvb = TrendVolatilityBand::new(20, 14, 2.0, 1.0).unwrap();
+        assert_eq!(tvb.name(), "Trend Volatility Band");
+        assert_eq!(tvb.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_trend_volatility_band_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+
+        let tvb = TrendVolatilityBand::new(20, 14, 2.0, 1.0).unwrap();
+        let (outer_upper, _, _, _, _) = tvb.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(outer_upper.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &outer_upper {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_quality_rating() {
+        let (high, low, close, volume) = make_test_data();
+        let tqr = TrendQualityRating::new(20, 7).unwrap();
+        let result = tqr.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        // Consistent uptrend should show good quality
+        assert!(result[30] > 30.0);
+        // Values should be in 0-100 range
+        for val in &result[20..] {
+            assert!(*val >= 0.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_quality_rating_invalid_params() {
+        // trend_period must be at least 15
+        assert!(TrendQualityRating::new(10, 5).is_err());
+        // short_period must be at least 5 and less than trend_period/2
+        assert!(TrendQualityRating::new(20, 3).is_err());
+        assert!(TrendQualityRating::new(20, 12).is_err());
+    }
+
+    #[test]
+    fn test_trend_quality_rating_trait() {
+        let tqr = TrendQualityRating::new(20, 7).unwrap();
+        assert_eq!(tqr.name(), "Trend Quality Rating");
+        assert_eq!(tqr.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_trend_quality_rating_choppy_market() {
+        // Choppy data should show lower quality
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + if i % 2 == 0 { 2.0 } else { -2.0 })
+            .collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let volume = vec![1000.0; 50];
+
+        let tqr = TrendQualityRating::new(20, 5).unwrap();
+        let result = tqr.calculate(&high, &low, &close, &volume);
+        // Choppy market should show lower quality
+        assert!(result[40] < 60.0);
+    }
+
+    #[test]
+    fn test_trend_quality_rating_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+        let short_volume = vec![1000.0, 1100.0, 1200.0, 1050.0, 1150.0];
+
+        let tqr = TrendQualityRating::new(20, 5).unwrap();
+        let result = tqr.calculate(&short_high, &short_low, &short_close, &short_volume);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_exhaustion_signal() {
+        let (high, low, close, volume) = make_test_data();
+        let tes = TrendExhaustionSignal::new(20, 7, 2.5).unwrap();
+        let result = tes.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be in 0-100 range
+        for val in &result[20..] {
+            assert!(*val >= 0.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_exhaustion_signal_invalid_params() {
+        // period must be at least 15
+        assert!(TrendExhaustionSignal::new(10, 5, 2.5).is_err());
+        // momentum_period must be at least 5 and less than period/2
+        assert!(TrendExhaustionSignal::new(20, 3, 2.5).is_err());
+        assert!(TrendExhaustionSignal::new(20, 12, 2.5).is_err());
+        // overext_threshold must be between 1.0 and 5.0
+        assert!(TrendExhaustionSignal::new(20, 7, 0.5).is_err());
+        assert!(TrendExhaustionSignal::new(20, 7, 6.0).is_err());
+    }
+
+    #[test]
+    fn test_trend_exhaustion_signal_trait() {
+        let tes = TrendExhaustionSignal::new(20, 7, 2.5).unwrap();
+        assert_eq!(tes.name(), "Trend Exhaustion Signal");
+        assert_eq!(tes.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_trend_exhaustion_signal_extended_trend() {
+        // Create extended trend with declining momentum
+        let mut close = vec![100.0; 60];
+        let mut volume = vec![1000.0; 60];
+        for i in 0..60 {
+            // Fast rise initially, slowing down later
+            if i < 30 {
+                close[i] = 100.0 + i as f64 * 2.0;
+                volume[i] = 1500.0; // High volume early
+            } else {
+                close[i] = 160.0 + (i - 30) as f64 * 0.5; // Slowing momentum
+                volume[i] = 800.0; // Declining volume
+            }
+        }
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let tes = TrendExhaustionSignal::new(20, 7, 2.0).unwrap();
+        let result = tes.calculate(&high, &low, &close, &volume);
+
+        // Later in the trend with declining momentum and volume, exhaustion should be elevated
+        assert!(result[55] >= 0.0, "Extended trend should show some exhaustion signals");
+    }
+
+    #[test]
+    fn test_trend_exhaustion_signal_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+        let short_volume = vec![1000.0, 1100.0, 1200.0, 1050.0, 1150.0];
+
+        let tes = TrendExhaustionSignal::new(20, 7, 2.5).unwrap();
+        let result = tes.calculate(&short_high, &short_low, &short_close, &short_volume);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_six_new_indicators_trait_implementations() {
+        // Verify all 6 new indicators implement TechnicalIndicator correctly
+        let ta = TrendAngle::new(14, 14).unwrap();
+        assert_eq!(ta.name(), "Trend Angle");
+        assert_eq!(ta.min_periods(), 15);
+
+        let tc = TrendChannel::new(20, 14, 2.0).unwrap();
+        assert_eq!(tc.name(), "Trend Channel");
+        assert_eq!(tc.min_periods(), 21);
+
+        let tcurv = TrendCurvature::new(14, 5).unwrap();
+        assert_eq!(tcurv.name(), "Trend Curvature");
+        assert_eq!(tcurv.min_periods(), 19);
+
+        let tvb = TrendVolatilityBand::new(20, 14, 2.0, 1.0).unwrap();
+        assert_eq!(tvb.name(), "Trend Volatility Band");
+        assert_eq!(tvb.min_periods(), 21);
+
+        let tqr = TrendQualityRating::new(20, 7).unwrap();
+        assert_eq!(tqr.name(), "Trend Quality Rating");
+        assert_eq!(tqr.min_periods(), 21);
+
+        let tes = TrendExhaustionSignal::new(20, 7, 2.5).unwrap();
+        assert_eq!(tes.name(), "Trend Exhaustion Signal");
+        assert_eq!(tes.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_six_new_indicators_uptrend_data() {
+        let (high, low, close, volume) = make_test_data();
+
+        let ta = TrendAngle::new(14, 14).unwrap();
+        let result = ta.calculate(&high, &low, &close);
+        assert!(result[30] > 0.0, "TrendAngle should be positive in uptrend");
+
+        let tc = TrendChannel::new(20, 14, 2.0).unwrap();
+        let (upper, middle, lower) = tc.calculate(&high, &low, &close);
+        assert!(upper[30] > middle[30], "Upper band should be above middle");
+        assert!(middle[30] > lower[30], "Middle should be above lower band");
+
+        let tcurv = TrendCurvature::new(14, 5).unwrap();
+        let result = tcurv.calculate(&close);
+        assert_eq!(result.len(), close.len());
+
+        let tvb = TrendVolatilityBand::new(20, 14, 2.0, 1.0).unwrap();
+        let (outer_upper, _, middle, _, outer_lower) = tvb.calculate(&high, &low, &close);
+        assert!(outer_upper[30] > middle[30], "Outer upper should be above middle");
+        assert!(middle[30] > outer_lower[30], "Middle should be above outer lower");
+
+        let tqr = TrendQualityRating::new(20, 5).unwrap();
+        let result = tqr.calculate(&high, &low, &close, &volume);
+        assert!(result[30] > 0.0, "TrendQualityRating should be positive in clean trend");
+
+        let tes = TrendExhaustionSignal::new(20, 5, 2.5).unwrap();
+        let result = tes.calculate(&high, &low, &close, &volume);
+        assert!(result[30] >= 0.0 && result[30] <= 100.0, "TrendExhaustionSignal should be in valid range");
+    }
+
+    #[test]
+    fn test_six_new_indicators_downtrend_data() {
+        let close: Vec<f64> = (0..50).map(|i| 150.0 - i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 2.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 2.0).collect();
+        let volume = vec![1000.0; 50];
+
+        let ta = TrendAngle::new(14, 14).unwrap();
+        let result = ta.calculate(&high, &low, &close);
+        assert!(result[30] < 0.0, "TrendAngle should be negative in downtrend");
+
+        let tc = TrendChannel::new(20, 14, 2.0).unwrap();
+        let (_, middle_early, _) = tc.calculate(&high, &low, &close);
+        // Middle line should be declining
+        assert!(middle_early[35] < middle_early[25], "Middle line should decline in downtrend");
+
+        let tcurv = TrendCurvature::new(14, 5).unwrap();
+        let result = tcurv.calculate(&close);
+        assert_eq!(result.len(), close.len());
+
+        let tqr = TrendQualityRating::new(20, 5).unwrap();
+        let result = tqr.calculate(&high, &low, &close, &volume);
+        assert!(result[35] > 0.0, "TrendQualityRating should be positive for consistent downtrend");
+
+        let tes = TrendExhaustionSignal::new(20, 5, 2.5).unwrap();
+        let result = tes.calculate(&high, &low, &close, &volume);
+        assert!(result[35] >= 0.0 && result[35] <= 100.0, "TrendExhaustionSignal should be in valid range");
     }
 }

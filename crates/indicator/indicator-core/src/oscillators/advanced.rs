@@ -3076,6 +3076,905 @@ impl TechnicalIndicator for HarmonicOscillator {
     }
 }
 
+/// Williams %R Enhanced - Enhanced Williams %R with smoothing and momentum confirmation
+///
+/// An enhanced version of the Williams %R oscillator that includes smoothing
+/// to reduce noise and momentum confirmation to filter false signals.
+/// Combines the traditional %R calculation with rate of change analysis.
+#[derive(Debug, Clone)]
+pub struct WilliamsREnhanced {
+    period: usize,
+    smooth_period: usize,
+    momentum_period: usize,
+}
+
+impl WilliamsREnhanced {
+    pub fn new(period: usize, smooth_period: usize, momentum_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            smooth_period,
+            momentum_period,
+        })
+    }
+
+    /// Calculate enhanced Williams %R values
+    ///
+    /// Returns values from -100 to 0, with momentum-confirmed signals
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.period + self.smooth_period + self.momentum_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate raw Williams %R
+        let mut raw_wr = vec![0.0; n];
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let highest = high[start..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let lowest = low[start..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+            let range = highest - lowest;
+
+            if range > 1e-10 {
+                // Williams %R: ((Highest High - Close) / (Highest High - Lowest Low)) * -100
+                raw_wr[i] = ((highest - close[i]) / range) * -100.0;
+            } else {
+                raw_wr[i] = -50.0;
+            }
+        }
+
+        // Apply smoothing (EMA)
+        let mut smoothed_wr = vec![0.0; n];
+        let multiplier = 2.0 / (self.smooth_period as f64 + 1.0);
+
+        if self.smooth_period == 1 {
+            smoothed_wr = raw_wr.clone();
+        } else {
+            let init_start = self.period - 1;
+            let init_end = init_start + self.smooth_period;
+            if init_end <= n {
+                smoothed_wr[init_end - 1] = raw_wr[init_start..init_end].iter().sum::<f64>() / self.smooth_period as f64;
+
+                for i in init_end..n {
+                    smoothed_wr[i] = (raw_wr[i] - smoothed_wr[i - 1]) * multiplier + smoothed_wr[i - 1];
+                }
+            }
+        }
+
+        // Calculate momentum of %R for confirmation
+        let mut wr_momentum = vec![0.0; n];
+        for i in (self.period + self.smooth_period + self.momentum_period - 1)..n {
+            wr_momentum[i] = smoothed_wr[i] - smoothed_wr[i - self.momentum_period];
+        }
+
+        // Combine smoothed %R with momentum confirmation
+        for i in min_required..n {
+            let base_wr = smoothed_wr[i];
+            let momentum = wr_momentum[i];
+
+            // Momentum confirmation: amplify signal when momentum agrees with position
+            let momentum_factor = if (base_wr < -50.0 && momentum < 0.0) || (base_wr > -50.0 && momentum > 0.0) {
+                1.1 // Momentum confirms direction
+            } else {
+                0.9 // Momentum diverges
+            };
+
+            // Apply momentum factor while keeping in range
+            let adjusted = base_wr * momentum_factor;
+            result[i] = adjusted.max(-100.0).min(0.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for WilliamsREnhanced {
+    fn name(&self) -> &str {
+        "Williams R Enhanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smooth_period + self.momentum_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(
+            &data.high,
+            &data.low,
+            &data.close,
+        )))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Stochastic Momentum Index - Blau's Stochastic Momentum Index (SMI)
+///
+/// A refined version of the stochastic oscillator developed by William Blau.
+/// Measures distance from the midpoint of the high-low range rather than
+/// from the low, providing better symmetry around the zero line.
+#[derive(Debug, Clone)]
+pub struct StochasticMomentumIndex {
+    k_period: usize,
+    d1_period: usize,
+    d2_period: usize,
+    signal_period: usize,
+}
+
+impl StochasticMomentumIndex {
+    pub fn new(k_period: usize, d1_period: usize, d2_period: usize, signal_period: usize) -> Result<Self> {
+        if k_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "k_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if d1_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "d1_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if d2_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "d2_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if signal_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self {
+            k_period,
+            d1_period,
+            d2_period,
+            signal_period,
+        })
+    }
+
+    /// Helper function to calculate EMA
+    fn ema(data: &[f64], period: usize, start_idx: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![0.0; n];
+
+        if n <= start_idx + period {
+            return result;
+        }
+
+        let multiplier = 2.0 / (period as f64 + 1.0);
+
+        // Initialize with SMA
+        let init_end = start_idx + period;
+        if init_end <= n {
+            result[init_end - 1] = data[start_idx..init_end].iter().sum::<f64>() / period as f64;
+
+            // Calculate EMA
+            for i in init_end..n {
+                result[i] = (data[i] - result[i - 1]) * multiplier + result[i - 1];
+            }
+        }
+
+        result
+    }
+
+    /// Calculate Stochastic Momentum Index with signal line
+    ///
+    /// Returns (smi_values, signal_values) ranging from -100 to +100
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let min_required = self.k_period + self.d1_period + self.d2_period + self.signal_period;
+
+        if n < min_required {
+            return (vec![0.0; n], vec![0.0; n]);
+        }
+
+        // Calculate highest high and lowest low over k_period
+        let mut hh = vec![0.0; n];
+        let mut ll = vec![0.0; n];
+        for i in (self.k_period - 1)..n {
+            let start = i + 1 - self.k_period;
+            hh[i] = high[start..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            ll[i] = low[start..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+        }
+
+        // Calculate distance from midpoint: Close - (HH + LL) / 2
+        let mut distance = vec![0.0; n];
+        // Calculate range: HH - LL
+        let mut hl_range = vec![0.0; n];
+
+        for i in (self.k_period - 1)..n {
+            let midpoint = (hh[i] + ll[i]) / 2.0;
+            distance[i] = close[i] - midpoint;
+            hl_range[i] = hh[i] - ll[i];
+        }
+
+        // Double smooth the distance
+        let d1_start = self.k_period - 1;
+        let distance_ema1 = Self::ema(&distance, self.d1_period, d1_start);
+        let d2_start = d1_start + self.d1_period - 1;
+        let distance_ema2 = Self::ema(&distance_ema1, self.d2_period, d2_start);
+
+        // Double smooth the range
+        let range_ema1 = Self::ema(&hl_range, self.d1_period, d1_start);
+        let range_ema2 = Self::ema(&range_ema1, self.d2_period, d2_start);
+
+        // Calculate SMI: 100 * (Double-smoothed distance) / (Double-smoothed range / 2)
+        let mut smi = vec![0.0; n];
+        let smi_start = d2_start + self.d2_period - 1;
+        for i in smi_start..n {
+            let half_range = range_ema2[i] / 2.0;
+            if half_range > 1e-10 {
+                smi[i] = (100.0 * distance_ema2[i] / half_range).max(-100.0).min(100.0);
+            }
+        }
+
+        // Calculate signal line (EMA of SMI)
+        let signal = Self::ema(&smi, self.signal_period, smi_start);
+
+        (smi, signal)
+    }
+}
+
+impl TechnicalIndicator for StochasticMomentumIndex {
+    fn name(&self) -> &str {
+        "Stochastic Momentum Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.k_period + self.d1_period + self.d2_period + self.signal_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (smi, signal) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::dual(smi, signal))
+    }
+
+    fn output_features(&self) -> usize {
+        2
+    }
+}
+
+/// Percentage Price Oscillator Enhanced - Enhanced PPO with adaptive smoothing
+///
+/// An enhanced version of the Percentage Price Oscillator that incorporates
+/// adaptive smoothing based on recent price volatility, making it more
+/// responsive in volatile conditions and smoother in calm markets.
+#[derive(Debug, Clone)]
+pub struct PercentagePriceOscillator {
+    fast_period: usize,
+    slow_period: usize,
+    signal_period: usize,
+    volatility_period: usize,
+}
+
+impl PercentagePriceOscillator {
+    pub fn new(fast_period: usize, slow_period: usize, signal_period: usize, volatility_period: usize) -> Result<Self> {
+        if fast_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if slow_period <= fast_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "slow_period".to_string(),
+                reason: "must be greater than fast_period".to_string(),
+            });
+        }
+        if signal_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self {
+            fast_period,
+            slow_period,
+            signal_period,
+            volatility_period,
+        })
+    }
+
+    /// Calculate EMA with adaptive multiplier
+    fn adaptive_ema(data: &[f64], period: usize, volatility: &[f64], avg_vol: f64) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![0.0; n];
+
+        if n < period {
+            return result;
+        }
+
+        let base_multiplier = 2.0 / (period as f64 + 1.0);
+
+        // Initialize with SMA
+        result[period - 1] = data[0..period].iter().sum::<f64>() / period as f64;
+
+        // Calculate adaptive EMA
+        for i in period..n {
+            // Adjust multiplier based on volatility ratio
+            let vol_ratio = if avg_vol > 1e-10 && volatility[i] > 1e-10 {
+                (volatility[i] / avg_vol).max(0.5).min(2.0)
+            } else {
+                1.0
+            };
+
+            // Higher volatility = higher multiplier (more responsive)
+            let adaptive_mult = (base_multiplier * vol_ratio).max(0.01).min(0.5);
+
+            result[i] = (data[i] - result[i - 1]) * adaptive_mult + result[i - 1];
+        }
+
+        result
+    }
+
+    /// Calculate PPO, signal line, and histogram
+    ///
+    /// Returns (ppo, signal, histogram)
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let min_required = self.slow_period + self.signal_period + self.volatility_period;
+
+        if n < min_required {
+            return (vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        }
+
+        // Calculate volatility (standard deviation of returns)
+        let mut volatility = vec![0.0; n];
+        for i in self.volatility_period..n {
+            let start = i + 1 - self.volatility_period;
+            let returns: Vec<f64> = (start + 1..=i)
+                .map(|j| {
+                    if close[j - 1] > 1e-10 {
+                        ((close[j] - close[j - 1]) / close[j - 1]).abs()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+
+            if !returns.is_empty() {
+                let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+                let variance: f64 = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+                volatility[i] = variance.sqrt();
+            }
+        }
+
+        // Calculate average volatility
+        let vol_slice: Vec<f64> = volatility[self.volatility_period..].iter().filter(|&&v| v > 0.0).cloned().collect();
+        let avg_vol = if !vol_slice.is_empty() {
+            vol_slice.iter().sum::<f64>() / vol_slice.len() as f64
+        } else {
+            1.0
+        };
+
+        // Calculate adaptive EMAs
+        let fast_ema = Self::adaptive_ema(close, self.fast_period, &volatility, avg_vol);
+        let slow_ema = Self::adaptive_ema(close, self.slow_period, &volatility, avg_vol);
+
+        // Calculate PPO: ((Fast EMA - Slow EMA) / Slow EMA) * 100
+        let mut ppo = vec![0.0; n];
+        for i in self.slow_period..n {
+            if slow_ema[i] > 1e-10 {
+                ppo[i] = ((fast_ema[i] - slow_ema[i]) / slow_ema[i]) * 100.0;
+            }
+        }
+
+        // Calculate signal line (EMA of PPO)
+        let mut signal = vec![0.0; n];
+        let signal_start = self.slow_period + self.signal_period - 1;
+        if signal_start < n {
+            let ppo_slice = &ppo[self.slow_period..(self.slow_period + self.signal_period)];
+            signal[signal_start] = ppo_slice.iter().sum::<f64>() / self.signal_period as f64;
+
+            let sig_mult = 2.0 / (self.signal_period as f64 + 1.0);
+            for i in (signal_start + 1)..n {
+                signal[i] = (ppo[i] - signal[i - 1]) * sig_mult + signal[i - 1];
+            }
+        }
+
+        // Calculate histogram
+        let mut histogram = vec![0.0; n];
+        for i in signal_start..n {
+            histogram[i] = ppo[i] - signal[i];
+        }
+
+        (ppo, signal, histogram)
+    }
+}
+
+impl TechnicalIndicator for PercentagePriceOscillator {
+    fn name(&self) -> &str {
+        "Percentage Price Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.slow_period + self.signal_period + self.volatility_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (ppo, signal, _histogram) = self.calculate(&data.close);
+        Ok(IndicatorOutput::dual(ppo, signal))
+    }
+
+    fn output_features(&self) -> usize {
+        2
+    }
+}
+
+/// Volume Oscillator Enhanced - Enhanced volume oscillator with price confirmation
+///
+/// An enhanced volume oscillator that combines traditional volume analysis
+/// with price movement confirmation, providing clearer signals about
+/// accumulation and distribution phases.
+#[derive(Debug, Clone)]
+pub struct VolumeOscillatorEnhanced {
+    short_period: usize,
+    long_period: usize,
+    confirmation_period: usize,
+}
+
+impl VolumeOscillatorEnhanced {
+    pub fn new(short_period: usize, long_period: usize, confirmation_period: usize) -> Result<Self> {
+        if short_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if long_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if confirmation_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "confirmation_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self {
+            short_period,
+            long_period,
+            confirmation_period,
+        })
+    }
+
+    /// Calculate enhanced volume oscillator values
+    ///
+    /// Returns values where positive indicates volume expansion with
+    /// price confirmation, negative indicates volume contraction
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.long_period + self.confirmation_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate short-term volume MA
+        let mut short_ma = vec![0.0; n];
+        for i in (self.short_period - 1)..n {
+            let start = i + 1 - self.short_period;
+            short_ma[i] = volume[start..=i].iter().sum::<f64>() / self.short_period as f64;
+        }
+
+        // Calculate long-term volume MA
+        let mut long_ma = vec![0.0; n];
+        for i in (self.long_period - 1)..n {
+            let start = i + 1 - self.long_period;
+            long_ma[i] = volume[start..=i].iter().sum::<f64>() / self.long_period as f64;
+        }
+
+        // Calculate raw volume oscillator: ((Short MA - Long MA) / Long MA) * 100
+        let mut raw_vo = vec![0.0; n];
+        for i in (self.long_period - 1)..n {
+            if long_ma[i] > 1e-10 {
+                raw_vo[i] = ((short_ma[i] - long_ma[i]) / long_ma[i]) * 100.0;
+            }
+        }
+
+        // Calculate price direction over confirmation period
+        let mut price_direction = vec![0.0; n];
+        for i in self.confirmation_period..n {
+            let price_change = close[i] - close[i - self.confirmation_period];
+            if close[i - self.confirmation_period] > 1e-10 {
+                price_direction[i] = (price_change / close[i - self.confirmation_period]) * 100.0;
+            }
+        }
+
+        // Combine volume oscillator with price confirmation
+        for i in min_required..n {
+            let vo = raw_vo[i];
+            let price_dir = price_direction[i];
+
+            // Volume-price agreement factor
+            let agreement = if (vo > 0.0 && price_dir > 0.0) || (vo < 0.0 && price_dir < 0.0) {
+                1.2 // Volume and price agree
+            } else if (vo > 0.0 && price_dir < 0.0) || (vo < 0.0 && price_dir > 0.0) {
+                0.8 // Divergence - potential reversal signal
+            } else {
+                1.0
+            };
+
+            // Directional adjustment: positive volume on up days, negative on down days
+            let directional_vo = if price_dir > 0.0 {
+                vo.abs()
+            } else if price_dir < 0.0 {
+                -vo.abs()
+            } else {
+                vo
+            };
+
+            result[i] = (directional_vo * agreement).max(-100.0).min(100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolumeOscillatorEnhanced {
+    fn name(&self) -> &str {
+        "Volume Oscillator Enhanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + self.confirmation_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Trend Oscillator Index - ADX-style trend oscillator with directional bias
+///
+/// Combines directional movement analysis with an oscillator format,
+/// providing both trend strength and direction in a single indicator.
+/// Uses smoothed directional movement similar to ADX but outputs as oscillator.
+#[derive(Debug, Clone)]
+pub struct TrendOscillatorIndex {
+    di_period: usize,
+    adx_period: usize,
+    signal_period: usize,
+}
+
+impl TrendOscillatorIndex {
+    pub fn new(di_period: usize, adx_period: usize, signal_period: usize) -> Result<Self> {
+        if di_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "di_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if adx_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "adx_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if signal_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self {
+            di_period,
+            adx_period,
+            signal_period,
+        })
+    }
+
+    /// Calculate Trend Oscillator Index values
+    ///
+    /// Returns values from -100 to +100, where positive indicates uptrend
+    /// and magnitude indicates trend strength
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.di_period + self.adx_period + self.signal_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate True Range
+        let mut tr = vec![0.0; n];
+        for i in 1..n {
+            let hl = high[i] - low[i];
+            let hc = (high[i] - close[i - 1]).abs();
+            let lc = (low[i] - close[i - 1]).abs();
+            tr[i] = hl.max(hc).max(lc);
+        }
+
+        // Calculate +DM and -DM
+        let mut plus_dm = vec![0.0; n];
+        let mut minus_dm = vec![0.0; n];
+        for i in 1..n {
+            let up_move = high[i] - high[i - 1];
+            let down_move = low[i - 1] - low[i];
+
+            if up_move > down_move && up_move > 0.0 {
+                plus_dm[i] = up_move;
+            }
+            if down_move > up_move && down_move > 0.0 {
+                minus_dm[i] = down_move;
+            }
+        }
+
+        // Smooth TR, +DM, -DM using Wilder's smoothing
+        let mut atr = vec![0.0; n];
+        let mut smooth_plus_dm = vec![0.0; n];
+        let mut smooth_minus_dm = vec![0.0; n];
+
+        if n > self.di_period {
+            // Initial sums
+            atr[self.di_period] = tr[1..=self.di_period].iter().sum::<f64>();
+            smooth_plus_dm[self.di_period] = plus_dm[1..=self.di_period].iter().sum::<f64>();
+            smooth_minus_dm[self.di_period] = minus_dm[1..=self.di_period].iter().sum::<f64>();
+
+            // Wilder's smoothing
+            for i in (self.di_period + 1)..n {
+                atr[i] = atr[i - 1] - (atr[i - 1] / self.di_period as f64) + tr[i];
+                smooth_plus_dm[i] = smooth_plus_dm[i - 1] - (smooth_plus_dm[i - 1] / self.di_period as f64) + plus_dm[i];
+                smooth_minus_dm[i] = smooth_minus_dm[i - 1] - (smooth_minus_dm[i - 1] / self.di_period as f64) + minus_dm[i];
+            }
+        }
+
+        // Calculate +DI and -DI
+        let mut plus_di = vec![0.0; n];
+        let mut minus_di = vec![0.0; n];
+        for i in self.di_period..n {
+            if atr[i] > 1e-10 {
+                plus_di[i] = (smooth_plus_dm[i] / atr[i]) * 100.0;
+                minus_di[i] = (smooth_minus_dm[i] / atr[i]) * 100.0;
+            }
+        }
+
+        // Calculate DX: |+DI - -DI| / (+DI + -DI) * 100
+        let mut dx = vec![0.0; n];
+        for i in self.di_period..n {
+            let di_sum = plus_di[i] + minus_di[i];
+            if di_sum > 1e-10 {
+                dx[i] = ((plus_di[i] - minus_di[i]).abs() / di_sum) * 100.0;
+            }
+        }
+
+        // Smooth DX to get ADX-like strength
+        let mut adx = vec![0.0; n];
+        let adx_start = self.di_period + self.adx_period - 1;
+        if adx_start < n {
+            adx[adx_start] = dx[self.di_period..=adx_start].iter().sum::<f64>() / self.adx_period as f64;
+
+            for i in (adx_start + 1)..n {
+                adx[i] = (adx[i - 1] * (self.adx_period - 1) as f64 + dx[i]) / self.adx_period as f64;
+            }
+        }
+
+        // Combine into directional oscillator
+        // Oscillator = (ADX * sign(+DI - -DI)) where positive = uptrend
+        for i in (adx_start + self.signal_period)..n {
+            let direction = plus_di[i] - minus_di[i];
+            let strength = adx[i];
+
+            // Oscillator value: strength * direction sign, scaled
+            let raw_osc = if direction > 0.0 {
+                strength
+            } else if direction < 0.0 {
+                -strength
+            } else {
+                0.0
+            };
+
+            result[i] = raw_osc.max(-100.0).min(100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendOscillatorIndex {
+    fn name(&self) -> &str {
+        "Trend Oscillator Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.di_period + self.adx_period + self.signal_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(
+            &data.high,
+            &data.low,
+            &data.close,
+        )))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Cycle Momentum Oscillator - Combines cycle analysis with momentum
+///
+/// Detects dominant market cycles and measures momentum relative to
+/// the detected cycle phase. Provides clearer signals when momentum
+/// aligns with cycle position.
+#[derive(Debug, Clone)]
+pub struct CycleMomentumOscillator {
+    cycle_period: usize,
+    momentum_period: usize,
+    smooth_period: usize,
+}
+
+impl CycleMomentumOscillator {
+    pub fn new(cycle_period: usize, momentum_period: usize, smooth_period: usize) -> Result<Self> {
+        if cycle_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if momentum_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if smooth_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self {
+            cycle_period,
+            momentum_period,
+            smooth_period,
+        })
+    }
+
+    /// Calculate Cycle Momentum Oscillator values
+    ///
+    /// Returns values from -100 to +100 combining cycle position with momentum
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.cycle_period + self.momentum_period + self.smooth_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate cycle position (normalized position within cycle range)
+        let mut cycle_position = vec![0.0; n];
+        for i in (self.cycle_period - 1)..n {
+            let start = i + 1 - self.cycle_period;
+            let high = close[start..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let low = close[start..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+            let range = high - low;
+
+            if range > 1e-10 {
+                // Position within cycle: -1 (at low) to +1 (at high)
+                cycle_position[i] = ((close[i] - low) / range) * 2.0 - 1.0;
+            }
+        }
+
+        // Calculate momentum (rate of change)
+        let mut momentum = vec![0.0; n];
+        for i in self.momentum_period..n {
+            if close[i - self.momentum_period] > 1e-10 {
+                momentum[i] = ((close[i] / close[i - self.momentum_period]) - 1.0) * 100.0;
+            }
+        }
+
+        // Normalize momentum
+        let mom_start = self.cycle_period + self.momentum_period - 1;
+        let mut mom_normalized = vec![0.0; n];
+        for i in mom_start..n {
+            let lookback = (self.cycle_period / 2).max(5);
+            let start = i.saturating_sub(lookback);
+            let mom_slice: Vec<f64> = momentum[start..=i].iter().cloned().filter(|&m| m != 0.0).collect();
+
+            if !mom_slice.is_empty() {
+                let mean: f64 = mom_slice.iter().sum::<f64>() / mom_slice.len() as f64;
+                let variance: f64 = mom_slice.iter().map(|m| (m - mean).powi(2)).sum::<f64>() / mom_slice.len() as f64;
+                let std_dev = variance.sqrt();
+
+                if std_dev > 1e-10 {
+                    // Z-score normalization
+                    mom_normalized[i] = (momentum[i] - mean) / std_dev;
+                }
+            }
+        }
+
+        // Combine cycle position with momentum
+        let mut raw_osc = vec![0.0; n];
+        for i in mom_start..n {
+            let cycle_pos = cycle_position[i];
+            let mom_norm = mom_normalized[i];
+
+            // Base oscillator from cycle position
+            let base = cycle_pos * 50.0; // -50 to +50
+
+            // Momentum contribution
+            let mom_contrib = (mom_norm * 25.0).max(-50.0).min(50.0); // -50 to +50
+
+            // Combine with cycle-momentum agreement bonus
+            let agreement = if (cycle_pos > 0.0 && mom_norm > 0.0) || (cycle_pos < 0.0 && mom_norm < 0.0) {
+                1.1 // Momentum confirms cycle direction
+            } else {
+                0.9 // Momentum diverges from cycle
+            };
+
+            raw_osc[i] = ((base + mom_contrib) * agreement).max(-100.0).min(100.0);
+        }
+
+        // Apply smoothing
+        for i in min_required..n {
+            let start = i + 1 - self.smooth_period;
+            result[i] = raw_osc[start..=i].iter().sum::<f64>() / self.smooth_period as f64;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CycleMomentumOscillator {
+    fn name(&self) -> &str {
+        "Cycle Momentum Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.cycle_period + self.momentum_period + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4944,5 +5843,616 @@ mod tests {
         let ho = HarmonicOscillator::new(20, 3, 5).unwrap();
         let result = ho.calculate(&small_close);
         assert!(result.iter().all(|v| v.is_finite()));
+    }
+
+    // ============================================================
+    // WilliamsREnhanced Tests
+    // ============================================================
+
+    #[test]
+    fn test_williams_r_enhanced_basic() {
+        let data = make_test_data();
+        let indicator = WilliamsREnhanced::new(14, 3, 5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 0.0);
+        }
+    }
+
+    #[test]
+    fn test_williams_r_enhanced_validation() {
+        // period too small
+        assert!(WilliamsREnhanced::new(4, 3, 5).is_err());
+        // smooth_period too small
+        assert!(WilliamsREnhanced::new(14, 0, 5).is_err());
+        // momentum_period too small
+        assert!(WilliamsREnhanced::new(14, 3, 1).is_err());
+        // Valid parameters
+        assert!(WilliamsREnhanced::new(14, 3, 5).is_ok());
+        assert!(WilliamsREnhanced::new(5, 1, 2).is_ok());
+    }
+
+    #[test]
+    fn test_williams_r_enhanced_trait() {
+        let data = make_test_data();
+        let indicator = WilliamsREnhanced::new(14, 3, 5).unwrap();
+
+        assert_eq!(indicator.name(), "Williams R Enhanced");
+        assert_eq!(indicator.min_periods(), 22); // 14 + 3 + 5
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_williams_r_enhanced_uptrend() {
+        // Strong uptrend should give high (close to 0) Williams %R
+        let n = 60;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 1.5).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let indicator = WilliamsREnhanced::new(14, 3, 5).unwrap();
+        let result = indicator.calculate(&high, &low, &close);
+
+        // In uptrend, Williams %R should be close to 0 (overbought)
+        let last_10: Vec<f64> = result[50..60].to_vec();
+        let high_count = last_10.iter().filter(|&&v| v > -30.0).count();
+        assert!(high_count >= 5);
+    }
+
+    #[test]
+    fn test_williams_r_enhanced_downtrend() {
+        // Strong downtrend should give low (close to -100) Williams %R
+        let n = 60;
+        let close: Vec<f64> = (0..n).map(|i| 200.0 - i as f64 * 1.5).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let indicator = WilliamsREnhanced::new(14, 3, 5).unwrap();
+        let result = indicator.calculate(&high, &low, &close);
+
+        // In downtrend, Williams %R should be close to -100 (oversold)
+        let last_10: Vec<f64> = result[50..60].to_vec();
+        let low_count = last_10.iter().filter(|&&v| v < -70.0).count();
+        assert!(low_count >= 5);
+    }
+
+    #[test]
+    fn test_williams_r_enhanced_insufficient_data() {
+        let short_high: Vec<f64> = vec![101.0; 10];
+        let short_low: Vec<f64> = vec![99.0; 10];
+        let short_close: Vec<f64> = vec![100.0; 10];
+
+        let indicator = WilliamsREnhanced::new(14, 3, 5).unwrap();
+        let result = indicator.calculate(&short_high, &short_low, &short_close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // StochasticMomentumIndex Tests
+    // ============================================================
+
+    #[test]
+    fn test_stochastic_momentum_index_basic() {
+        let data = make_test_data();
+        let indicator = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+        let (smi, signal) = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(smi.len(), data.close.len());
+        assert_eq!(signal.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_stochastic_momentum_index_validation() {
+        // k_period too small
+        assert!(StochasticMomentumIndex::new(2, 3, 3, 5).is_err());
+        // d1_period too small
+        assert!(StochasticMomentumIndex::new(10, 1, 3, 5).is_err());
+        // d2_period too small
+        assert!(StochasticMomentumIndex::new(10, 3, 1, 5).is_err());
+        // signal_period too small
+        assert!(StochasticMomentumIndex::new(10, 3, 3, 1).is_err());
+        // Valid parameters
+        assert!(StochasticMomentumIndex::new(10, 3, 3, 5).is_ok());
+        assert!(StochasticMomentumIndex::new(5, 2, 2, 3).is_ok());
+    }
+
+    #[test]
+    fn test_stochastic_momentum_index_trait() {
+        let data = make_test_data();
+        let indicator = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+
+        assert_eq!(indicator.name(), "Stochastic Momentum Index");
+        assert_eq!(indicator.min_periods(), 21); // 10 + 3 + 3 + 5
+        assert_eq!(indicator.output_features(), 2);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+        assert!(output.secondary.is_some());
+    }
+
+    #[test]
+    fn test_stochastic_momentum_index_range() {
+        // SMI should be in range [-100, 100]
+        let data = make_test_data();
+        let indicator = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+        let (smi, _signal) = indicator.calculate(&data.high, &data.low, &data.close);
+
+        let min_period = indicator.min_periods();
+        for i in min_period..smi.len() {
+            assert!(
+                smi[i] >= -100.0 && smi[i] <= 100.0,
+                "SMI value {} out of range at index {}",
+                smi[i],
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_stochastic_momentum_index_uptrend() {
+        // Strong uptrend should give positive SMI
+        let n = 60;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let indicator = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+        let (smi, _signal) = indicator.calculate(&high, &low, &close);
+
+        let last = smi.last().unwrap();
+        assert!(*last > 0.0);
+    }
+
+    #[test]
+    fn test_stochastic_momentum_index_insufficient_data() {
+        let short_high: Vec<f64> = vec![101.0; 10];
+        let short_low: Vec<f64> = vec![99.0; 10];
+        let short_close: Vec<f64> = vec![100.0; 10];
+
+        let indicator = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+        let (smi, signal) = indicator.calculate(&short_high, &short_low, &short_close);
+        assert!(smi.iter().all(|&v| v == 0.0));
+        assert!(signal.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // PercentagePriceOscillator Tests
+    // ============================================================
+
+    #[test]
+    fn test_percentage_price_oscillator_basic() {
+        let data = make_test_data();
+        let indicator = PercentagePriceOscillator::new(12, 26, 9, 10).unwrap();
+        let (ppo, signal, histogram) = indicator.calculate(&data.close);
+
+        assert_eq!(ppo.len(), data.close.len());
+        assert_eq!(signal.len(), data.close.len());
+        assert_eq!(histogram.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_percentage_price_oscillator_validation() {
+        // fast_period too small
+        assert!(PercentagePriceOscillator::new(2, 26, 9, 10).is_err());
+        // slow_period <= fast_period
+        assert!(PercentagePriceOscillator::new(12, 12, 9, 10).is_err());
+        assert!(PercentagePriceOscillator::new(12, 10, 9, 10).is_err());
+        // signal_period too small
+        assert!(PercentagePriceOscillator::new(12, 26, 1, 10).is_err());
+        // volatility_period too small
+        assert!(PercentagePriceOscillator::new(12, 26, 9, 4).is_err());
+        // Valid parameters
+        assert!(PercentagePriceOscillator::new(12, 26, 9, 10).is_ok());
+        assert!(PercentagePriceOscillator::new(5, 15, 5, 10).is_ok());
+    }
+
+    #[test]
+    fn test_percentage_price_oscillator_trait() {
+        let data = make_test_data();
+        let indicator = PercentagePriceOscillator::new(12, 26, 9, 10).unwrap();
+
+        assert_eq!(indicator.name(), "Percentage Price Oscillator");
+        assert_eq!(indicator.min_periods(), 45); // 26 + 9 + 10
+        assert_eq!(indicator.output_features(), 2);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+        assert!(output.secondary.is_some());
+    }
+
+    #[test]
+    fn test_percentage_price_oscillator_uptrend() {
+        // Strong uptrend should give positive PPO
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let indicator = PercentagePriceOscillator::new(10, 20, 5, 10).unwrap();
+        let (ppo, _signal, _histogram) = indicator.calculate(&close);
+
+        let last = ppo.last().unwrap();
+        assert!(*last > 0.0);
+    }
+
+    #[test]
+    fn test_percentage_price_oscillator_downtrend() {
+        // Strong downtrend should give negative PPO
+        let close: Vec<f64> = (0..60).map(|i| 200.0 - i as f64 * 2.0).collect();
+
+        let indicator = PercentagePriceOscillator::new(10, 20, 5, 10).unwrap();
+        let (ppo, _signal, _histogram) = indicator.calculate(&close);
+
+        let last = ppo.last().unwrap();
+        assert!(*last < 0.0);
+    }
+
+    #[test]
+    fn test_percentage_price_oscillator_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 20];
+
+        let indicator = PercentagePriceOscillator::new(12, 26, 9, 10).unwrap();
+        let (ppo, signal, histogram) = indicator.calculate(&short_close);
+        assert!(ppo.iter().all(|&v| v == 0.0));
+        assert!(signal.iter().all(|&v| v == 0.0));
+        assert!(histogram.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // VolumeOscillatorEnhanced Tests
+    // ============================================================
+
+    #[test]
+    fn test_volume_oscillator_enhanced_basic() {
+        let data = make_test_data();
+        let indicator = VolumeOscillatorEnhanced::new(10, 20, 5).unwrap();
+        let result = indicator.calculate(&data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_volume_oscillator_enhanced_validation() {
+        // short_period too small
+        assert!(VolumeOscillatorEnhanced::new(2, 20, 5).is_err());
+        // long_period <= short_period
+        assert!(VolumeOscillatorEnhanced::new(10, 10, 5).is_err());
+        assert!(VolumeOscillatorEnhanced::new(10, 5, 5).is_err());
+        // confirmation_period too small
+        assert!(VolumeOscillatorEnhanced::new(10, 20, 1).is_err());
+        // Valid parameters
+        assert!(VolumeOscillatorEnhanced::new(10, 20, 5).is_ok());
+        assert!(VolumeOscillatorEnhanced::new(5, 15, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_oscillator_enhanced_trait() {
+        let data = make_test_data();
+        let indicator = VolumeOscillatorEnhanced::new(10, 20, 5).unwrap();
+
+        assert_eq!(indicator.name(), "Volume Oscillator Enhanced");
+        assert_eq!(indicator.min_periods(), 25); // 20 + 5
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_volume_oscillator_enhanced_accumulation() {
+        // Uptrend with increasing volume = positive oscillator
+        let n = 50;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let volume: Vec<f64> = (0..n).map(|i| 1000.0 + i as f64 * 20.0).collect();
+
+        let indicator = VolumeOscillatorEnhanced::new(5, 15, 3).unwrap();
+        let result = indicator.calculate(&close, &volume);
+
+        let last = result.last().unwrap();
+        assert!(*last > 0.0);
+    }
+
+    #[test]
+    fn test_volume_oscillator_enhanced_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 10];
+        let short_volume: Vec<f64> = vec![1000.0; 10];
+
+        let indicator = VolumeOscillatorEnhanced::new(10, 20, 5).unwrap();
+        let result = indicator.calculate(&short_close, &short_volume);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // TrendOscillatorIndex Tests
+    // ============================================================
+
+    #[test]
+    fn test_trend_oscillator_index_basic() {
+        let data = make_test_data();
+        let indicator = TrendOscillatorIndex::new(14, 10, 5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_oscillator_index_validation() {
+        // di_period too small
+        assert!(TrendOscillatorIndex::new(4, 10, 5).is_err());
+        // adx_period too small
+        assert!(TrendOscillatorIndex::new(14, 2, 5).is_err());
+        // signal_period too small
+        assert!(TrendOscillatorIndex::new(14, 10, 1).is_err());
+        // Valid parameters
+        assert!(TrendOscillatorIndex::new(14, 10, 5).is_ok());
+        assert!(TrendOscillatorIndex::new(7, 5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_trend_oscillator_index_trait() {
+        let data = make_test_data();
+        let indicator = TrendOscillatorIndex::new(14, 10, 5).unwrap();
+
+        assert_eq!(indicator.name(), "Trend Oscillator Index");
+        assert_eq!(indicator.min_periods(), 29); // 14 + 10 + 5
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_trend_oscillator_index_uptrend() {
+        // Strong uptrend should give positive oscillator
+        let n = 60;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let indicator = TrendOscillatorIndex::new(10, 7, 5).unwrap();
+        let result = indicator.calculate(&high, &low, &close);
+
+        let last_10: Vec<f64> = result[50..60].to_vec();
+        let positive_count = last_10.iter().filter(|&&v| v > 0.0).count();
+        assert!(positive_count >= 5);
+    }
+
+    #[test]
+    fn test_trend_oscillator_index_downtrend() {
+        // Strong downtrend should give negative oscillator
+        let n = 60;
+        let close: Vec<f64> = (0..n).map(|i| 200.0 - i as f64 * 2.0).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let indicator = TrendOscillatorIndex::new(10, 7, 5).unwrap();
+        let result = indicator.calculate(&high, &low, &close);
+
+        let last_10: Vec<f64> = result[50..60].to_vec();
+        let negative_count = last_10.iter().filter(|&&v| v < 0.0).count();
+        assert!(negative_count >= 5);
+    }
+
+    #[test]
+    fn test_trend_oscillator_index_insufficient_data() {
+        let short_high: Vec<f64> = vec![101.0; 15];
+        let short_low: Vec<f64> = vec![99.0; 15];
+        let short_close: Vec<f64> = vec![100.0; 15];
+
+        let indicator = TrendOscillatorIndex::new(14, 10, 5).unwrap();
+        let result = indicator.calculate(&short_high, &short_low, &short_close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // CycleMomentumOscillator Tests
+    // ============================================================
+
+    #[test]
+    fn test_cycle_momentum_oscillator_basic() {
+        let data = make_test_data();
+        let indicator = CycleMomentumOscillator::new(20, 5, 3).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_cycle_momentum_oscillator_validation() {
+        // cycle_period too small
+        assert!(CycleMomentumOscillator::new(9, 5, 3).is_err());
+        // momentum_period too small
+        assert!(CycleMomentumOscillator::new(20, 2, 3).is_err());
+        // smooth_period too small
+        assert!(CycleMomentumOscillator::new(20, 5, 1).is_err());
+        // Valid parameters
+        assert!(CycleMomentumOscillator::new(20, 5, 3).is_ok());
+        assert!(CycleMomentumOscillator::new(10, 3, 2).is_ok());
+    }
+
+    #[test]
+    fn test_cycle_momentum_oscillator_trait() {
+        let data = make_test_data();
+        let indicator = CycleMomentumOscillator::new(20, 5, 3).unwrap();
+
+        assert_eq!(indicator.name(), "Cycle Momentum Oscillator");
+        assert_eq!(indicator.min_periods(), 28); // 20 + 5 + 3
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_cycle_momentum_oscillator_uptrend() {
+        // Strong uptrend should give positive oscillator
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let indicator = CycleMomentumOscillator::new(15, 5, 3).unwrap();
+        let result = indicator.calculate(&close);
+
+        let last = result.last().unwrap();
+        assert!(*last > 0.0);
+    }
+
+    #[test]
+    fn test_cycle_momentum_oscillator_cyclical() {
+        // Cyclical data should produce oscillating values
+        let close: Vec<f64> = (0..80)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 10.0)
+            .collect();
+
+        let indicator = CycleMomentumOscillator::new(15, 5, 3).unwrap();
+        let result = indicator.calculate(&close);
+
+        // Should have variation
+        let min_val = result[30..].iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_val = result[30..].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!(max_val - min_val > 20.0); // Should have meaningful oscillation
+    }
+
+    #[test]
+    fn test_cycle_momentum_oscillator_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 15];
+
+        let indicator = CycleMomentumOscillator::new(20, 5, 3).unwrap();
+        let result = indicator.calculate(&short_close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // Additional edge case tests for all 6 new indicators
+    // ============================================================
+
+    #[test]
+    fn test_six_new_indicators_with_extreme_values() {
+        // Test with very large price values
+        let large_close: Vec<f64> = (0..70).map(|i| 10000.0 + i as f64 * 100.0).collect();
+        let large_high: Vec<f64> = large_close.iter().map(|c| c + 50.0).collect();
+        let large_low: Vec<f64> = large_close.iter().map(|c| c - 50.0).collect();
+        let large_volume: Vec<f64> = vec![1000000.0; 70];
+
+        let wre = WilliamsREnhanced::new(14, 3, 5).unwrap();
+        let result = wre.calculate(&large_high, &large_low, &large_close);
+        assert!(result.iter().all(|&v| v >= -100.0 && v <= 0.0 || v == 0.0));
+
+        let smi = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+        let (smi_val, _) = smi.calculate(&large_high, &large_low, &large_close);
+        assert!(smi_val.iter().all(|&v| v >= -100.0 && v <= 100.0 || v == 0.0));
+
+        let ppo = PercentagePriceOscillator::new(10, 20, 5, 10).unwrap();
+        let (ppo_val, _, _) = ppo.calculate(&large_close);
+        assert!(ppo_val.iter().all(|v| v.is_finite()));
+
+        let voe = VolumeOscillatorEnhanced::new(10, 20, 5).unwrap();
+        let result = voe.calculate(&large_close, &large_volume);
+        assert!(result.iter().all(|&v| v >= -100.0 && v <= 100.0 || v == 0.0));
+
+        let toi = TrendOscillatorIndex::new(10, 7, 5).unwrap();
+        let result = toi.calculate(&large_high, &large_low, &large_close);
+        assert!(result.iter().all(|&v| v >= -100.0 && v <= 100.0 || v == 0.0));
+
+        let cmo = CycleMomentumOscillator::new(15, 5, 3).unwrap();
+        let result = cmo.calculate(&large_close);
+        assert!(result.iter().all(|&v| v >= -100.0 && v <= 100.0 || v == 0.0));
+    }
+
+    #[test]
+    fn test_six_new_indicators_with_small_values() {
+        // Test with very small price values
+        let small_close: Vec<f64> = (0..70).map(|i| 0.001 + i as f64 * 0.0001).collect();
+        let small_high: Vec<f64> = small_close.iter().map(|c| c + 0.00005).collect();
+        let small_low: Vec<f64> = small_close.iter().map(|c| c - 0.00005).collect();
+        let small_volume: Vec<f64> = vec![0.001; 70];
+
+        let wre = WilliamsREnhanced::new(14, 3, 5).unwrap();
+        let result = wre.calculate(&small_high, &small_low, &small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        let smi = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+        let (smi_val, signal) = smi.calculate(&small_high, &small_low, &small_close);
+        assert!(smi_val.iter().all(|v| v.is_finite()));
+        assert!(signal.iter().all(|v| v.is_finite()));
+
+        let ppo = PercentagePriceOscillator::new(10, 20, 5, 10).unwrap();
+        let (ppo_val, sig, hist) = ppo.calculate(&small_close);
+        assert!(ppo_val.iter().all(|v| v.is_finite()));
+        assert!(sig.iter().all(|v| v.is_finite()));
+        assert!(hist.iter().all(|v| v.is_finite()));
+
+        let voe = VolumeOscillatorEnhanced::new(10, 20, 5).unwrap();
+        let result = voe.calculate(&small_close, &small_volume);
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        let toi = TrendOscillatorIndex::new(10, 7, 5).unwrap();
+        let result = toi.calculate(&small_high, &small_low, &small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        let cmo = CycleMomentumOscillator::new(15, 5, 3).unwrap();
+        let result = cmo.calculate(&small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_six_new_indicators_flat_prices() {
+        let flat_close: Vec<f64> = vec![100.0; 70];
+        let flat_high: Vec<f64> = vec![100.5; 70];
+        let flat_low: Vec<f64> = vec![99.5; 70];
+        let flat_volume: Vec<f64> = vec![1000.0; 70];
+
+        // Williams R Enhanced - should be around -50 with flat prices
+        let wre = WilliamsREnhanced::new(14, 3, 5).unwrap();
+        let result = wre.calculate(&flat_high, &flat_low, &flat_close);
+        for i in 30..result.len() {
+            assert!(
+                result[i] >= -60.0 && result[i] <= -40.0 || result[i] == 0.0,
+                "WilliamsREnhanced value {} at index {}",
+                result[i],
+                i
+            );
+        }
+
+        // Stochastic Momentum Index - should be near 0 with flat prices
+        let smi = StochasticMomentumIndex::new(10, 3, 3, 5).unwrap();
+        let (smi_val, _) = smi.calculate(&flat_high, &flat_low, &flat_close);
+        for i in 25..smi_val.len() {
+            assert!(
+                smi_val[i].abs() < 10.0 || smi_val[i] == 0.0,
+                "StochasticMomentumIndex value {} at index {}",
+                smi_val[i],
+                i
+            );
+        }
+
+        // Volume Oscillator Enhanced - should be near 0 with flat volume
+        let voe = VolumeOscillatorEnhanced::new(10, 20, 5).unwrap();
+        let result = voe.calculate(&flat_close, &flat_volume);
+        for i in 30..result.len() {
+            assert!(
+                result[i].abs() < 20.0 || result[i] == 0.0,
+                "VolumeOscillatorEnhanced value {} at index {}",
+                result[i],
+                i
+            );
+        }
     }
 }

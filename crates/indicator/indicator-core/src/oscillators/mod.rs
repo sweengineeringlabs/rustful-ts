@@ -109,4 +109,6 @@ pub use advanced::{
     CompositeOscillator, AdaptiveStochastic, MomentumWaveOscillator,
     UltimateOscillatorEnhanced, PercentRankOscillator, ZScoreOscillator,
     VelocityOscillator, AccelerationOscillator, HarmonicOscillator,
+    WilliamsREnhanced, StochasticMomentumIndex, PercentagePriceOscillator,
+    VolumeOscillatorEnhanced, TrendOscillatorIndex, CycleMomentumOscillator,
 };

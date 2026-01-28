@@ -3511,6 +3511,715 @@ impl TechnicalIndicator for QuantileBands {
     }
 }
 
+/// Donchian Channel Enhanced - Enhanced Donchian channels with volatility adjustment
+///
+/// Extends the traditional Donchian Channel by adding ATR-based volatility
+/// adjustment to the bands. This helps filter out noise during high volatility
+/// periods while maintaining responsiveness during low volatility.
+///
+/// Formula:
+/// - Middle Band: (Highest High + Lowest Low) / 2
+/// - Upper Band: Highest High + (ATR * volatility_mult)
+/// - Lower Band: Lowest Low - (ATR * volatility_mult)
+#[derive(Debug, Clone)]
+pub struct DonchianChannelEnhanced {
+    period: usize,
+    atr_period: usize,
+    volatility_mult: f64,
+}
+
+impl DonchianChannelEnhanced {
+    /// Create new Donchian Channel Enhanced
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for high/low calculation
+    /// * `atr_period` - Period for ATR calculation
+    /// * `volatility_mult` - Multiplier for ATR-based band expansion
+    pub fn new(period: usize, atr_period: usize, volatility_mult: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if atr_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if volatility_mult < 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_mult".to_string(),
+                reason: "must be non-negative".to_string(),
+            });
+        }
+        Ok(Self { period, atr_period, volatility_mult })
+    }
+
+    /// Create with default ATR period (14)
+    pub fn default_atr(period: usize, volatility_mult: f64) -> Result<Self> {
+        Self::new(period, 14, volatility_mult)
+    }
+
+    /// Calculate Donchian Channel Enhanced (middle, upper, lower)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate ATR
+        let mut atr = vec![0.0; n];
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.atr_period {
+                let mut sum = 0.0;
+                for j in 1..=i {
+                    let tr_j = (high[j] - low[j])
+                        .max((high[j] - close[j - 1]).abs())
+                        .max((low[j] - close[j - 1]).abs());
+                    sum += tr_j;
+                }
+                atr[i] = sum / i as f64;
+            } else {
+                let alpha = 2.0 / (self.atr_period as f64 + 1.0);
+                atr[i] = alpha * tr + (1.0 - alpha) * atr[i - 1];
+            }
+        }
+
+        let start_idx = self.period.max(self.atr_period);
+        for i in start_idx..n {
+            let start = i + 1 - self.period;
+            let highest = high[start..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let lowest = low[start..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+
+            let volatility_expansion = atr[i] * self.volatility_mult;
+
+            middle[i] = (highest + lowest) / 2.0;
+            upper[i] = highest + volatility_expansion;
+            lower[i] = lowest - volatility_expansion;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for DonchianChannelEnhanced {
+    fn name(&self) -> &str {
+        "Donchian Channel Enhanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.atr_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// High Low Bands - Bands based on smoothed highs and lows
+///
+/// Creates bands using exponentially smoothed high and low prices,
+/// with an optional offset percentage. This provides dynamic support
+/// and resistance levels that adapt to recent price action.
+///
+/// Formula:
+/// - Upper Band: EMA(High) * (1 + offset_percent/100)
+/// - Middle Band: (EMA(High) + EMA(Low)) / 2
+/// - Lower Band: EMA(Low) * (1 - offset_percent/100)
+#[derive(Debug, Clone)]
+pub struct HighLowBandsAdvanced {
+    period: usize,
+    offset_percent: f64,
+}
+
+impl HighLowBandsAdvanced {
+    /// Create new High Low Bands
+    ///
+    /// # Arguments
+    /// * `period` - EMA period for smoothing
+    /// * `offset_percent` - Percentage offset for band expansion (0.0 for no offset)
+    pub fn new(period: usize, offset_percent: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if offset_percent < 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "offset_percent".to_string(),
+                reason: "must be non-negative".to_string(),
+            });
+        }
+        Ok(Self { period, offset_percent })
+    }
+
+    /// Create with no offset (pure smoothed high/low)
+    pub fn no_offset(period: usize) -> Result<Self> {
+        Self::new(period, 0.0)
+    }
+
+    /// Calculate High Low Bands (middle, upper, lower)
+    pub fn calculate(&self, high: &[f64], low: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = high.len().min(low.len());
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate EMA of highs and lows
+        let alpha = 2.0 / (self.period as f64 + 1.0);
+        let mut ema_high = vec![0.0; n];
+        let mut ema_low = vec![0.0; n];
+
+        ema_high[0] = high[0];
+        ema_low[0] = low[0];
+
+        for i in 1..n {
+            ema_high[i] = alpha * high[i] + (1.0 - alpha) * ema_high[i - 1];
+            ema_low[i] = alpha * low[i] + (1.0 - alpha) * ema_low[i - 1];
+        }
+
+        let offset_mult_upper = 1.0 + self.offset_percent / 100.0;
+        let offset_mult_lower = 1.0 - self.offset_percent / 100.0;
+
+        for i in (self.period - 1)..n {
+            upper[i] = ema_high[i] * offset_mult_upper;
+            lower[i] = ema_low[i] * offset_mult_lower;
+            middle[i] = (ema_high[i] + ema_low[i]) / 2.0;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for HighLowBandsAdvanced {
+    fn name(&self) -> &str {
+        "High Low Bands Advanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.high, &data.low);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// Pivot Bands - Bands based on pivot point calculations
+///
+/// Creates bands using pivot point analysis, calculating support and resistance
+/// levels based on the previous period's high, low, and close. This indicator
+/// uses a rolling pivot calculation for continuous band generation.
+///
+/// Formula (Standard Pivot):
+/// - Pivot Point (Middle): (High + Low + Close) / 3
+/// - Upper Band (R1): (2 * Pivot) - Low
+/// - Lower Band (S1): (2 * Pivot) - High
+#[derive(Debug, Clone)]
+pub struct PivotBands {
+    period: usize,
+    level: usize, // 1 = R1/S1, 2 = R2/S2, 3 = R3/S3
+}
+
+impl PivotBands {
+    /// Create new Pivot Bands
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for pivot calculation
+    /// * `level` - Support/Resistance level (1, 2, or 3)
+    pub fn new(period: usize, level: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if level < 1 || level > 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "level".to_string(),
+                reason: "must be 1, 2, or 3".to_string(),
+            });
+        }
+        Ok(Self { period, level })
+    }
+
+    /// Create with first level support/resistance
+    pub fn first_level(period: usize) -> Result<Self> {
+        Self::new(period, 1)
+    }
+
+    /// Calculate Pivot Bands (middle, upper, lower)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let period_high = high[start..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let period_low = low[start..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+            let period_close = close[i];
+
+            // Calculate pivot point
+            let pivot = (period_high + period_low + period_close) / 3.0;
+
+            // Calculate support and resistance based on level
+            let (resistance, support) = match self.level {
+                1 => {
+                    let r1 = (2.0 * pivot) - period_low;
+                    let s1 = (2.0 * pivot) - period_high;
+                    (r1, s1)
+                }
+                2 => {
+                    let r1 = (2.0 * pivot) - period_low;
+                    let s1 = (2.0 * pivot) - period_high;
+                    let r2 = pivot + (period_high - period_low);
+                    let s2 = pivot - (period_high - period_low);
+                    (r2, s2)
+                }
+                3 => {
+                    let r1 = (2.0 * pivot) - period_low;
+                    let s1 = (2.0 * pivot) - period_high;
+                    let r2 = pivot + (period_high - period_low);
+                    let s2 = pivot - (period_high - period_low);
+                    let r3 = r1 + (period_high - period_low);
+                    let s3 = s1 - (period_high - period_low);
+                    (r3, s3)
+                }
+                _ => (pivot, pivot),
+            };
+
+            middle[i] = pivot;
+            upper[i] = resistance;
+            lower[i] = support;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for PivotBands {
+    fn name(&self) -> &str {
+        "Pivot Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// Moving Average Bands - Multi-MA based bands with configurable MA types
+///
+/// Creates bands using different moving average calculations for the upper,
+/// middle, and lower bands. This allows for asymmetric bands that can better
+/// capture market dynamics.
+///
+/// Uses EMA for center with SMA-based bands offset by standard deviation.
+#[derive(Debug, Clone)]
+pub struct MovingAverageBands {
+    ema_period: usize,
+    sma_period: usize,
+    std_mult: f64,
+}
+
+impl MovingAverageBands {
+    /// Create new Moving Average Bands
+    ///
+    /// # Arguments
+    /// * `ema_period` - Period for EMA (center line)
+    /// * `sma_period` - Period for SMA and standard deviation calculation
+    /// * `std_mult` - Standard deviation multiplier for band width
+    pub fn new(ema_period: usize, sma_period: usize, std_mult: f64) -> Result<Self> {
+        if ema_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "ema_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if sma_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sma_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if std_mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "std_mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self { ema_period, sma_period, std_mult })
+    }
+
+    /// Create with equal periods
+    pub fn equal_periods(period: usize, std_mult: f64) -> Result<Self> {
+        Self::new(period, period, std_mult)
+    }
+
+    /// Calculate Moving Average Bands (middle, upper, lower)
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate EMA for middle band
+        let alpha = 2.0 / (self.ema_period as f64 + 1.0);
+        let mut ema = vec![0.0; n];
+        ema[0] = close[0];
+        for i in 1..n {
+            ema[i] = alpha * close[i] + (1.0 - alpha) * ema[i - 1];
+        }
+
+        let start_idx = self.ema_period.max(self.sma_period);
+        for i in start_idx..n {
+            // Calculate SMA and standard deviation for bands
+            let sma_start = i + 1 - self.sma_period;
+            let sma: f64 = close[sma_start..=i].iter().sum::<f64>() / self.sma_period as f64;
+
+            let variance: f64 = close[sma_start..=i]
+                .iter()
+                .map(|&x| (x - sma).powi(2))
+                .sum::<f64>() / self.sma_period as f64;
+            let std_dev = variance.sqrt();
+
+            middle[i] = ema[i];
+            upper[i] = sma + self.std_mult * std_dev;
+            lower[i] = sma - self.std_mult * std_dev;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for MovingAverageBands {
+    fn name(&self) -> &str {
+        "Moving Average Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.ema_period.max(self.sma_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// Volatility Adjusted Bands Extended - Enhanced volatility-adjusted price bands
+///
+/// Creates bands that dynamically adjust their width based on recent volatility
+/// relative to historical volatility. When current volatility is high relative
+/// to history, bands expand; when low, bands contract.
+///
+/// Uses a volatility ratio to scale the band multiplier.
+#[derive(Debug, Clone)]
+pub struct VolatilityAdjustedBandsExt {
+    ma_period: usize,
+    short_vol_period: usize,
+    long_vol_period: usize,
+    base_mult: f64,
+}
+
+impl VolatilityAdjustedBandsExt {
+    /// Create new Volatility Adjusted Bands Extended
+    ///
+    /// # Arguments
+    /// * `ma_period` - Period for the center moving average
+    /// * `short_vol_period` - Period for short-term volatility
+    /// * `long_vol_period` - Period for long-term (historical) volatility
+    /// * `base_mult` - Base multiplier for band width
+    pub fn new(ma_period: usize, short_vol_period: usize, long_vol_period: usize, base_mult: f64) -> Result<Self> {
+        if ma_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "ma_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if short_vol_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_vol_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if long_vol_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_vol_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if short_vol_period >= long_vol_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_vol_period".to_string(),
+                reason: "must be less than long_vol_period".to_string(),
+            });
+        }
+        if base_mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self { ma_period, short_vol_period, long_vol_period, base_mult })
+    }
+
+    /// Create with default volatility periods (10 short, 50 long)
+    pub fn default_periods(ma_period: usize, base_mult: f64) -> Result<Self> {
+        Self::new(ma_period, 10, 50, base_mult)
+    }
+
+    /// Calculate Volatility Adjusted Bands Extended (middle, upper, lower)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate True Range for volatility measurement
+        let mut tr = vec![0.0; n];
+        tr[0] = high[0] - low[0];
+        for i in 1..n {
+            tr[i] = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+        }
+
+        let start_idx = self.ma_period.max(self.long_vol_period);
+        for i in start_idx..n {
+            // Calculate SMA for middle band
+            let ma_start = i + 1 - self.ma_period;
+            let sma: f64 = close[ma_start..=i].iter().sum::<f64>() / self.ma_period as f64;
+
+            // Calculate short-term volatility (ATR-like)
+            let short_start = i + 1 - self.short_vol_period;
+            let short_vol: f64 = tr[short_start..=i].iter().sum::<f64>() / self.short_vol_period as f64;
+
+            // Calculate long-term volatility
+            let long_start = i + 1 - self.long_vol_period;
+            let long_vol: f64 = tr[long_start..=i].iter().sum::<f64>() / self.long_vol_period as f64;
+
+            // Calculate volatility ratio and adjust multiplier
+            let vol_ratio = if long_vol > 1e-10 { short_vol / long_vol } else { 1.0 };
+            let adjusted_mult = self.base_mult * vol_ratio;
+
+            middle[i] = sma;
+            upper[i] = sma + adjusted_mult * short_vol;
+            lower[i] = sma - adjusted_mult * short_vol;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for VolatilityAdjustedBandsExt {
+    fn name(&self) -> &str {
+        "Volatility Adjusted Bands Extended"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.ma_period.max(self.long_vol_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// Trend Channel Bands - Bands that follow the dominant trend direction
+///
+/// Creates asymmetric bands that adjust based on trend direction and strength.
+/// In an uptrend, the lower band acts as trailing support; in a downtrend,
+/// the upper band acts as trailing resistance.
+///
+/// Uses linear regression slope to determine trend direction and ATR for
+/// band width calculation.
+#[derive(Debug, Clone)]
+pub struct TrendChannelBands {
+    regression_period: usize,
+    atr_period: usize,
+    atr_mult: f64,
+    trend_sensitivity: f64,
+}
+
+impl TrendChannelBands {
+    /// Create new Trend Channel Bands
+    ///
+    /// # Arguments
+    /// * `regression_period` - Period for linear regression trend detection
+    /// * `atr_period` - Period for ATR calculation
+    /// * `atr_mult` - ATR multiplier for band width
+    /// * `trend_sensitivity` - How much trend affects band asymmetry (0.0 to 1.0)
+    pub fn new(regression_period: usize, atr_period: usize, atr_mult: f64, trend_sensitivity: f64) -> Result<Self> {
+        if regression_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "regression_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if atr_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if atr_mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if trend_sensitivity < 0.0 || trend_sensitivity > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_sensitivity".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { regression_period, atr_period, atr_mult, trend_sensitivity })
+    }
+
+    /// Create with default settings
+    pub fn default_settings(regression_period: usize, atr_mult: f64) -> Result<Self> {
+        Self::new(regression_period, 14, atr_mult, 0.5)
+    }
+
+    /// Calculate linear regression slope
+    fn calc_slope(data: &[f64]) -> f64 {
+        let n = data.len() as f64;
+        if n < 2.0 {
+            return 0.0;
+        }
+
+        let sum_x: f64 = (0..data.len()).map(|i| i as f64).sum();
+        let sum_y: f64 = data.iter().sum();
+        let sum_xy: f64 = data.iter().enumerate().map(|(i, &y)| i as f64 * y).sum();
+        let sum_x2: f64 = (0..data.len()).map(|i| (i as f64).powi(2)).sum();
+
+        let denominator = n * sum_x2 - sum_x.powi(2);
+        if denominator.abs() < 1e-10 {
+            return 0.0;
+        }
+
+        (n * sum_xy - sum_x * sum_y) / denominator
+    }
+
+    /// Calculate Trend Channel Bands (middle, upper, lower)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate ATR
+        let mut atr = vec![0.0; n];
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.atr_period {
+                let mut sum = 0.0;
+                for j in 1..=i {
+                    let tr_j = (high[j] - low[j])
+                        .max((high[j] - close[j - 1]).abs())
+                        .max((low[j] - close[j - 1]).abs());
+                    sum += tr_j;
+                }
+                atr[i] = sum / i as f64;
+            } else {
+                let alpha = 2.0 / (self.atr_period as f64 + 1.0);
+                atr[i] = alpha * tr + (1.0 - alpha) * atr[i - 1];
+            }
+        }
+
+        let start_idx = self.regression_period.max(self.atr_period);
+        for i in start_idx..n {
+            // Calculate linear regression for trend
+            let reg_start = i + 1 - self.regression_period;
+            let slope = Self::calc_slope(&close[reg_start..=i]);
+
+            // Normalize slope relative to price level
+            let avg_price = close[reg_start..=i].iter().sum::<f64>() / self.regression_period as f64;
+            let norm_slope = if avg_price > 1e-10 {
+                slope / avg_price * 100.0 // Slope as percentage per bar
+            } else {
+                0.0
+            };
+
+            // Calculate trend factor (-1 to 1, clamped)
+            let trend_factor = norm_slope.max(-1.0).min(1.0);
+
+            // Adjust band widths based on trend
+            // In uptrend: lower band tighter (for trailing stop), upper band wider
+            // In downtrend: upper band tighter, lower band wider
+            let base_width = self.atr_mult * atr[i];
+            let upper_adj = 1.0 + trend_factor * self.trend_sensitivity;
+            let lower_adj = 1.0 - trend_factor * self.trend_sensitivity;
+
+            middle[i] = close[i];
+            upper[i] = close[i] + base_width * upper_adj;
+            lower[i] = close[i] - base_width * lower_adj;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for TrendChannelBands {
+    fn name(&self) -> &str {
+        "Trend Channel Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.regression_period.max(self.atr_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5440,6 +6149,532 @@ mod tests {
         // QuantileBands
         let qb = QuantileBands::new(10, 1.5).unwrap();
         let (m, u, l) = qb.calculate(&large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+    }
+
+    // ============================================================
+    // Tests for 6 NEW Band Indicators (Jan 2026 - Phase 3)
+    // DonchianChannelEnhanced, HighLowBandsAdvanced, PivotBands,
+    // MovingAverageBands, VolatilityAdjustedBandsExt, TrendChannelBands
+    // ============================================================
+
+    // --- DonchianChannelEnhanced Tests ---
+
+    #[test]
+    fn test_donchian_channel_enhanced() {
+        let (high, low, close) = make_extended_test_data();
+        let dce = DonchianChannelEnhanced::new(20, 14, 0.5).unwrap();
+        let (middle, upper, lower) = dce.calculate(&high, &low, &close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 30;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_donchian_channel_enhanced_validation() {
+        assert!(DonchianChannelEnhanced::new(1, 14, 0.5).is_err());  // period < 2
+        assert!(DonchianChannelEnhanced::new(20, 1, 0.5).is_err()); // atr_period < 2
+        assert!(DonchianChannelEnhanced::new(20, 14, -0.5).is_err()); // volatility_mult < 0
+        assert!(DonchianChannelEnhanced::new(20, 14, 0.5).is_ok());
+        assert!(DonchianChannelEnhanced::new(20, 14, 0.0).is_ok()); // zero mult is allowed
+    }
+
+    #[test]
+    fn test_donchian_channel_enhanced_trait() {
+        let dce = DonchianChannelEnhanced::new(20, 14, 0.5).unwrap();
+        assert_eq!(dce.name(), "Donchian Channel Enhanced");
+        assert_eq!(dce.min_periods(), 21); // max(20, 14) + 1
+    }
+
+    #[test]
+    fn test_donchian_channel_enhanced_default_atr() {
+        let dce = DonchianChannelEnhanced::default_atr(20, 0.5).unwrap();
+        assert_eq!(dce.min_periods(), 21); // max(20, 14) + 1
+    }
+
+    #[test]
+    fn test_donchian_channel_enhanced_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let dce = DonchianChannelEnhanced::new(20, 14, 0.5).unwrap();
+        let (m, u, l) = dce.calculate(&empty, &empty, &empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_donchian_channel_enhanced_volatility_expansion() {
+        let (high, low, close) = make_extended_test_data();
+
+        // With zero mult, bands should be pure Donchian
+        let dce_no_exp = DonchianChannelEnhanced::new(10, 10, 0.0).unwrap();
+        let (_, upper_no_exp, lower_no_exp) = dce_no_exp.calculate(&high, &low, &close);
+
+        // With positive mult, bands should be wider
+        let dce_exp = DonchianChannelEnhanced::new(10, 10, 1.0).unwrap();
+        let (_, upper_exp, lower_exp) = dce_exp.calculate(&high, &low, &close);
+
+        let idx = 20;
+        assert!(upper_exp[idx] >= upper_no_exp[idx],
+            "With volatility expansion, upper band should be higher or equal");
+        assert!(lower_exp[idx] <= lower_no_exp[idx],
+            "With volatility expansion, lower band should be lower or equal");
+    }
+
+    // --- HighLowBandsAdvanced Tests ---
+
+    #[test]
+    fn test_high_low_bands_advanced() {
+        let (high, low, _) = make_extended_test_data();
+        let hlb = HighLowBandsAdvanced::new(20, 1.0).unwrap();
+        let (middle, upper, lower) = hlb.calculate(&high, &low);
+
+        assert_eq!(middle.len(), high.len());
+        let idx = 25;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] >= middle[idx]);
+        assert!(lower[idx] <= middle[idx]);
+    }
+
+    #[test]
+    fn test_high_low_bands_advanced_validation() {
+        assert!(HighLowBandsAdvanced::new(1, 1.0).is_err());  // period < 2
+        assert!(HighLowBandsAdvanced::new(20, -0.5).is_err()); // offset_percent < 0
+        assert!(HighLowBandsAdvanced::new(20, 1.0).is_ok());
+        assert!(HighLowBandsAdvanced::new(20, 0.0).is_ok()); // zero offset is allowed
+    }
+
+    #[test]
+    fn test_high_low_bands_advanced_trait() {
+        let hlb = HighLowBandsAdvanced::new(20, 1.0).unwrap();
+        assert_eq!(hlb.name(), "High Low Bands Advanced");
+        assert_eq!(hlb.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_high_low_bands_advanced_no_offset() {
+        let hlb = HighLowBandsAdvanced::no_offset(20).unwrap();
+        let (high, low, _) = make_extended_test_data();
+        let (middle, upper, lower) = hlb.calculate(&high, &low);
+
+        let idx = 25;
+        // Without offset, upper = EMA(high), lower = EMA(low)
+        // Middle should be average of upper and lower
+        assert!((middle[idx] - (upper[idx] + lower[idx]) / 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_high_low_bands_advanced_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let hlb = HighLowBandsAdvanced::new(20, 1.0).unwrap();
+        let (m, u, l) = hlb.calculate(&empty, &empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_high_low_bands_advanced_offset_expansion() {
+        let (high, low, _) = make_extended_test_data();
+
+        let hlb_no_offset = HighLowBandsAdvanced::new(10, 0.0).unwrap();
+        let (_, upper_no, lower_no) = hlb_no_offset.calculate(&high, &low);
+
+        let hlb_offset = HighLowBandsAdvanced::new(10, 2.0).unwrap();
+        let (_, upper_off, lower_off) = hlb_offset.calculate(&high, &low);
+
+        let idx = 20;
+        assert!(upper_off[idx] > upper_no[idx], "Offset should expand upper band");
+        assert!(lower_off[idx] < lower_no[idx], "Offset should expand lower band");
+    }
+
+    // --- PivotBands Tests ---
+
+    #[test]
+    fn test_pivot_bands() {
+        let (high, low, close) = make_extended_test_data();
+        let pb = PivotBands::new(10, 1).unwrap();
+        let (middle, upper, lower) = pb.calculate(&high, &low, &close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 15;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] >= middle[idx]);
+        assert!(lower[idx] <= middle[idx]);
+    }
+
+    #[test]
+    fn test_pivot_bands_validation() {
+        assert!(PivotBands::new(1, 1).is_err());   // period < 2
+        assert!(PivotBands::new(10, 0).is_err()); // level < 1
+        assert!(PivotBands::new(10, 4).is_err()); // level > 3
+        assert!(PivotBands::new(10, 1).is_ok());
+        assert!(PivotBands::new(10, 2).is_ok());
+        assert!(PivotBands::new(10, 3).is_ok());
+    }
+
+    #[test]
+    fn test_pivot_bands_trait() {
+        let pb = PivotBands::new(10, 1).unwrap();
+        assert_eq!(pb.name(), "Pivot Bands");
+        assert_eq!(pb.min_periods(), 10);
+    }
+
+    #[test]
+    fn test_pivot_bands_first_level() {
+        let pb = PivotBands::first_level(10).unwrap();
+        assert_eq!(pb.min_periods(), 10);
+    }
+
+    #[test]
+    fn test_pivot_bands_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let pb = PivotBands::new(10, 1).unwrap();
+        let (m, u, l) = pb.calculate(&empty, &empty, &empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_pivot_bands_levels_ordering() {
+        let (high, low, close) = make_extended_test_data();
+
+        let pb1 = PivotBands::new(10, 1).unwrap();
+        let pb2 = PivotBands::new(10, 2).unwrap();
+        let pb3 = PivotBands::new(10, 3).unwrap();
+
+        let (_, u1, l1) = pb1.calculate(&high, &low, &close);
+        let (_, u2, l2) = pb2.calculate(&high, &low, &close);
+        let (_, u3, l3) = pb3.calculate(&high, &low, &close);
+
+        let idx = 20;
+        // Higher levels should have wider bands
+        assert!(u2[idx] >= u1[idx], "R2 should be >= R1");
+        assert!(u3[idx] >= u2[idx], "R3 should be >= R2");
+        assert!(l2[idx] <= l1[idx], "S2 should be <= S1");
+        assert!(l3[idx] <= l2[idx], "S3 should be <= S2");
+    }
+
+    // --- MovingAverageBands Tests ---
+
+    #[test]
+    fn test_moving_average_bands() {
+        let (_, _, close) = make_extended_test_data();
+        let mab = MovingAverageBands::new(10, 20, 2.0).unwrap();
+        let (middle, upper, lower) = mab.calculate(&close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 25;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_moving_average_bands_validation() {
+        assert!(MovingAverageBands::new(1, 20, 2.0).is_err());  // ema_period < 2
+        assert!(MovingAverageBands::new(10, 1, 2.0).is_err()); // sma_period < 2
+        assert!(MovingAverageBands::new(10, 20, 0.0).is_err()); // std_mult <= 0
+        assert!(MovingAverageBands::new(10, 20, -1.0).is_err()); // std_mult < 0
+        assert!(MovingAverageBands::new(10, 20, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_moving_average_bands_trait() {
+        let mab = MovingAverageBands::new(10, 20, 2.0).unwrap();
+        assert_eq!(mab.name(), "Moving Average Bands");
+        assert_eq!(mab.min_periods(), 21); // max(10, 20) + 1
+    }
+
+    #[test]
+    fn test_moving_average_bands_equal_periods() {
+        let mab = MovingAverageBands::equal_periods(15, 2.0).unwrap();
+        assert_eq!(mab.min_periods(), 16); // 15 + 1
+    }
+
+    #[test]
+    fn test_moving_average_bands_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let mab = MovingAverageBands::new(10, 20, 2.0).unwrap();
+        let (m, u, l) = mab.calculate(&empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_moving_average_bands_symmetry() {
+        let (_, _, close) = make_extended_test_data();
+        let mab = MovingAverageBands::new(10, 10, 2.0).unwrap();
+        let (_, upper, lower) = mab.calculate(&close);
+
+        // Get the SMA at a point to verify symmetry
+        let idx = 20;
+        let sma_start = idx + 1 - 10;
+        let sma: f64 = close[sma_start..=idx].iter().sum::<f64>() / 10.0;
+
+        let upper_diff = upper[idx] - sma;
+        let lower_diff = sma - lower[idx];
+
+        // Upper and lower should be symmetric around SMA
+        assert!((upper_diff - lower_diff).abs() < 1e-10,
+            "Bands should be symmetric around SMA");
+    }
+
+    // --- VolatilityAdjustedBandsExt Tests ---
+
+    #[test]
+    fn test_volatility_adjusted_bands_ext() {
+        let (high, low, close) = make_extended_test_data();
+        let vabe = VolatilityAdjustedBandsExt::new(20, 10, 50, 2.0).unwrap();
+        let (middle, upper, lower) = vabe.calculate(&high, &low, &close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 60;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_volatility_adjusted_bands_ext_validation() {
+        assert!(VolatilityAdjustedBandsExt::new(1, 10, 50, 2.0).is_err());  // ma_period < 2
+        assert!(VolatilityAdjustedBandsExt::new(20, 1, 50, 2.0).is_err()); // short_vol_period < 2
+        assert!(VolatilityAdjustedBandsExt::new(20, 10, 1, 2.0).is_err()); // long_vol_period < 2
+        assert!(VolatilityAdjustedBandsExt::new(20, 50, 40, 2.0).is_err()); // short >= long
+        assert!(VolatilityAdjustedBandsExt::new(20, 10, 50, 0.0).is_err()); // base_mult <= 0
+        assert!(VolatilityAdjustedBandsExt::new(20, 10, 50, -1.0).is_err()); // base_mult < 0
+        assert!(VolatilityAdjustedBandsExt::new(20, 10, 50, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_volatility_adjusted_bands_ext_trait() {
+        let vabe = VolatilityAdjustedBandsExt::new(20, 10, 50, 2.0).unwrap();
+        assert_eq!(vabe.name(), "Volatility Adjusted Bands Extended");
+        assert_eq!(vabe.min_periods(), 51); // max(20, 50) + 1
+    }
+
+    #[test]
+    fn test_volatility_adjusted_bands_ext_default_periods() {
+        let vabe = VolatilityAdjustedBandsExt::default_periods(20, 2.0).unwrap();
+        assert_eq!(vabe.min_periods(), 51); // max(20, 50) + 1
+    }
+
+    #[test]
+    fn test_volatility_adjusted_bands_ext_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let vabe = VolatilityAdjustedBandsExt::new(20, 10, 50, 2.0).unwrap();
+        let (m, u, l) = vabe.calculate(&empty, &empty, &empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_volatility_adjusted_bands_ext_volatility_response() {
+        // Create data with low then high volatility
+        let mut high = vec![102.0; 100];
+        let mut low = vec![98.0; 100];
+        let mut close = vec![100.0; 100];
+
+        // High volatility period at end
+        for i in 70..100 {
+            high[i] = 120.0;
+            low[i] = 80.0;
+            close[i] = 100.0;
+        }
+
+        let vabe = VolatilityAdjustedBandsExt::new(10, 5, 30, 2.0).unwrap();
+        let (_, upper, _) = vabe.calculate(&high, &low, &close);
+
+        let low_vol_idx = 50;
+        let high_vol_idx = 90;
+
+        // Bands should be wider during high volatility
+        let width_low = upper[low_vol_idx] - close[low_vol_idx];
+        let width_high = upper[high_vol_idx] - close[high_vol_idx];
+
+        assert!(width_high > width_low,
+            "Bands should be wider during high volatility periods");
+    }
+
+    // --- TrendChannelBands Tests ---
+
+    #[test]
+    fn test_trend_channel_bands() {
+        let (high, low, close) = make_extended_test_data();
+        let tcb = TrendChannelBands::new(20, 14, 2.0, 0.5).unwrap();
+        let (middle, upper, lower) = tcb.calculate(&high, &low, &close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 30;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_trend_channel_bands_validation() {
+        assert!(TrendChannelBands::new(2, 14, 2.0, 0.5).is_err());  // regression_period < 3
+        assert!(TrendChannelBands::new(20, 1, 2.0, 0.5).is_err()); // atr_period < 2
+        assert!(TrendChannelBands::new(20, 14, 0.0, 0.5).is_err()); // atr_mult <= 0
+        assert!(TrendChannelBands::new(20, 14, -1.0, 0.5).is_err()); // atr_mult < 0
+        assert!(TrendChannelBands::new(20, 14, 2.0, -0.1).is_err()); // trend_sensitivity < 0
+        assert!(TrendChannelBands::new(20, 14, 2.0, 1.1).is_err()); // trend_sensitivity > 1
+        assert!(TrendChannelBands::new(20, 14, 2.0, 0.5).is_ok());
+        assert!(TrendChannelBands::new(20, 14, 2.0, 0.0).is_ok()); // zero sensitivity
+        assert!(TrendChannelBands::new(20, 14, 2.0, 1.0).is_ok()); // max sensitivity
+    }
+
+    #[test]
+    fn test_trend_channel_bands_trait() {
+        let tcb = TrendChannelBands::new(20, 14, 2.0, 0.5).unwrap();
+        assert_eq!(tcb.name(), "Trend Channel Bands");
+        assert_eq!(tcb.min_periods(), 21); // max(20, 14) + 1
+    }
+
+    #[test]
+    fn test_trend_channel_bands_default_settings() {
+        let tcb = TrendChannelBands::default_settings(20, 2.0).unwrap();
+        assert_eq!(tcb.min_periods(), 21); // max(20, 14) + 1
+    }
+
+    #[test]
+    fn test_trend_channel_bands_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let tcb = TrendChannelBands::new(20, 14, 2.0, 0.5).unwrap();
+        let (m, u, l) = tcb.calculate(&empty, &empty, &empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_trend_channel_bands_zero_sensitivity() {
+        // With zero sensitivity, bands should be symmetric
+        let (high, low, close) = make_extended_test_data();
+        let tcb = TrendChannelBands::new(10, 10, 2.0, 0.0).unwrap();
+        let (middle, upper, lower) = tcb.calculate(&high, &low, &close);
+
+        let idx = 30;
+        let upper_diff = upper[idx] - middle[idx];
+        let lower_diff = middle[idx] - lower[idx];
+
+        assert!((upper_diff - lower_diff).abs() < 1e-10,
+            "With zero sensitivity, bands should be symmetric");
+    }
+
+    #[test]
+    fn test_trend_channel_bands_in_uptrend() {
+        // Create strong uptrend
+        let uptrend: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64) * 2.0).collect();
+        let high: Vec<f64> = uptrend.iter().map(|&c| c + 2.0).collect();
+        let low: Vec<f64> = uptrend.iter().map(|&c| c - 2.0).collect();
+
+        let tcb = TrendChannelBands::new(10, 10, 2.0, 0.5).unwrap();
+        let (middle, upper, lower) = tcb.calculate(&high, &low, &uptrend);
+
+        let idx = 40;
+        let upper_dist = upper[idx] - middle[idx];
+        let lower_dist = middle[idx] - lower[idx];
+
+        // In uptrend with positive sensitivity, lower band should be tighter
+        // (closer to price for trailing stop)
+        assert!(lower_dist < upper_dist,
+            "In uptrend, lower band should be tighter (closer to price)");
+    }
+
+    // --- Combined Tests for All 6 NEW Phase 3 Indicators ---
+
+    #[test]
+    fn test_all_6_new_phase3_indicators_short_data() {
+        let short_high = vec![102.0, 103.0, 104.0];
+        let short_low = vec![98.0, 99.0, 100.0];
+        let short_close = vec![100.0, 101.0, 102.0];
+
+        // DonchianChannelEnhanced
+        let dce = DonchianChannelEnhanced::new(20, 14, 0.5).unwrap();
+        let (m, u, l) = dce.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(m.len(), 3);
+
+        // HighLowBandsAdvanced
+        let hlb = HighLowBandsAdvanced::new(20, 1.0).unwrap();
+        let (m, u, l) = hlb.calculate(&short_high, &short_low);
+        assert_eq!(m.len(), 3);
+
+        // PivotBands
+        let pb = PivotBands::new(20, 1).unwrap();
+        let (m, u, l) = pb.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(m.len(), 3);
+
+        // MovingAverageBands
+        let mab = MovingAverageBands::new(20, 15, 2.0).unwrap();
+        let (m, u, l) = mab.calculate(&short_close);
+        assert_eq!(m.len(), 3);
+
+        // VolatilityAdjustedBandsExt
+        let vabe = VolatilityAdjustedBandsExt::new(20, 10, 50, 2.0).unwrap();
+        let (m, u, l) = vabe.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(m.len(), 3);
+
+        // TrendChannelBands
+        let tcb = TrendChannelBands::new(20, 14, 2.0, 0.5).unwrap();
+        let (m, u, l) = tcb.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn test_all_6_new_phase3_indicators_numerical_stability() {
+        // Test with large values
+        let large_high: Vec<f64> = (0..80).map(|i| 1e8 + (i as f64) * 1000.0).collect();
+        let large_low: Vec<f64> = (0..80).map(|i| 1e8 - 1000.0 + (i as f64) * 1000.0).collect();
+        let large_close: Vec<f64> = (0..80).map(|i| 1e8 + (i as f64) * 1000.0).collect();
+        let idx = 70;
+
+        // DonchianChannelEnhanced
+        let dce = DonchianChannelEnhanced::new(10, 10, 0.5).unwrap();
+        let (m, u, l) = dce.calculate(&large_high, &large_low, &large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // HighLowBandsAdvanced
+        let hlb = HighLowBandsAdvanced::new(10, 1.0).unwrap();
+        let (m, u, l) = hlb.calculate(&large_high, &large_low);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // PivotBands
+        let pb = PivotBands::new(10, 1).unwrap();
+        let (m, u, l) = pb.calculate(&large_high, &large_low, &large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // MovingAverageBands
+        let mab = MovingAverageBands::new(10, 10, 2.0).unwrap();
+        let (m, u, l) = mab.calculate(&large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // VolatilityAdjustedBandsExt
+        let vabe = VolatilityAdjustedBandsExt::new(10, 5, 30, 2.0).unwrap();
+        let (m, u, l) = vabe.calculate(&large_high, &large_low, &large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // TrendChannelBands
+        let tcb = TrendChannelBands::new(10, 10, 2.0, 0.5).unwrap();
+        let (m, u, l) = tcb.calculate(&large_high, &large_low, &large_close);
         assert!(m[idx].is_finite());
         assert!(u[idx].is_finite());
         assert!(l[idx].is_finite());

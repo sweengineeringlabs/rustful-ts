@@ -3236,6 +3236,775 @@ impl TechnicalIndicator for VolumeZScore {
     }
 }
 
+/// Volume Rank - Ranks current volume relative to historical volume
+///
+/// Calculates where the current volume ranks within the lookback period,
+/// providing a percentile-like ranking from 0 (lowest) to 100 (highest).
+/// Useful for identifying relative volume strength compared to recent history.
+#[derive(Debug, Clone)]
+pub struct VolumeRank {
+    period: usize,
+}
+
+impl VolumeRank {
+    /// Create a new VolumeRank indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for ranking (minimum 10)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate volume rank
+    ///
+    /// Returns (rank, rank_signal):
+    /// - rank: Rank of current volume (0-100) within the lookback period
+    /// - rank_signal: +1 for high rank (>80), -1 for low rank (<20), 0 otherwise
+    pub fn calculate(&self, volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = volume.len();
+        let mut rank = vec![0.0; n];
+        let mut rank_signal = vec![0.0; n];
+
+        if n < self.period {
+            return (rank, rank_signal);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+            let current_vol = volume[i];
+
+            // Count how many historical volumes are less than current
+            let mut count_below = 0;
+            for j in start..i {
+                if volume[j] < current_vol {
+                    count_below += 1;
+                }
+            }
+
+            // Calculate rank as percentage
+            rank[i] = (count_below as f64 / self.period as f64) * 100.0;
+
+            // Generate signal
+            if rank[i] > 80.0 {
+                rank_signal[i] = 1.0; // High volume rank
+            } else if rank[i] < 20.0 {
+                rank_signal[i] = -1.0; // Low volume rank
+            }
+        }
+
+        (rank, rank_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeRank {
+    fn name(&self) -> &str {
+        "Volume Rank"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.volume.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.volume.len(),
+            });
+        }
+        let (rank, signal) = self.calculate(&data.volume);
+        Ok(IndicatorOutput::dual(rank, signal))
+    }
+}
+
+/// Volume Percentile - Statistical percentile of current volume
+///
+/// Calculates the exact percentile position of current volume within
+/// a rolling window, accounting for ties. More precise than simple ranking.
+#[derive(Debug, Clone)]
+pub struct VolumePercentile {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumePercentile {
+    /// Create a new VolumePercentile indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for percentile calculation (minimum 10)
+    /// * `smoothing` - EMA smoothing period for the result (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Create with default smoothing (3)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 3)
+    }
+
+    /// Calculate volume percentile
+    ///
+    /// Returns (percentile, percentile_state):
+    /// - percentile: Smoothed percentile value (0-100)
+    /// - percentile_state: +1 for extreme high (>90), -1 for extreme low (<10), 0 otherwise
+    pub fn calculate(&self, volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = volume.len();
+        let mut percentile = vec![0.0; n];
+        let mut percentile_state = vec![0.0; n];
+
+        if n < self.period {
+            return (percentile, percentile_state);
+        }
+
+        // Calculate raw percentiles
+        let mut raw_percentile = vec![0.0; n];
+        for i in self.period..n {
+            let start = i - self.period;
+            let current_vol = volume[i];
+
+            // Count values below and equal to current
+            let mut count_below = 0.0;
+            let mut count_equal = 0.0;
+            for j in start..i {
+                if volume[j] < current_vol {
+                    count_below += 1.0;
+                } else if (volume[j] - current_vol).abs() < 1e-10 {
+                    count_equal += 1.0;
+                }
+            }
+
+            // Percentile formula accounting for ties: (count_below + 0.5 * count_equal) / n * 100
+            raw_percentile[i] = ((count_below + 0.5 * count_equal) / self.period as f64) * 100.0;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                percentile[i] = raw_percentile[i];
+            } else {
+                percentile[i] = alpha * raw_percentile[i] + (1.0 - alpha) * percentile[i - 1];
+            }
+
+            // Generate state signal
+            if percentile[i] > 90.0 {
+                percentile_state[i] = 1.0; // Extreme high percentile
+            } else if percentile[i] < 10.0 {
+                percentile_state[i] = -1.0; // Extreme low percentile
+            }
+        }
+
+        (percentile, percentile_state)
+    }
+}
+
+impl TechnicalIndicator for VolumePercentile {
+    fn name(&self) -> &str {
+        "Volume Percentile"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.volume.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.volume.len(),
+            });
+        }
+        let (percentile, state) = self.calculate(&data.volume);
+        Ok(IndicatorOutput::dual(percentile, state))
+    }
+}
+
+/// Volume Ratio - Ratio of up volume to down volume
+///
+/// Measures the balance between volume on up-bars vs down-bars,
+/// indicating whether buyers or sellers are more active.
+/// Values > 1 indicate buying dominance, < 1 indicate selling dominance.
+#[derive(Debug, Clone)]
+pub struct VolumeRatio {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeRatio {
+    /// Create a new VolumeRatio indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for ratio calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Create with default smoothing (3)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 3)
+    }
+
+    /// Calculate volume ratio
+    ///
+    /// Returns (ratio, ratio_index, dominance_signal):
+    /// - ratio: Raw up/down volume ratio (capped at 10.0 for display)
+    /// - ratio_index: Normalized ratio as percentage (0-100), 50 = balanced
+    /// - dominance_signal: +1 for buying dominance (>60), -1 for selling (<40), 0 for balanced
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut ratio = vec![0.0; n];
+        let mut ratio_index = vec![50.0; n];
+        let mut dominance_signal = vec![0.0; n];
+
+        if n < 2 {
+            return (ratio, ratio_index, dominance_signal);
+        }
+
+        // Calculate raw up/down volume ratios
+        let mut raw_ratio = vec![1.0; n];
+        for i in self.period..n {
+            let start = i - self.period + 1;
+
+            let mut up_volume = 0.0;
+            let mut down_volume = 0.0;
+
+            for j in start..=i {
+                if j > 0 {
+                    if close[j] > close[j - 1] {
+                        up_volume += volume[j];
+                    } else if close[j] < close[j - 1] {
+                        down_volume += volume[j];
+                    } else {
+                        // Unchanged: split between up and down
+                        up_volume += volume[j] / 2.0;
+                        down_volume += volume[j] / 2.0;
+                    }
+                }
+            }
+
+            if down_volume > 1e-10 {
+                raw_ratio[i] = up_volume / down_volume;
+            } else if up_volume > 1e-10 {
+                raw_ratio[i] = 10.0; // Cap at 10 when no down volume
+            } else {
+                raw_ratio[i] = 1.0; // Equal when both are zero
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                ratio[i] = raw_ratio[i].min(10.0);
+            } else {
+                ratio[i] = (alpha * raw_ratio[i] + (1.0 - alpha) * ratio[i - 1]).min(10.0);
+            }
+
+            // Convert ratio to index (0-100 scale)
+            // ratio of 1.0 = 50, ratio of 2.0 = 66.7, ratio of 0.5 = 33.3
+            ratio_index[i] = (ratio[i] / (ratio[i] + 1.0)) * 100.0;
+
+            // Generate dominance signal
+            if ratio_index[i] > 60.0 {
+                dominance_signal[i] = 1.0; // Buying dominance
+            } else if ratio_index[i] < 40.0 {
+                dominance_signal[i] = -1.0; // Selling dominance
+            }
+        }
+
+        (ratio, ratio_index, dominance_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeRatio {
+    fn name(&self) -> &str {
+        "Volume Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (ratio, ratio_index, dominance) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::triple(ratio, ratio_index, dominance))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // ratio, ratio_index, dominance_signal
+    }
+}
+
+/// Volume Concentration - Measures how concentrated volume is at specific price levels
+///
+/// Analyzes the distribution of volume across the price range,
+/// identifying whether volume is concentrated (focused trading) or dispersed.
+/// High concentration suggests strong conviction, low suggests indecision.
+#[derive(Debug, Clone)]
+pub struct VolumeConcentration {
+    period: usize,
+    num_bins: usize,
+}
+
+impl VolumeConcentration {
+    /// Create a new VolumeConcentration indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for concentration analysis (minimum 5)
+    /// * `num_bins` - Number of price bins for distribution (minimum 3)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, num_bins: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if num_bins < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_bins".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        Ok(Self { period, num_bins })
+    }
+
+    /// Create with default bins (5)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 5)
+    }
+
+    /// Calculate volume concentration
+    ///
+    /// Returns (concentration_index, concentration_signal):
+    /// - concentration_index: Concentration score (0-100), higher = more concentrated
+    /// - concentration_signal: +1 for high concentration (>70), -1 for low (<30), 0 otherwise
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut concentration_index = vec![50.0; n];
+        let mut concentration_signal = vec![0.0; n];
+
+        if n < self.period {
+            return (concentration_index, concentration_signal);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period + 1;
+
+            // Find price range for the period
+            let mut min_price = f64::MAX;
+            let mut max_price = f64::MIN;
+            for j in start..=i {
+                min_price = min_price.min(low[j]);
+                max_price = max_price.max(high[j]);
+            }
+
+            let price_range = max_price - min_price;
+            if price_range < 1e-10 {
+                concentration_index[i] = 100.0; // All at same price = perfect concentration
+                concentration_signal[i] = 1.0;
+                continue;
+            }
+
+            // Distribute volume into bins
+            let mut bins = vec![0.0; self.num_bins];
+            let mut total_volume = 0.0;
+
+            for j in start..=i {
+                let typical_price = (high[j] + low[j] + close[j]) / 3.0;
+                let bin_idx = ((typical_price - min_price) / price_range * (self.num_bins as f64 - 0.001))
+                    .floor() as usize;
+                let bin_idx = bin_idx.min(self.num_bins - 1);
+                bins[bin_idx] += volume[j];
+                total_volume += volume[j];
+            }
+
+            if total_volume < 1e-10 {
+                continue;
+            }
+
+            // Calculate Herfindahl-Hirschman Index (HHI) for concentration
+            // HHI = sum of squared market shares
+            let mut hhi = 0.0;
+            for bin_vol in &bins {
+                let share = bin_vol / total_volume;
+                hhi += share * share;
+            }
+
+            // Normalize HHI to 0-100 scale
+            // Min HHI = 1/n (equal distribution), Max HHI = 1 (all in one bin)
+            let min_hhi = 1.0 / self.num_bins as f64;
+            let normalized_hhi = (hhi - min_hhi) / (1.0 - min_hhi);
+            concentration_index[i] = (normalized_hhi * 100.0).clamp(0.0, 100.0);
+
+            // Generate signal
+            if concentration_index[i] > 70.0 {
+                concentration_signal[i] = 1.0; // High concentration
+            } else if concentration_index[i] < 30.0 {
+                concentration_signal[i] = -1.0; // Low concentration
+            }
+        }
+
+        (concentration_index, concentration_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeConcentration {
+    fn name(&self) -> &str {
+        "Volume Concentration"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (concentration, signal) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::dual(concentration, signal))
+    }
+}
+
+/// Volume Bias - Measures directional bias of volume-weighted price movement
+///
+/// Calculates the bias of volume towards bullish or bearish price action,
+/// helping identify whether smart money is accumulating or distributing.
+/// Combines volume with price change direction and magnitude.
+#[derive(Debug, Clone)]
+pub struct VolumeBias {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeBias {
+    /// Create a new VolumeBias indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for bias calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Create with default smoothing (3)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 3)
+    }
+
+    /// Calculate volume bias
+    ///
+    /// Returns (bias_value, bias_strength, bias_signal):
+    /// - bias_value: Directional bias (-100 to +100), positive = bullish, negative = bearish
+    /// - bias_strength: Absolute strength of bias (0-100)
+    /// - bias_signal: +1 for bullish bias, -1 for bearish, 0 for neutral
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut bias_value = vec![0.0; n];
+        let mut bias_strength = vec![0.0; n];
+        let mut bias_signal = vec![0.0; n];
+
+        if n < 2 {
+            return (bias_value, bias_strength, bias_signal);
+        }
+
+        // Calculate raw bias values
+        let mut raw_bias = vec![0.0; n];
+        for i in self.period..n {
+            let start = i - self.period + 1;
+
+            let mut weighted_sum = 0.0;
+            let mut volume_sum = 0.0;
+
+            for j in start..=i {
+                if j > 0 {
+                    let price_change = close[j] - close[j - 1];
+                    let avg_price = (close[j] + close[j - 1]) / 2.0;
+
+                    if avg_price > 1e-10 {
+                        // Percentage change weighted by volume
+                        let pct_change = price_change / avg_price;
+                        weighted_sum += pct_change * volume[j];
+                        volume_sum += volume[j];
+                    }
+                }
+            }
+
+            if volume_sum > 1e-10 {
+                // Scale to reasonable range (-100 to 100)
+                raw_bias[i] = (weighted_sum / volume_sum) * 10000.0;
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                bias_value[i] = raw_bias[i].clamp(-100.0, 100.0);
+            } else {
+                let smoothed = alpha * raw_bias[i] + (1.0 - alpha) * bias_value[i - 1];
+                bias_value[i] = smoothed.clamp(-100.0, 100.0);
+            }
+
+            // Calculate strength as absolute value
+            bias_strength[i] = bias_value[i].abs();
+
+            // Generate bias signal
+            if bias_value[i] > 10.0 {
+                bias_signal[i] = 1.0; // Bullish bias
+            } else if bias_value[i] < -10.0 {
+                bias_signal[i] = -1.0; // Bearish bias
+            }
+        }
+
+        (bias_value, bias_strength, bias_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeBias {
+    fn name(&self) -> &str {
+        "Volume Bias"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (bias, strength, signal) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::triple(bias, strength, signal))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // bias_value, bias_strength, bias_signal
+    }
+}
+
+/// Volume Quality - Measures the quality and reliability of volume signals
+///
+/// Evaluates volume quality by analyzing consistency, confirmation with price,
+/// and statistical significance. Higher quality indicates more reliable volume signals.
+/// Combines multiple factors: consistency, price confirmation, and magnitude.
+#[derive(Debug, Clone)]
+pub struct VolumeQuality {
+    period: usize,
+    confirmation_threshold: f64,
+}
+
+impl VolumeQuality {
+    /// Create a new VolumeQuality indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for quality analysis (minimum 10)
+    /// * `confirmation_threshold` - Price-volume correlation threshold (0.0 to 1.0)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, confirmation_threshold: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if confirmation_threshold < 0.0 || confirmation_threshold > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "confirmation_threshold".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { period, confirmation_threshold })
+    }
+
+    /// Create with default threshold (0.5)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 0.5)
+    }
+
+    /// Calculate volume quality
+    ///
+    /// Returns (quality_score, reliability_signal):
+    /// - quality_score: Overall quality score (0-100)
+    /// - reliability_signal: +1 for high quality (>70), -1 for low quality (<30), 0 otherwise
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut quality_score = vec![50.0; n];
+        let mut reliability_signal = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (quality_score, reliability_signal);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Factor 1: Volume Consistency (lower coefficient of variation = higher consistency)
+            let volume_window = &volume[start..=i];
+            let vol_mean: f64 = volume_window.iter().sum::<f64>() / (self.period + 1) as f64;
+            let vol_variance: f64 = volume_window.iter()
+                .map(|v| (v - vol_mean).powi(2))
+                .sum::<f64>() / (self.period + 1) as f64;
+            let vol_cv = if vol_mean > 1e-10 {
+                vol_variance.sqrt() / vol_mean
+            } else {
+                1.0
+            };
+            // Lower CV = more consistent = higher score
+            // CV of 0 = 100 score, CV of 1 = 0 score
+            let consistency_score = ((1.0 - vol_cv.min(1.0)) * 100.0).max(0.0);
+
+            // Factor 2: Price-Volume Confirmation
+            // Higher volume on trend-following moves = confirmation
+            let mut confirming_volume = 0.0;
+            let mut total_volume = 0.0;
+
+            for j in (start + 1)..=i {
+                let price_change = close[j] - close[j - 1];
+                let prev_trend = if j > 1 { close[j - 1] - close[j - 2] } else { 0.0 };
+
+                total_volume += volume[j];
+
+                // Confirming if current move aligns with previous trend
+                if (price_change > 0.0 && prev_trend > 0.0) || (price_change < 0.0 && prev_trend < 0.0) {
+                    confirming_volume += volume[j];
+                } else if price_change.abs() < 1e-10 {
+                    // Neutral, count as partial confirmation
+                    confirming_volume += volume[j] * 0.5;
+                }
+            }
+
+            let confirmation_score = if total_volume > 1e-10 {
+                (confirming_volume / total_volume * 100.0).min(100.0)
+            } else {
+                50.0
+            };
+
+            // Factor 3: Volume Magnitude (current vs average)
+            let magnitude_score = if vol_mean > 1e-10 {
+                let relative_vol = volume[i] / vol_mean;
+                // Moderate volume (0.8-1.2 ratio) gets highest score
+                // Very high or very low volume reduces quality
+                if relative_vol >= 0.8 && relative_vol <= 1.2 {
+                    100.0
+                } else if relative_vol > 1.2 {
+                    (100.0 - (relative_vol - 1.2) * 25.0).max(30.0)
+                } else {
+                    (100.0 - (0.8 - relative_vol) * 100.0).max(30.0)
+                }
+            } else {
+                50.0
+            };
+
+            // Combine factors with weights
+            // Consistency: 40%, Confirmation: 35%, Magnitude: 25%
+            quality_score[i] = consistency_score * 0.40 + confirmation_score * 0.35 + magnitude_score * 0.25;
+
+            // Generate reliability signal
+            if quality_score[i] > 70.0 {
+                reliability_signal[i] = 1.0; // High quality
+            } else if quality_score[i] < 30.0 {
+                reliability_signal[i] = -1.0; // Low quality
+            }
+        }
+
+        (quality_score, reliability_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeQuality {
+    fn name(&self) -> &str {
+        "Volume Quality"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (quality, signal) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::dual(quality, signal))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4881,5 +5650,490 @@ mod tests {
         // VolumeZScore
         assert!(VolumeZScore::new(9).is_err());
         assert!(VolumeZScore::new(10).is_ok());
+    }
+
+    // =========================================================================
+    // Tests for 6 NEW volume indicators (VolumeRank, VolumePercentile,
+    // VolumeRatio, VolumeConcentration, VolumeBias, VolumeQuality)
+    // =========================================================================
+
+    #[test]
+    fn test_volume_rank() {
+        let (_, _, _, volume) = make_test_data();
+        let vr = VolumeRank::new(10).unwrap();
+        let (rank, signal) = vr.calculate(&volume);
+
+        assert_eq!(rank.len(), volume.len());
+        assert_eq!(signal.len(), volume.len());
+        // Rank should be between 0 and 100
+        assert!(rank.iter().all(|&r| r >= 0.0 && r <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_rank_high_volume() {
+        // Create volume data with increasing values
+        let volume: Vec<f64> = (0..25).map(|i| 1000.0 + i as f64 * 100.0).collect();
+
+        let vr = VolumeRank::new(10).unwrap();
+        let (rank, signal) = vr.calculate(&volume);
+
+        // Last values should have high rank (close to 100)
+        assert!(rank[20] > 80.0,
+            "rank[20] = {} should be > 80 for highest volume", rank[20]);
+        assert_eq!(signal[20], 1.0); // High rank signal
+    }
+
+    #[test]
+    fn test_volume_rank_low_volume() {
+        // Create volume data with spike followed by low volume
+        let mut volume = vec![1000.0; 25];
+        for i in 0..15 {
+            volume[i] = 2000.0 + i as f64 * 50.0; // Higher early volumes
+        }
+        volume[20] = 500.0; // Low volume
+
+        let vr = VolumeRank::new(10).unwrap();
+        let (rank, signal) = vr.calculate(&volume);
+
+        // Low volume should have low rank
+        assert!(rank[20] < 20.0,
+            "rank[20] = {} should be < 20 for low volume", rank[20]);
+        assert_eq!(signal[20], -1.0); // Low rank signal
+    }
+
+    #[test]
+    fn test_volume_rank_validation() {
+        assert!(VolumeRank::new(9).is_err()); // period < 10
+        assert!(VolumeRank::new(10).is_ok());
+    }
+
+    #[test]
+    fn test_volume_percentile() {
+        let (_, _, _, volume) = make_test_data();
+        let vp = VolumePercentile::new(10, 3).unwrap();
+        let (percentile, state) = vp.calculate(&volume);
+
+        assert_eq!(percentile.len(), volume.len());
+        assert_eq!(state.len(), volume.len());
+        // Percentile should be between 0 and 100
+        assert!(percentile.iter().all(|&p| p >= 0.0 && p <= 100.0));
+        // State should be -1, 0, or 1
+        assert!(state.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_percentile_with_period() {
+        let (_, _, _, volume) = make_test_data();
+        let vp = VolumePercentile::with_period(10).unwrap();
+        let (percentile, _) = vp.calculate(&volume);
+
+        assert_eq!(percentile.len(), volume.len());
+    }
+
+    #[test]
+    fn test_volume_percentile_extreme_high() {
+        // Create volume data with a spike
+        let mut volume = vec![1000.0; 20];
+        volume[15] = 5000.0; // Extreme high
+
+        let vp = VolumePercentile::new(10, 1).unwrap();
+        let (percentile, state) = vp.calculate(&volume);
+
+        // Spike should have high percentile
+        assert!(percentile[15] > 90.0,
+            "percentile[15] = {} should be > 90 for extreme high", percentile[15]);
+        assert_eq!(state[15], 1.0);
+    }
+
+    #[test]
+    fn test_volume_percentile_extreme_low() {
+        // Create volume data with a dip
+        let mut volume = vec![1000.0; 20];
+        volume[15] = 100.0; // Extreme low
+
+        let vp = VolumePercentile::new(10, 1).unwrap();
+        let (percentile, state) = vp.calculate(&volume);
+
+        // Dip should have low percentile
+        assert!(percentile[15] < 10.0,
+            "percentile[15] = {} should be < 10 for extreme low", percentile[15]);
+        assert_eq!(state[15], -1.0);
+    }
+
+    #[test]
+    fn test_volume_percentile_validation() {
+        assert!(VolumePercentile::new(9, 3).is_err()); // period < 10
+        assert!(VolumePercentile::new(10, 0).is_err()); // smoothing < 1
+        assert!(VolumePercentile::new(10, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_ratio() {
+        let (_, _, close, volume) = make_test_data();
+        let vr = VolumeRatio::new(10, 3).unwrap();
+        let (ratio, ratio_index, dominance) = vr.calculate(&close, &volume);
+
+        assert_eq!(ratio.len(), close.len());
+        assert_eq!(ratio_index.len(), close.len());
+        assert_eq!(dominance.len(), close.len());
+        // Ratio index should be between 0 and 100
+        assert!(ratio_index.iter().all(|&r| r >= 0.0 && r <= 100.0));
+        // Dominance should be -1, 0, or 1
+        assert!(dominance.iter().all(|&d| d == -1.0 || d == 0.0 || d == 1.0));
+    }
+
+    #[test]
+    fn test_volume_ratio_with_period() {
+        let (_, _, close, volume) = make_test_data();
+        let vr = VolumeRatio::with_period(10).unwrap();
+        let (ratio, _, _) = vr.calculate(&close, &volume);
+
+        assert_eq!(ratio.len(), close.len());
+    }
+
+    #[test]
+    fn test_volume_ratio_buying_dominance() {
+        // All prices going up = all up volume
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 1.0).collect();
+        let volume = vec![1000.0; 25];
+
+        let vr = VolumeRatio::new(10, 1).unwrap();
+        let (ratio, ratio_index, dominance) = vr.calculate(&close, &volume);
+
+        // Should show buying dominance
+        assert!(ratio[20] > 5.0,
+            "ratio[20] = {} should be high for all up moves", ratio[20]);
+        assert!(ratio_index[20] > 60.0,
+            "ratio_index[20] = {} should be > 60 for buying dominance", ratio_index[20]);
+        assert_eq!(dominance[20], 1.0);
+    }
+
+    #[test]
+    fn test_volume_ratio_selling_dominance() {
+        // All prices going down = all down volume
+        let close: Vec<f64> = (0..25).map(|i| 150.0 - i as f64 * 1.0).collect();
+        let volume = vec![1000.0; 25];
+
+        let vr = VolumeRatio::new(10, 1).unwrap();
+        let (ratio, ratio_index, dominance) = vr.calculate(&close, &volume);
+
+        // Should show selling dominance
+        assert!(ratio[20] < 0.2,
+            "ratio[20] = {} should be low for all down moves", ratio[20]);
+        assert!(ratio_index[20] < 40.0,
+            "ratio_index[20] = {} should be < 40 for selling dominance", ratio_index[20]);
+        assert_eq!(dominance[20], -1.0);
+    }
+
+    #[test]
+    fn test_volume_ratio_validation() {
+        assert!(VolumeRatio::new(4, 3).is_err()); // period < 5
+        assert!(VolumeRatio::new(5, 0).is_err()); // smoothing < 1
+        assert!(VolumeRatio::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_concentration() {
+        let (high, low, close, volume) = make_test_data();
+        let vc = VolumeConcentration::new(10, 5).unwrap();
+        let (concentration, signal) = vc.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(concentration.len(), close.len());
+        assert_eq!(signal.len(), close.len());
+        // Concentration should be between 0 and 100
+        assert!(concentration.iter().all(|&c| c >= 0.0 && c <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_concentration_with_period() {
+        let (high, low, close, volume) = make_test_data();
+        let vc = VolumeConcentration::with_period(10).unwrap();
+        let (concentration, _) = vc.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(concentration.len(), close.len());
+    }
+
+    #[test]
+    fn test_volume_concentration_high() {
+        // Prices very close together = high concentration
+        let high = vec![101.0; 20];
+        let low = vec![99.0; 20];
+        let close = vec![100.0; 20];
+        let volume = vec![1000.0; 20];
+
+        let vc = VolumeConcentration::new(10, 5).unwrap();
+        let (concentration, signal) = vc.calculate(&high, &low, &close, &volume);
+
+        // Should show high concentration
+        assert!(concentration[15] > 70.0,
+            "concentration[15] = {} should be > 70 for concentrated volume", concentration[15]);
+        assert_eq!(signal[15], 1.0);
+    }
+
+    #[test]
+    fn test_volume_concentration_low() {
+        // Prices spread out with equal volume = low concentration
+        let high: Vec<f64> = (0..20).map(|i| 100.0 + i as f64 * 10.0 + 5.0).collect();
+        let low: Vec<f64> = (0..20).map(|i| 100.0 + i as f64 * 10.0 - 5.0).collect();
+        let close: Vec<f64> = (0..20).map(|i| 100.0 + i as f64 * 10.0).collect();
+        let volume = vec![1000.0; 20];
+
+        let vc = VolumeConcentration::new(10, 5).unwrap();
+        let (concentration, signal) = vc.calculate(&high, &low, &close, &volume);
+
+        // Should show lower concentration
+        assert!(concentration[15] < 50.0,
+            "concentration[15] = {} should be < 50 for dispersed volume", concentration[15]);
+    }
+
+    #[test]
+    fn test_volume_concentration_validation() {
+        assert!(VolumeConcentration::new(4, 5).is_err()); // period < 5
+        assert!(VolumeConcentration::new(5, 2).is_err()); // num_bins < 3
+        assert!(VolumeConcentration::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_bias() {
+        let (_, _, close, volume) = make_test_data();
+        let vb = VolumeBias::new(10, 3).unwrap();
+        let (bias_value, bias_strength, bias_signal) = vb.calculate(&close, &volume);
+
+        assert_eq!(bias_value.len(), close.len());
+        assert_eq!(bias_strength.len(), close.len());
+        assert_eq!(bias_signal.len(), close.len());
+        // Bias value should be between -100 and 100
+        assert!(bias_value.iter().all(|&b| b >= -100.0 && b <= 100.0));
+        // Bias strength should be >= 0
+        assert!(bias_strength.iter().all(|&s| s >= 0.0));
+        // Signal should be -1, 0, or 1
+        assert!(bias_signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_bias_with_period() {
+        let (_, _, close, volume) = make_test_data();
+        let vb = VolumeBias::with_period(10).unwrap();
+        let (bias, _, _) = vb.calculate(&close, &volume);
+
+        assert_eq!(bias.len(), close.len());
+    }
+
+    #[test]
+    fn test_volume_bias_bullish() {
+        // Uptrend with increasing volume = bullish bias
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 1000.0 + i as f64 * 100.0).collect();
+
+        let vb = VolumeBias::new(10, 1).unwrap();
+        let (bias_value, _, bias_signal) = vb.calculate(&close, &volume);
+
+        // Should show bullish bias
+        assert!(bias_value[20] > 10.0,
+            "bias_value[20] = {} should be > 10 for bullish bias", bias_value[20]);
+        assert_eq!(bias_signal[20], 1.0);
+    }
+
+    #[test]
+    fn test_volume_bias_bearish() {
+        // Downtrend with increasing volume = bearish bias
+        let close: Vec<f64> = (0..25).map(|i| 150.0 - i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 1000.0 + i as f64 * 100.0).collect();
+
+        let vb = VolumeBias::new(10, 1).unwrap();
+        let (bias_value, _, bias_signal) = vb.calculate(&close, &volume);
+
+        // Should show bearish bias
+        assert!(bias_value[20] < -10.0,
+            "bias_value[20] = {} should be < -10 for bearish bias", bias_value[20]);
+        assert_eq!(bias_signal[20], -1.0);
+    }
+
+    #[test]
+    fn test_volume_bias_validation() {
+        assert!(VolumeBias::new(4, 3).is_err()); // period < 5
+        assert!(VolumeBias::new(5, 0).is_err()); // smoothing < 1
+        assert!(VolumeBias::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_quality() {
+        let (_, _, close, volume) = make_test_data();
+        let vq = VolumeQuality::new(10, 0.5).unwrap();
+        let (quality, signal) = vq.calculate(&close, &volume);
+
+        assert_eq!(quality.len(), close.len());
+        assert_eq!(signal.len(), close.len());
+        // Quality should be between 0 and 100
+        assert!(quality.iter().all(|&q| q >= 0.0 && q <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_quality_with_period() {
+        let (_, _, close, volume) = make_test_data();
+        let vq = VolumeQuality::with_period(10).unwrap();
+        let (quality, _) = vq.calculate(&close, &volume);
+
+        assert_eq!(quality.len(), close.len());
+    }
+
+    #[test]
+    fn test_volume_quality_consistent_volume() {
+        // Consistent volume with trending price = high quality
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 1.0).collect();
+        let volume = vec![1000.0; 25]; // Very consistent volume
+
+        let vq = VolumeQuality::new(10, 0.5).unwrap();
+        let (quality, signal) = vq.calculate(&close, &volume);
+
+        // Should show decent quality due to consistency
+        assert!(quality[20] > 50.0,
+            "quality[20] = {} should be > 50 for consistent volume", quality[20]);
+    }
+
+    #[test]
+    fn test_volume_quality_erratic_volume() {
+        // Erratic volume = lower quality
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + (i as f64 * 0.5).sin() * 5.0).collect();
+        let mut volume = vec![1000.0; 25];
+        for i in 0..25 {
+            volume[i] = if i % 2 == 0 { 500.0 } else { 2000.0 }; // Highly variable
+        }
+
+        let vq = VolumeQuality::new(10, 0.5).unwrap();
+        let (quality, _) = vq.calculate(&close, &volume);
+
+        // Quality should be moderate to low due to inconsistency
+        assert!(quality[20] < 70.0,
+            "quality[20] = {} should be < 70 for erratic volume", quality[20]);
+    }
+
+    #[test]
+    fn test_volume_quality_validation() {
+        assert!(VolumeQuality::new(9, 0.5).is_err()); // period < 10
+        assert!(VolumeQuality::new(10, -0.1).is_err()); // threshold < 0
+        assert!(VolumeQuality::new(10, 1.1).is_err()); // threshold > 1
+        assert!(VolumeQuality::new(10, 0.5).is_ok());
+    }
+
+    #[test]
+    fn test_six_new_indicators_technical_indicator_trait() {
+        let (high, low, close, volume) = make_test_data();
+
+        // Create OHLCVSeries for compute tests
+        let data = OHLCVSeries {
+            open: close.clone(),
+            high: high.clone(),
+            low: low.clone(),
+            close: close.clone(),
+            volume: volume.clone(),
+        };
+
+        // Test VolumeRank
+        let vr = VolumeRank::new(10).unwrap();
+        assert_eq!(vr.name(), "Volume Rank");
+        assert_eq!(vr.min_periods(), 11);
+        assert!(vr.compute(&data).is_ok());
+
+        // Test VolumePercentile
+        let vp = VolumePercentile::new(10, 3).unwrap();
+        assert_eq!(vp.name(), "Volume Percentile");
+        assert_eq!(vp.min_periods(), 11);
+        assert!(vp.compute(&data).is_ok());
+
+        // Test VolumeRatio
+        let vrat = VolumeRatio::new(10, 3).unwrap();
+        assert_eq!(vrat.name(), "Volume Ratio");
+        assert_eq!(vrat.min_periods(), 11);
+        assert_eq!(vrat.output_features(), 3);
+        assert!(vrat.compute(&data).is_ok());
+
+        // Test VolumeConcentration
+        let vc = VolumeConcentration::new(10, 5).unwrap();
+        assert_eq!(vc.name(), "Volume Concentration");
+        assert_eq!(vc.min_periods(), 11);
+        assert!(vc.compute(&data).is_ok());
+
+        // Test VolumeBias
+        let vb = VolumeBias::new(10, 3).unwrap();
+        assert_eq!(vb.name(), "Volume Bias");
+        assert_eq!(vb.min_periods(), 11);
+        assert_eq!(vb.output_features(), 3);
+        assert!(vb.compute(&data).is_ok());
+
+        // Test VolumeQuality
+        let vq = VolumeQuality::new(10, 0.5).unwrap();
+        assert_eq!(vq.name(), "Volume Quality");
+        assert_eq!(vq.min_periods(), 11);
+        assert!(vq.compute(&data).is_ok());
+    }
+
+    #[test]
+    fn test_six_new_indicators_insufficient_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0],
+            high: vec![102.0, 103.0],
+            low: vec![98.0, 99.0],
+            close: vec![100.0, 101.0],
+            volume: vec![1000.0, 1100.0],
+        };
+
+        // All should fail with insufficient data
+        let vr = VolumeRank::new(10).unwrap();
+        assert!(vr.compute(&short_data).is_err());
+
+        let vp = VolumePercentile::new(10, 3).unwrap();
+        assert!(vp.compute(&short_data).is_err());
+
+        let vrat = VolumeRatio::new(10, 3).unwrap();
+        assert!(vrat.compute(&short_data).is_err());
+
+        let vc = VolumeConcentration::new(10, 5).unwrap();
+        assert!(vc.compute(&short_data).is_err());
+
+        let vb = VolumeBias::new(10, 3).unwrap();
+        assert!(vb.compute(&short_data).is_err());
+
+        let vq = VolumeQuality::new(10, 0.5).unwrap();
+        assert!(vq.compute(&short_data).is_err());
+    }
+
+    #[test]
+    fn test_six_new_indicators_parameter_validation() {
+        // VolumeRank
+        assert!(VolumeRank::new(9).is_err());
+        assert!(VolumeRank::new(10).is_ok());
+
+        // VolumePercentile
+        assert!(VolumePercentile::new(9, 3).is_err());
+        assert!(VolumePercentile::new(10, 0).is_err());
+        assert!(VolumePercentile::new(10, 3).is_ok());
+
+        // VolumeRatio
+        assert!(VolumeRatio::new(4, 3).is_err());
+        assert!(VolumeRatio::new(5, 0).is_err());
+        assert!(VolumeRatio::new(5, 3).is_ok());
+
+        // VolumeConcentration
+        assert!(VolumeConcentration::new(4, 5).is_err());
+        assert!(VolumeConcentration::new(5, 2).is_err());
+        assert!(VolumeConcentration::new(5, 3).is_ok());
+
+        // VolumeBias
+        assert!(VolumeBias::new(4, 3).is_err());
+        assert!(VolumeBias::new(5, 0).is_err());
+        assert!(VolumeBias::new(5, 3).is_ok());
+
+        // VolumeQuality
+        assert!(VolumeQuality::new(9, 0.5).is_err());
+        assert!(VolumeQuality::new(10, -0.1).is_err());
+        assert!(VolumeQuality::new(10, 1.1).is_err());
+        assert!(VolumeQuality::new(10, 0.5).is_ok());
     }
 }
