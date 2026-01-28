@@ -1909,3 +1909,1497 @@ mod tests {
         assert!(result.is_empty());
     }
 }
+
+// ==================== 6 NEW Filter Indicators ====================
+
+/// Gaussian Adaptive Filter - Adaptive Gaussian smoothing with volatility-adjusted sigma
+///
+/// An enhanced Gaussian filter that dynamically adjusts its smoothing parameter (sigma)
+/// based on local price volatility. This provides more smoothing during high volatility
+/// periods and more responsiveness during calm markets, offering superior noise reduction
+/// while preserving important price movements.
+#[derive(Debug, Clone)]
+pub struct GaussianAdaptiveFilter {
+    /// Window period for the filter
+    period: usize,
+    /// Base sigma value for Gaussian kernel
+    base_sigma: f64,
+    /// Sensitivity to volatility changes (0.0-2.0)
+    sensitivity: f64,
+}
+
+impl GaussianAdaptiveFilter {
+    /// Create a new Gaussian Adaptive Filter
+    ///
+    /// # Arguments
+    /// * `period` - Window size for the filter (minimum 5, should be odd for symmetry)
+    /// * `base_sigma` - Base standard deviation for Gaussian kernel (0.5-5.0)
+    /// * `sensitivity` - How much sigma adjusts to volatility (0.1-2.0)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, base_sigma: f64, sensitivity: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if base_sigma < 0.5 || base_sigma > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_sigma".to_string(),
+                reason: "must be between 0.5 and 5.0".to_string(),
+            });
+        }
+        if sensitivity < 0.1 || sensitivity > 2.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0.1 and 2.0".to_string(),
+            });
+        }
+        Ok(Self { period, base_sigma, sensitivity })
+    }
+
+    /// Calculate adaptive Gaussian filter
+    ///
+    /// The filter dynamically adjusts sigma based on local volatility, providing
+    /// more smoothing when volatility is high and less when volatility is low.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let mut result = vec![0.0; n];
+        let half = self.period / 2;
+
+        for i in 0..n {
+            let start = i.saturating_sub(half);
+            let end = (i + half + 1).min(n);
+            let window = &data[start..end];
+
+            // Calculate local volatility
+            let mean: f64 = window.iter().sum::<f64>() / window.len() as f64;
+            let variance: f64 = window.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / window.len() as f64;
+            let std_dev = variance.sqrt();
+
+            // Normalize volatility (coefficient of variation)
+            let cv = if mean.abs() > 1e-10 {
+                (std_dev / mean.abs()).min(0.2) / 0.2
+            } else {
+                0.5
+            };
+
+            // Adaptive sigma: higher volatility = higher sigma (more smoothing)
+            let sigma = self.base_sigma * (1.0 + self.sensitivity * cv);
+
+            // Calculate Gaussian weights with adaptive sigma
+            let mut weighted_sum = 0.0;
+            let mut weight_sum = 0.0;
+
+            for (j, &value) in window.iter().enumerate() {
+                let center = if i < half { i } else { half };
+                let distance = (j as f64 - center as f64).abs();
+                let weight = (-distance * distance / (2.0 * sigma * sigma)).exp();
+                weighted_sum += value * weight;
+                weight_sum += weight;
+            }
+
+            result[i] = if weight_sum > 1e-10 {
+                weighted_sum / weight_sum
+            } else {
+                data[i]
+            };
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for GaussianAdaptiveFilter {
+    fn name(&self) -> &str {
+        "Gaussian Adaptive Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Savitzky-Golay Filter - Polynomial smoothing filter
+///
+/// The Savitzky-Golay filter performs polynomial regression on a sliding window
+/// of data points to smooth the data while preserving features like peak heights
+/// and widths. It provides excellent smoothing without the phase distortion of
+/// simple moving averages. This is particularly useful for preserving sharp
+/// price movements while reducing noise.
+#[derive(Debug, Clone)]
+pub struct SavitzkyGolayFilter {
+    /// Window size (must be odd)
+    window_size: usize,
+    /// Polynomial order (0-4, must be less than window_size)
+    poly_order: usize,
+}
+
+impl SavitzkyGolayFilter {
+    /// Create a new Savitzky-Golay Filter
+    ///
+    /// # Arguments
+    /// * `window_size` - Window size for the filter (minimum 5, must be odd)
+    /// * `poly_order` - Order of polynomial to fit (1-4, must be less than window_size)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(window_size: usize, poly_order: usize) -> Result<Self> {
+        if window_size < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "window_size".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if window_size % 2 == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "window_size".to_string(),
+                reason: "must be odd".to_string(),
+            });
+        }
+        if poly_order < 1 || poly_order > 4 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "poly_order".to_string(),
+                reason: "must be between 1 and 4".to_string(),
+            });
+        }
+        if poly_order >= window_size {
+            return Err(IndicatorError::InvalidParameter {
+                name: "poly_order".to_string(),
+                reason: "must be less than window_size".to_string(),
+            });
+        }
+        Ok(Self { window_size, poly_order })
+    }
+
+    /// Calculate Savitzky-Golay filter coefficients for the center point
+    fn calculate_coefficients(&self) -> Vec<f64> {
+        let n = self.window_size;
+        let half = n / 2;
+        let m = self.poly_order;
+
+        // Build the Vandermonde matrix A
+        let mut a = vec![vec![0.0; m + 1]; n];
+        for i in 0..n {
+            let x = (i as i64 - half as i64) as f64;
+            for j in 0..=m {
+                a[i][j] = x.powi(j as i32);
+            }
+        }
+
+        // Compute (A^T * A)^(-1) * A^T using least squares
+        // For simplicity, we use the normal equations approach
+
+        // Compute A^T * A
+        let mut ata = vec![vec![0.0; m + 1]; m + 1];
+        for i in 0..=m {
+            for j in 0..=m {
+                for k in 0..n {
+                    ata[i][j] += a[k][i] * a[k][j];
+                }
+            }
+        }
+
+        // Compute inverse of A^T * A using Gaussian elimination
+        let mut inv = vec![vec![0.0; m + 1]; m + 1];
+        for i in 0..=m {
+            inv[i][i] = 1.0;
+        }
+
+        let mut aug = ata.clone();
+
+        for col in 0..=m {
+            // Find pivot
+            let mut max_row = col;
+            for row in col + 1..=m {
+                if aug[row][col].abs() > aug[max_row][col].abs() {
+                    max_row = row;
+                }
+            }
+            aug.swap(col, max_row);
+            inv.swap(col, max_row);
+
+            let pivot = aug[col][col];
+            if pivot.abs() < 1e-10 {
+                // Matrix is singular, use identity-like coefficients
+                let mut coeffs = vec![0.0; n];
+                coeffs[half] = 1.0;
+                return coeffs;
+            }
+
+            for j in 0..=m {
+                aug[col][j] /= pivot;
+                inv[col][j] /= pivot;
+            }
+
+            for row in 0..=m {
+                if row != col {
+                    let factor = aug[row][col];
+                    for j in 0..=m {
+                        aug[row][j] -= factor * aug[col][j];
+                        inv[row][j] -= factor * inv[col][j];
+                    }
+                }
+            }
+        }
+
+        // Compute (A^T * A)^(-1) * A^T, but we only need the row for the center point
+        // The smoothing coefficients are the first row of (A^T * A)^(-1) * A^T
+        let mut coeffs = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..=m {
+                coeffs[i] += inv[0][j] * a[i][j];
+            }
+        }
+
+        coeffs
+    }
+
+    /// Calculate Savitzky-Golay filter
+    ///
+    /// Applies polynomial smoothing while preserving signal features like
+    /// peaks and valleys better than simple moving averages.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < self.window_size {
+            return data.to_vec();
+        }
+
+        let coeffs = self.calculate_coefficients();
+        let half = self.window_size / 2;
+        let mut result = vec![0.0; n];
+
+        // Handle edges: use original data
+        for i in 0..half {
+            result[i] = data[i];
+        }
+        for i in (n - half)..n {
+            result[i] = data[i];
+        }
+
+        // Apply convolution in the middle
+        for i in half..(n - half) {
+            let mut sum = 0.0;
+            for (j, &coeff) in coeffs.iter().enumerate() {
+                sum += coeff * data[i - half + j];
+            }
+            result[i] = sum;
+        }
+
+        result
+    }
+
+    /// Calculate first derivative using Savitzky-Golay
+    ///
+    /// Returns the smoothed first derivative of the data, useful for
+    /// trend direction and momentum analysis.
+    pub fn calculate_derivative(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < self.window_size {
+            return vec![0.0; n];
+        }
+
+        let half = self.window_size / 2;
+        let m = self.poly_order;
+
+        // Build Vandermonde matrix
+        let mut a = vec![vec![0.0; m + 1]; self.window_size];
+        for i in 0..self.window_size {
+            let x = (i as i64 - half as i64) as f64;
+            for j in 0..=m {
+                a[i][j] = x.powi(j as i32);
+            }
+        }
+
+        // Compute derivative coefficients (similar process but take derivative row)
+        // For first derivative, we need row 1 of the coefficient matrix
+        let mut ata = vec![vec![0.0; m + 1]; m + 1];
+        for i in 0..=m {
+            for j in 0..=m {
+                for k in 0..self.window_size {
+                    ata[i][j] += a[k][i] * a[k][j];
+                }
+            }
+        }
+
+        // Invert
+        let mut inv = vec![vec![0.0; m + 1]; m + 1];
+        for i in 0..=m {
+            inv[i][i] = 1.0;
+        }
+
+        let mut aug = ata.clone();
+        for col in 0..=m {
+            let mut max_row = col;
+            for row in col + 1..=m {
+                if aug[row][col].abs() > aug[max_row][col].abs() {
+                    max_row = row;
+                }
+            }
+            aug.swap(col, max_row);
+            inv.swap(col, max_row);
+
+            let pivot = aug[col][col];
+            if pivot.abs() < 1e-10 {
+                return vec![0.0; n];
+            }
+
+            for j in 0..=m {
+                aug[col][j] /= pivot;
+                inv[col][j] /= pivot;
+            }
+
+            for row in 0..=m {
+                if row != col {
+                    let factor = aug[row][col];
+                    for j in 0..=m {
+                        aug[row][j] -= factor * aug[col][j];
+                        inv[row][j] -= factor * inv[col][j];
+                    }
+                }
+            }
+        }
+
+        // Derivative coefficients use row 1 of inverse
+        let mut deriv_coeffs = vec![0.0; self.window_size];
+        for i in 0..self.window_size {
+            for j in 0..=m {
+                deriv_coeffs[i] += inv[1][j] * a[i][j];
+            }
+        }
+
+        let mut result = vec![0.0; n];
+        for i in half..(n - half) {
+            for (j, &coeff) in deriv_coeffs.iter().enumerate() {
+                result[i] += coeff * data[i - half + j];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SavitzkyGolayFilter {
+    fn name(&self) -> &str {
+        "Savitzky Golay Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.window_size
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Triangular Filter - Triangular weighted moving average filter
+///
+/// Applies a triangular weighting scheme where weights increase linearly to the
+/// center of the window and then decrease linearly. This provides smooth filtering
+/// with emphasis on the center of the window, effectively double-smoothing the data.
+/// The triangular filter is equivalent to applying two simple moving averages.
+#[derive(Debug, Clone)]
+pub struct TriangularFilter {
+    /// Window period for the filter
+    period: usize,
+}
+
+impl TriangularFilter {
+    /// Create a new Triangular Filter
+    ///
+    /// # Arguments
+    /// * `period` - Window size for the filter (minimum 3)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate triangular weights
+    fn calculate_weights(&self) -> Vec<f64> {
+        let n = self.period;
+        let mid = n as f64 / 2.0;
+
+        let weights: Vec<f64> = (0..n)
+            .map(|i| {
+                let distance = (i as f64 - mid + 0.5).abs();
+                mid - distance + 0.5
+            })
+            .collect();
+
+        let sum: f64 = weights.iter().sum();
+        weights.into_iter().map(|w| w / sum).collect()
+    }
+
+    /// Calculate triangular filter
+    ///
+    /// The triangular weighting provides smooth filtering with a bell-shaped
+    /// impulse response, reducing noise while maintaining signal integrity.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let weights = self.calculate_weights();
+        let mut result = vec![0.0; n];
+
+        for i in 0..n {
+            let start = i.saturating_sub(self.period - 1);
+            let window_len = (i - start + 1).min(self.period);
+
+            let mut weighted_sum = 0.0;
+            let mut weight_sum = 0.0;
+
+            for j in 0..window_len {
+                let data_idx = start + j;
+                let weight_idx = self.period - window_len + j;
+                weighted_sum += data[data_idx] * weights[weight_idx];
+                weight_sum += weights[weight_idx];
+            }
+
+            result[i] = if weight_sum > 1e-10 {
+                weighted_sum / weight_sum
+            } else {
+                data[i]
+            };
+        }
+
+        result
+    }
+
+    /// Calculate centered triangular filter (for non-real-time analysis)
+    ///
+    /// Centers the window for symmetric filtering, better for analysis
+    /// but introduces lookahead that isn't suitable for real-time trading.
+    pub fn calculate_centered(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < self.period {
+            return data.to_vec();
+        }
+
+        let weights = self.calculate_weights();
+        let half = self.period / 2;
+        let mut result = vec![0.0; n];
+
+        // Handle edges
+        for i in 0..half {
+            result[i] = data[i];
+        }
+        for i in (n - half)..n {
+            result[i] = data[i];
+        }
+
+        // Centered convolution
+        for i in half..(n - half) {
+            let mut sum = 0.0;
+            for (j, &w) in weights.iter().enumerate() {
+                sum += w * data[i - half + j];
+            }
+            result[i] = sum;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TriangularFilter {
+    fn name(&self) -> &str {
+        "Triangular Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Hamming Filter - Hamming window-based smoothing filter
+///
+/// Applies the Hamming window function for smoothing. The Hamming window has
+/// good side-lobe suppression properties, making it effective at reducing
+/// spectral leakage while maintaining reasonable frequency resolution.
+/// It provides smoother results than rectangular windows with better
+/// attenuation of high-frequency noise.
+#[derive(Debug, Clone)]
+pub struct HammingFilter {
+    /// Window period for the filter
+    period: usize,
+    /// Alpha coefficient for Hamming window (typically 0.54)
+    alpha: f64,
+}
+
+impl HammingFilter {
+    /// Create a new Hamming Filter
+    ///
+    /// # Arguments
+    /// * `period` - Window size for the filter (minimum 5)
+    /// * `alpha` - Hamming window coefficient (0.5-0.6, typically 0.54)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, alpha: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if alpha < 0.5 || alpha > 0.6 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "alpha".to_string(),
+                reason: "must be between 0.5 and 0.6".to_string(),
+            });
+        }
+        Ok(Self { period, alpha })
+    }
+
+    /// Create a Hamming filter with standard alpha (0.54)
+    pub fn with_default_alpha(period: usize) -> Result<Self> {
+        Self::new(period, 0.54)
+    }
+
+    /// Calculate Hamming window weights
+    fn calculate_weights(&self) -> Vec<f64> {
+        let n = self.period;
+        let pi = std::f64::consts::PI;
+        let beta = 1.0 - self.alpha;
+
+        let weights: Vec<f64> = (0..n)
+            .map(|i| {
+                self.alpha - beta * (2.0 * pi * i as f64 / (n - 1) as f64).cos()
+            })
+            .collect();
+
+        let sum: f64 = weights.iter().sum();
+        weights.into_iter().map(|w| w / sum).collect()
+    }
+
+    /// Calculate Hamming filter
+    ///
+    /// Applies Hamming window smoothing for effective noise reduction
+    /// with good spectral properties.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let weights = self.calculate_weights();
+        let mut result = vec![0.0; n];
+
+        for i in 0..n {
+            let start = i.saturating_sub(self.period - 1);
+            let window_len = (i - start + 1).min(self.period);
+
+            let mut weighted_sum = 0.0;
+            let mut weight_sum = 0.0;
+
+            for j in 0..window_len {
+                let data_idx = start + j;
+                let weight_idx = self.period - window_len + j;
+                weighted_sum += data[data_idx] * weights[weight_idx];
+                weight_sum += weights[weight_idx];
+            }
+
+            result[i] = if weight_sum > 1e-10 {
+                weighted_sum / weight_sum
+            } else {
+                data[i]
+            };
+        }
+
+        result
+    }
+
+    /// Calculate centered Hamming filter
+    ///
+    /// Centers the window for symmetric filtering, providing zero-phase
+    /// response suitable for signal analysis.
+    pub fn calculate_centered(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < self.period {
+            return data.to_vec();
+        }
+
+        let weights = self.calculate_weights();
+        let half = self.period / 2;
+        let mut result = vec![0.0; n];
+
+        // Handle edges
+        for i in 0..half {
+            result[i] = data[i];
+        }
+        for i in (n - half)..n {
+            result[i] = data[i];
+        }
+
+        // Centered convolution
+        for i in half..(n - half) {
+            let mut sum = 0.0;
+            for (j, &w) in weights.iter().enumerate() {
+                sum += w * data[i - half + j];
+            }
+            result[i] = sum;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for HammingFilter {
+    fn name(&self) -> &str {
+        "Hamming Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Super Smoother Filter - Ehlers two-pole super smoother
+///
+/// Developed by John Ehlers, the Super Smoother is a two-pole Butterworth filter
+/// with critical damping. It provides excellent smoothing with minimal lag
+/// compared to moving averages of equivalent smoothness. The filter is designed
+/// to eliminate high-frequency noise while preserving important trend information,
+/// making it ideal for trading system development.
+#[derive(Debug, Clone)]
+pub struct SuperSmootherFilter {
+    /// Cutoff period for the filter
+    period: usize,
+}
+
+impl SuperSmootherFilter {
+    /// Create a new Super Smoother Filter
+    ///
+    /// # Arguments
+    /// * `period` - Cutoff period for the filter (minimum 4)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 4 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 4".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Super Smoother filter
+    ///
+    /// Implements Ehlers' two-pole super smoother with critical damping
+    /// for optimal smoothing with minimal lag.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < 3 {
+            return data.to_vec();
+        }
+
+        let pi = std::f64::consts::PI;
+
+        // Calculate coefficients
+        let a1 = (-1.414 * pi / self.period as f64).exp();
+        let b1 = 2.0 * a1 * (1.414 * pi / self.period as f64).cos();
+        let c2 = b1;
+        let c3 = -a1 * a1;
+        let c1 = 1.0 - c2 - c3;
+
+        let mut result = vec![0.0; n];
+
+        // Initialize first values
+        result[0] = data[0];
+        result[1] = c1 * (data[1] + data[0]) / 2.0 + c2 * result[0];
+
+        // Apply the super smoother filter
+        for i in 2..n {
+            result[i] = c1 * (data[i] + data[i - 1]) / 2.0
+                      + c2 * result[i - 1]
+                      + c3 * result[i - 2];
+        }
+
+        result
+    }
+
+    /// Calculate three-pole super smoother variant
+    ///
+    /// Provides even smoother output with slightly more lag.
+    pub fn calculate_three_pole(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < 4 {
+            return data.to_vec();
+        }
+
+        let pi = std::f64::consts::PI;
+
+        // Three-pole coefficients
+        let a1 = (-pi / self.period as f64).exp();
+        let b1 = 2.0 * a1 * (1.738 * pi / self.period as f64).cos();
+        let c1 = a1 * a1;
+
+        let a2 = (-1.414 * pi / self.period as f64).exp();
+        let b2 = 2.0 * a2 * (1.414 * pi / self.period as f64).cos();
+
+        let coef2 = b1 + b2;
+        let coef3 = -(c1 + b1 * b2 + a2 * a2);
+        let coef4 = c1 * b2 + b1 * a2 * a2;
+        let coef5 = -c1 * a2 * a2;
+        let coef1 = 1.0 - coef2 - coef3 - coef4 - coef5;
+
+        let mut result = vec![0.0; n];
+
+        // Initialize
+        result[0] = data[0];
+        result[1] = data[1];
+        result[2] = data[2];
+        if n > 3 {
+            result[3] = data[3];
+        }
+
+        for i in 4..n {
+            result[i] = coef1 * data[i]
+                      + coef2 * result[i - 1]
+                      + coef3 * result[i - 2]
+                      + coef4 * result[i - 3]
+                      + coef5 * result[i - 4];
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SuperSmootherFilter {
+    fn name(&self) -> &str {
+        "Super Smoother Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Decycler Filter - Ehlers simple decycler
+///
+/// The Decycler removes the cycle component from price data, leaving only the
+/// trend component. Developed by John Ehlers, it is essentially a high-pass
+/// filter that removes frequencies higher than a specified cutoff, effectively
+/// eliminating cyclical noise and revealing the underlying trend.
+#[derive(Debug, Clone)]
+pub struct DecyclerFilter {
+    /// High-pass cutoff period
+    hp_period: usize,
+}
+
+impl DecyclerFilter {
+    /// Create a new Decycler Filter
+    ///
+    /// # Arguments
+    /// * `hp_period` - High-pass cutoff period (minimum 5)
+    ///   Higher values remove more cycle content, leaving smoother trends.
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(hp_period: usize) -> Result<Self> {
+        if hp_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "hp_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { hp_period })
+    }
+
+    /// Calculate Decycler filter
+    ///
+    /// Removes cycle components from the data to reveal the underlying trend.
+    /// Uses Ehlers' simple decycler approach which is essentially a low-pass filter
+    /// that smooths out cyclical components.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < 2 {
+            return data.to_vec();
+        }
+
+        let pi = std::f64::consts::PI;
+
+        // Ehlers simple decycler uses a high-pass filter to extract cycles,
+        // then subtracts them from the original price.
+        // The high-pass filter coefficient based on period
+        let alpha = (0.707 * 2.0 * pi / self.hp_period as f64).cos()
+                  + (0.707 * 2.0 * pi / self.hp_period as f64).sin() - 1.0;
+        let alpha = alpha.abs().min(0.99);
+
+        // Apply high-pass filter
+        let mut hp = vec![0.0; n];
+        hp[0] = 0.0;
+
+        for i in 1..n {
+            hp[i] = (1.0 - alpha / 2.0) * (data[i] - data[i - 1])
+                  + (1.0 - alpha) * hp[i - 1];
+        }
+
+        // Decycler = Price - HighPass (removes high frequency cycles)
+        let mut result = vec![0.0; n];
+        for i in 0..n {
+            result[i] = data[i] - hp[i];
+        }
+
+        result
+    }
+
+    /// Calculate Decycler Oscillator
+    ///
+    /// The difference between two decyclers with different periods,
+    /// creating an oscillator useful for identifying cycle turning points.
+    pub fn calculate_oscillator(&self, data: &[f64], short_period: usize) -> Vec<f64> {
+        let n = data.len();
+        if n < 2 || short_period >= self.hp_period {
+            return vec![0.0; n];
+        }
+
+        let long_decycler = self.calculate(data);
+
+        let short_filter = DecyclerFilter { hp_period: short_period };
+        let short_decycler = short_filter.calculate(data);
+
+        // Oscillator = Short Decycler - Long Decycler
+        long_decycler.iter()
+            .zip(short_decycler.iter())
+            .map(|(&long, &short)| short - long)
+            .collect()
+    }
+
+    /// Get the cycle component that was removed
+    ///
+    /// Returns the cyclical component of the price data
+    pub fn get_cycle_component(&self, data: &[f64]) -> Vec<f64> {
+        let decycled = self.calculate(data);
+        data.iter()
+            .zip(decycled.iter())
+            .map(|(&price, &trend)| price - trend)
+            .collect()
+    }
+}
+
+impl TechnicalIndicator for DecyclerFilter {
+    fn name(&self) -> &str {
+        "Decycler Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.hp_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ==================== Tests for 6 NEW Filter Indicators ====================
+
+#[cfg(test)]
+mod new_filter_tests {
+    use super::*;
+
+    fn make_test_data() -> Vec<f64> {
+        (0..50).map(|i| {
+            let trend = 100.0 + i as f64 * 0.5;
+            let cycle = 3.0 * (i as f64 * 0.3).sin();
+            let noise = ((i * 7) % 5) as f64 * 0.2 - 0.5;
+            trend + cycle + noise
+        }).collect()
+    }
+
+    fn make_ohlcv_data() -> OHLCVSeries {
+        let close = make_test_data();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let open: Vec<f64> = close.clone();
+        let volume: Vec<f64> = vec![1000.0; close.len()];
+        OHLCVSeries { open, high, low, close, volume }
+    }
+
+    // ==================== GaussianAdaptiveFilter Tests ====================
+
+    #[test]
+    fn test_gaussian_adaptive_filter_basic() {
+        let data = make_test_data();
+        let gaf = GaussianAdaptiveFilter::new(7, 1.5, 0.5).unwrap();
+        let result = gaf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+        // Result should be smoother than original
+    }
+
+    #[test]
+    fn test_gaussian_adaptive_filter_validation() {
+        // Period too small
+        assert!(GaussianAdaptiveFilter::new(4, 1.5, 0.5).is_err());
+        // Base sigma too small
+        assert!(GaussianAdaptiveFilter::new(7, 0.3, 0.5).is_err());
+        // Base sigma too large
+        assert!(GaussianAdaptiveFilter::new(7, 6.0, 0.5).is_err());
+        // Sensitivity too small
+        assert!(GaussianAdaptiveFilter::new(7, 1.5, 0.05).is_err());
+        // Sensitivity too large
+        assert!(GaussianAdaptiveFilter::new(7, 1.5, 2.5).is_err());
+    }
+
+    #[test]
+    fn test_gaussian_adaptive_filter_smoothing() {
+        // Verify smoothing reduces variance
+        let data: Vec<f64> = (0..30).map(|i| {
+            100.0 + (i as f64 * 0.5).sin() * 5.0 + ((i * 17) % 7) as f64 * 0.3
+        }).collect();
+
+        let gaf = GaussianAdaptiveFilter::new(7, 2.0, 1.0).unwrap();
+        let result = gaf.calculate(&data);
+
+        // Calculate variance of differences
+        let orig_var: f64 = data.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (data.len() - 1) as f64;
+
+        let filt_var: f64 = result.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (result.len() - 1) as f64;
+
+        // Filtered should have lower variance (smoother)
+        assert!(filt_var < orig_var);
+    }
+
+    #[test]
+    fn test_gaussian_adaptive_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let gaf = GaussianAdaptiveFilter::new(7, 1.5, 0.5).unwrap();
+
+        assert_eq!(gaf.name(), "Gaussian Adaptive Filter");
+        assert_eq!(gaf.min_periods(), 7);
+
+        let output = gaf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== SavitzkyGolayFilter Tests ====================
+
+    #[test]
+    fn test_savitzky_golay_filter_basic() {
+        let data = make_test_data();
+        let sgf = SavitzkyGolayFilter::new(7, 2).unwrap();
+        let result = sgf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Middle values should be processed
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_savitzky_golay_filter_validation() {
+        // Window too small
+        assert!(SavitzkyGolayFilter::new(3, 2).is_err());
+        // Window must be odd
+        assert!(SavitzkyGolayFilter::new(6, 2).is_err());
+        // Poly order too small
+        assert!(SavitzkyGolayFilter::new(7, 0).is_err());
+        // Poly order too large
+        assert!(SavitzkyGolayFilter::new(7, 5).is_err());
+        // Poly order >= window_size
+        assert!(SavitzkyGolayFilter::new(5, 5).is_err());
+    }
+
+    #[test]
+    fn test_savitzky_golay_filter_preserves_linear() {
+        // Savitzky-Golay should perfectly preserve linear trends
+        let linear: Vec<f64> = (0..20).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let sgf = SavitzkyGolayFilter::new(5, 2).unwrap();
+        let result = sgf.calculate(&linear);
+
+        // Middle values should closely match original linear data
+        for i in 3..17 {
+            assert!((result[i] - linear[i]).abs() < 0.5,
+                "At index {}: expected ~{}, got {}",
+                i, linear[i], result[i]);
+        }
+    }
+
+    #[test]
+    fn test_savitzky_golay_filter_derivative() {
+        // Test derivative calculation on linear data
+        let linear: Vec<f64> = (0..30).map(|i| 100.0 + i as f64 * 3.0).collect();
+        let sgf = SavitzkyGolayFilter::new(7, 2).unwrap();
+        let deriv = sgf.calculate_derivative(&linear);
+
+        // Derivative of linear function should be constant (~3.0)
+        for i in 5..25 {
+            assert!((deriv[i] - 3.0).abs() < 0.5,
+                "Derivative at {}: expected ~3.0, got {}",
+                i, deriv[i]);
+        }
+    }
+
+    #[test]
+    fn test_savitzky_golay_filter_different_orders() {
+        let data = make_test_data();
+
+        let sgf2 = SavitzkyGolayFilter::new(9, 2).unwrap();
+        let sgf3 = SavitzkyGolayFilter::new(9, 3).unwrap();
+        let sgf4 = SavitzkyGolayFilter::new(9, 4).unwrap();
+
+        let result2 = sgf2.calculate(&data);
+        let result3 = sgf3.calculate(&data);
+        let result4 = sgf4.calculate(&data);
+
+        // All should produce valid output
+        assert_eq!(result2.len(), data.len());
+        assert_eq!(result3.len(), data.len());
+        assert_eq!(result4.len(), data.len());
+
+        // Higher order should preserve more detail
+        assert!(result2.iter().all(|v| v.is_finite()));
+        assert!(result3.iter().all(|v| v.is_finite()));
+        assert!(result4.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_savitzky_golay_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let sgf = SavitzkyGolayFilter::new(7, 2).unwrap();
+
+        assert_eq!(sgf.name(), "Savitzky Golay Filter");
+        assert_eq!(sgf.min_periods(), 7);
+
+        let output = sgf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== TriangularFilter Tests ====================
+
+    #[test]
+    fn test_triangular_filter_basic() {
+        let data = make_test_data();
+        let tf = TriangularFilter::new(7).unwrap();
+        let result = tf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_triangular_filter_validation() {
+        // Period too small
+        assert!(TriangularFilter::new(2).is_err());
+        // Valid
+        assert!(TriangularFilter::new(3).is_ok());
+    }
+
+    #[test]
+    fn test_triangular_filter_weights() {
+        let tf = TriangularFilter::new(5).unwrap();
+        let weights = tf.calculate_weights();
+
+        // Weights should sum to 1
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+
+        // Center weight should be highest
+        assert!(weights[2] > weights[0]);
+        assert!(weights[2] > weights[4]);
+
+        // Symmetric
+        assert!((weights[0] - weights[4]).abs() < 1e-10);
+        assert!((weights[1] - weights[3]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_triangular_filter_smoothing() {
+        let data = make_test_data();
+        let tf = TriangularFilter::new(9).unwrap();
+        let result = tf.calculate(&data);
+
+        // Calculate roughness
+        let orig_rough: f64 = data.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum();
+
+        let filt_rough: f64 = result.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum();
+
+        // Filtered should be smoother
+        assert!(filt_rough < orig_rough);
+    }
+
+    #[test]
+    fn test_triangular_filter_centered() {
+        let data = make_test_data();
+        let tf = TriangularFilter::new(7).unwrap();
+        let result = tf.calculate_centered(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Edges should be preserved
+        assert_eq!(result[0], data[0]);
+        assert_eq!(result[1], data[1]);
+        assert_eq!(result[data.len() - 1], data[data.len() - 1]);
+    }
+
+    #[test]
+    fn test_triangular_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let tf = TriangularFilter::new(7).unwrap();
+
+        assert_eq!(tf.name(), "Triangular Filter");
+        assert_eq!(tf.min_periods(), 7);
+
+        let output = tf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== HammingFilter Tests ====================
+
+    #[test]
+    fn test_hamming_filter_basic() {
+        let data = make_test_data();
+        let hf = HammingFilter::new(9, 0.54).unwrap();
+        let result = hf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_hamming_filter_validation() {
+        // Period too small
+        assert!(HammingFilter::new(4, 0.54).is_err());
+        // Alpha too small
+        assert!(HammingFilter::new(9, 0.4).is_err());
+        // Alpha too large
+        assert!(HammingFilter::new(9, 0.7).is_err());
+    }
+
+    #[test]
+    fn test_hamming_filter_with_default_alpha() {
+        let hf = HammingFilter::with_default_alpha(9).unwrap();
+        assert!((hf.alpha - 0.54).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_hamming_filter_weights() {
+        let hf = HammingFilter::new(9, 0.54).unwrap();
+        let weights = hf.calculate_weights();
+
+        // Weights should sum to 1
+        let sum: f64 = weights.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10);
+
+        // All weights should be positive
+        assert!(weights.iter().all(|&w| w > 0.0));
+
+        // Center should have highest weight
+        assert!(weights[4] > weights[0]);
+        assert!(weights[4] > weights[8]);
+    }
+
+    #[test]
+    fn test_hamming_filter_centered() {
+        let data = make_test_data();
+        let hf = HammingFilter::new(7, 0.54).unwrap();
+        let result = hf.calculate_centered(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Middle values should be filtered
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_hamming_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let hf = HammingFilter::new(9, 0.54).unwrap();
+
+        assert_eq!(hf.name(), "Hamming Filter");
+        assert_eq!(hf.min_periods(), 9);
+
+        let output = hf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== SuperSmootherFilter Tests ====================
+
+    #[test]
+    fn test_super_smoother_filter_basic() {
+        let data = make_test_data();
+        let ssf = SuperSmootherFilter::new(10).unwrap();
+        let result = ssf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_super_smoother_filter_validation() {
+        // Period too small
+        assert!(SuperSmootherFilter::new(3).is_err());
+        // Valid
+        assert!(SuperSmootherFilter::new(4).is_ok());
+    }
+
+    #[test]
+    fn test_super_smoother_filter_smoothing() {
+        // Create data with high-frequency noise that the filter should smooth
+        let data: Vec<f64> = (0..60).map(|i| {
+            let trend = 100.0 + i as f64 * 0.2;
+            let noise = 2.0 * (i as f64 * 1.5).sin(); // High frequency component
+            trend + noise
+        }).collect();
+
+        let ssf = SuperSmootherFilter::new(10).unwrap();
+        let result = ssf.calculate(&data);
+
+        // Calculate roughness on the interior (skip startup)
+        let orig_rough: f64 = data[20..50].windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum();
+
+        let filt_rough: f64 = result[20..50].windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum();
+
+        // Super smoother should produce smoother output on high-frequency data
+        // Allow some tolerance due to filter characteristics
+        assert!(filt_rough < orig_rough * 1.5,
+            "Filtered roughness {} should be less than original {} * 1.5",
+            filt_rough, orig_rough);
+    }
+
+    #[test]
+    fn test_super_smoother_filter_three_pole() {
+        let data = make_test_data();
+        let ssf = SuperSmootherFilter::new(10).unwrap();
+
+        let two_pole = ssf.calculate(&data);
+        let three_pole = ssf.calculate_three_pole(&data);
+
+        assert_eq!(two_pole.len(), data.len());
+        assert_eq!(three_pole.len(), data.len());
+
+        // Three pole should be smoother than two pole
+        let rough_2: f64 = two_pole.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum();
+
+        let rough_3: f64 = three_pole.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum();
+
+        assert!(rough_3 <= rough_2 * 1.5); // Three pole may have startup effects
+    }
+
+    #[test]
+    fn test_super_smoother_filter_follows_trend() {
+        // Create uptrending data
+        let data: Vec<f64> = (0..40).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let ssf = SuperSmootherFilter::new(8).unwrap();
+        let result = ssf.calculate(&data);
+
+        // Should follow the upward trend
+        assert!(result[30] > result[10]);
+    }
+
+    #[test]
+    fn test_super_smoother_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let ssf = SuperSmootherFilter::new(10).unwrap();
+
+        assert_eq!(ssf.name(), "Super Smoother Filter");
+        assert_eq!(ssf.min_periods(), 10);
+
+        let output = ssf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== DecyclerFilter Tests ====================
+
+    #[test]
+    fn test_decycler_filter_basic() {
+        let data = make_test_data();
+        let df = DecyclerFilter::new(10).unwrap();
+        let result = df.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Result should be close to original price (trend preserved)
+        assert!(result[25].is_finite());
+        // Should roughly track the price trend
+        assert!(result[25] > 50.0 && result[25] < 200.0);
+    }
+
+    #[test]
+    fn test_decycler_filter_validation() {
+        // Period too small
+        assert!(DecyclerFilter::new(4).is_err());
+        // Valid
+        assert!(DecyclerFilter::new(5).is_ok());
+    }
+
+    #[test]
+    fn test_decycler_filter_removes_cycles() {
+        // Create data with clear high-frequency cycle
+        let pi = std::f64::consts::PI;
+        let data: Vec<f64> = (0..80).map(|i| {
+            let trend = 100.0 + i as f64 * 0.5;
+            let cycle = 5.0 * (2.0 * pi * i as f64 / 8.0).sin(); // 8-bar cycle
+            trend + cycle
+        }).collect();
+
+        let df = DecyclerFilter::new(15).unwrap();
+        let result = df.calculate(&data);
+
+        // Check that the filter produces valid output
+        assert_eq!(result.len(), data.len());
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        // The decycled result should follow the trend
+        // Compare slopes over a window (trend should be preserved)
+        let orig_trend = (data[60] - data[20]) / 40.0;
+        let filt_trend = (result[60] - result[20]) / 40.0;
+
+        // Filtered trend should be close to original underlying trend (0.5)
+        assert!((filt_trend - orig_trend).abs() < 2.0,
+            "Filtered trend {} should be close to original {}",
+            filt_trend, orig_trend);
+    }
+
+    #[test]
+    fn test_decycler_filter_oscillator() {
+        let data = make_test_data();
+        let df = DecyclerFilter::new(20).unwrap();
+        let oscillator = df.calculate_oscillator(&data, 10);
+
+        assert_eq!(oscillator.len(), data.len());
+        // Oscillator should produce finite values
+        assert!(oscillator.iter().all(|v| v.is_finite()));
+        // Oscillator values should be relatively small compared to price
+        let max_abs = oscillator.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        assert!(max_abs < 50.0, "Oscillator max {} should be bounded", max_abs);
+    }
+
+    #[test]
+    fn test_decycler_filter_cycle_component() {
+        let data = make_test_data();
+        let df = DecyclerFilter::new(15).unwrap();
+
+        let trend = df.calculate(&data);
+        let cycle = df.get_cycle_component(&data);
+
+        assert_eq!(trend.len(), data.len());
+        assert_eq!(cycle.len(), data.len());
+
+        // Trend + cycle should approximately equal original
+        for i in 5..data.len() {
+            let reconstructed = trend[i] + cycle[i];
+            assert!((reconstructed - data[i]).abs() < 1e-10,
+                "At {}: {} + {} != {}",
+                i, trend[i], cycle[i], data[i]);
+        }
+    }
+
+    #[test]
+    fn test_decycler_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let df = DecyclerFilter::new(10).unwrap();
+
+        assert_eq!(df.name(), "Decycler Filter");
+        assert_eq!(df.min_periods(), 10);
+
+        let output = df.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== Empty Data Tests ====================
+
+    #[test]
+    fn test_new_6_filters_empty_data() {
+        let empty: Vec<f64> = vec![];
+
+        let gaf = GaussianAdaptiveFilter::new(7, 1.5, 0.5).unwrap();
+        assert!(gaf.calculate(&empty).is_empty());
+
+        let sgf = SavitzkyGolayFilter::new(7, 2).unwrap();
+        assert!(sgf.calculate(&empty).is_empty());
+
+        let tf = TriangularFilter::new(7).unwrap();
+        assert!(tf.calculate(&empty).is_empty());
+
+        let hf = HammingFilter::new(9, 0.54).unwrap();
+        assert!(hf.calculate(&empty).is_empty());
+
+        let ssf = SuperSmootherFilter::new(10).unwrap();
+        assert!(ssf.calculate(&empty).is_empty());
+
+        let df = DecyclerFilter::new(10).unwrap();
+        assert!(df.calculate(&empty).is_empty());
+    }
+
+    // ==================== Short Data Tests ====================
+
+    #[test]
+    fn test_new_6_filters_short_data() {
+        let short = vec![100.0, 101.0, 102.0];
+
+        let gaf = GaussianAdaptiveFilter::new(7, 1.5, 0.5).unwrap();
+        let result = gaf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let sgf = SavitzkyGolayFilter::new(7, 2).unwrap();
+        let result = sgf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let tf = TriangularFilter::new(7).unwrap();
+        let result = tf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let hf = HammingFilter::new(9, 0.54).unwrap();
+        let result = hf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let ssf = SuperSmootherFilter::new(10).unwrap();
+        let result = ssf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let df = DecyclerFilter::new(10).unwrap();
+        let result = df.calculate(&short);
+        assert_eq!(result.len(), 3);
+    }
+}

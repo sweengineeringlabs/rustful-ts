@@ -49,4 +49,6 @@ pub use advanced::{
     CycleDominance, HarmonicAnalyzer, PhaseCoherence,
     FrequencyDomainMA, PhaseShiftIndicator, SpectralPowerIndex,
     NoiseFilter, CyclePeriodEstimator, SignalToNoiseRatioAdvanced,
+    BandpassFilter, HighpassFilter, LowpassFilter,
+    NotchFilter, AllpassPhaseShifter, MovingAverageConvergence,
 };

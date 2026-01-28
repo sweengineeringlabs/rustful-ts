@@ -29,4 +29,7 @@ pub use advanced::{
     PriceBasedSentiment, VolumeSentimentPattern, MomentumSentimentIndex,
     ExtremeSentimentDetector, SentimentOscillator as AdvancedSentimentOscillator,
     CompositeSentimentIndex,
+    // Additional NEW sentiment indicators (6 new)
+    FearGreedProxy, MarketPanicIndex, EuphoriaDetector,
+    SentimentStrengthIndicator, CrowdBehaviorIndicator, SmartMoneySentiment,
 };

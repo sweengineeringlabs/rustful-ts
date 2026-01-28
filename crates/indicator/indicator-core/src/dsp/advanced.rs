@@ -1932,6 +1932,633 @@ impl TechnicalIndicator for SignalToNoiseRatioAdvanced {
     }
 }
 
+/// Bandpass Filter - Simple bandpass filter for isolating specific frequencies
+///
+/// This indicator implements a simple bandpass filter that allows frequencies
+/// within a specified range to pass through while attenuating frequencies
+/// outside this range. Useful for isolating cyclical components of specific
+/// periodicities in price data. The output represents the bandpass-filtered
+/// price component.
+#[derive(Debug, Clone)]
+pub struct BandpassFilter {
+    center_period: usize,
+    bandwidth: f64,
+}
+
+impl BandpassFilter {
+    /// Creates a new BandpassFilter
+    ///
+    /// # Parameters
+    /// - `center_period`: The center period of the passband (minimum 5)
+    /// - `bandwidth`: The relative bandwidth as a fraction of center frequency (0.1 to 1.0)
+    ///
+    /// # Returns
+    /// A Result containing the BandpassFilter or an error if parameters are invalid
+    pub fn new(center_period: usize, bandwidth: f64) -> Result<Self> {
+        if center_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "center_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if bandwidth <= 0.0 || bandwidth > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "bandwidth".to_string(),
+                reason: "must be between 0 (exclusive) and 1 (inclusive)".to_string(),
+            });
+        }
+        Ok(Self { center_period, bandwidth })
+    }
+
+    /// Calculate bandpass filter output
+    ///
+    /// Uses a combination of high-pass and low-pass filtering to create
+    /// a bandpass effect centered on the specified period.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate cutoff periods based on center and bandwidth
+        let low_cutoff = (self.center_period as f64 * (1.0 + self.bandwidth / 2.0)) as usize;
+        let high_cutoff = (self.center_period as f64 * (1.0 - self.bandwidth / 2.0)).max(3.0) as usize;
+
+        let window = low_cutoff * 2;
+
+        for i in window..n {
+            let start = i.saturating_sub(window);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Calculate bandpass output using DFT at passband frequencies
+            let mut bandpass_sum = 0.0;
+            let mut weight_sum = 0.0;
+
+            for freq_period in high_cutoff..=low_cutoff {
+                if freq_period < 3 || freq_period > len / 2 {
+                    continue;
+                }
+
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (j, &val) in slice.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+                    let centered = val - mean;
+                    real += centered * angle.cos();
+                    imag += centered * angle.sin();
+                }
+
+                // Bandpass weighting: peak at center, roll off at edges
+                let freq_dist = ((freq_period as f64 - self.center_period as f64) / self.center_period as f64).abs();
+                let weight = (1.0 - freq_dist / (self.bandwidth / 2.0)).max(0.0);
+
+                // Reconstruct at the last point
+                let j = len - 1;
+                let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+                let contribution = (real * angle.cos() + imag * angle.sin()) * weight;
+                bandpass_sum += contribution;
+                weight_sum += weight;
+            }
+
+            // Normalize
+            if weight_sum > 1e-10 {
+                result[i] = bandpass_sum * 2.0 / len as f64;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BandpassFilter {
+    fn name(&self) -> &str {
+        "Bandpass Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.center_period * 2 + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Highpass Filter - High-pass filter for detrending price data
+///
+/// This indicator implements a high-pass filter that removes low-frequency
+/// components (trends) from price data, leaving only the high-frequency
+/// oscillations. Useful for extracting cyclical behavior while eliminating
+/// the underlying trend. The output represents detrended price movements.
+#[derive(Debug, Clone)]
+pub struct HighpassFilter {
+    cutoff_period: usize,
+    poles: usize,
+}
+
+impl HighpassFilter {
+    /// Creates a new HighpassFilter
+    ///
+    /// # Parameters
+    /// - `cutoff_period`: The cutoff period below which frequencies pass through (minimum 5)
+    /// - `poles`: Number of filter poles for steepness (1 to 4)
+    ///
+    /// # Returns
+    /// A Result containing the HighpassFilter or an error if parameters are invalid
+    pub fn new(cutoff_period: usize, poles: usize) -> Result<Self> {
+        if cutoff_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cutoff_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if poles < 1 || poles > 4 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "poles".to_string(),
+                reason: "must be between 1 and 4".to_string(),
+            });
+        }
+        Ok(Self { cutoff_period, poles })
+    }
+
+    /// Calculate highpass filter output using Ehlers' formula
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate filter coefficient based on cutoff period
+        let omega = 2.0 * std::f64::consts::PI / self.cutoff_period as f64;
+        let alpha = (1.0 + omega.sin()) / omega.cos() - 1.0;
+
+        // First pass: basic high-pass
+        let mut hp = vec![0.0; n];
+        for i in 1..n {
+            let a = (1.0 + alpha) / 2.0;
+            hp[i] = a * (close[i] - close[i - 1]) + alpha * hp[i - 1];
+        }
+
+        // Additional passes for higher pole filters
+        let mut current = hp.clone();
+        for _ in 1..self.poles {
+            let mut next = vec![0.0; n];
+            for i in 1..n {
+                let a = (1.0 + alpha) / 2.0;
+                next[i] = a * (current[i] - current[i - 1]) + alpha * next[i - 1];
+            }
+            current = next;
+        }
+
+        // Copy to result
+        for i in 0..n {
+            result[i] = current[i];
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for HighpassFilter {
+    fn name(&self) -> &str {
+        "Highpass Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.cutoff_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Lowpass Filter - Low-pass filter for smoothing price data
+///
+/// This indicator implements a low-pass filter that removes high-frequency
+/// noise from price data, leaving only the smooth underlying trend and
+/// low-frequency cycles. Based on Ehlers' approach for minimal lag smoothing.
+/// The output represents a smoothed version of price.
+#[derive(Debug, Clone)]
+pub struct LowpassFilter {
+    cutoff_period: usize,
+    poles: usize,
+}
+
+impl LowpassFilter {
+    /// Creates a new LowpassFilter
+    ///
+    /// # Parameters
+    /// - `cutoff_period`: The cutoff period above which frequencies pass through (minimum 5)
+    /// - `poles`: Number of filter poles for steepness (1 to 4)
+    ///
+    /// # Returns
+    /// A Result containing the LowpassFilter or an error if parameters are invalid
+    pub fn new(cutoff_period: usize, poles: usize) -> Result<Self> {
+        if cutoff_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cutoff_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if poles < 1 || poles > 4 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "poles".to_string(),
+                reason: "must be between 1 and 4".to_string(),
+            });
+        }
+        Ok(Self { cutoff_period, poles })
+    }
+
+    /// Calculate lowpass filter output using Ehlers' supersmoother approach
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate filter coefficients based on cutoff period
+        let omega = 2.0 * std::f64::consts::PI / self.cutoff_period as f64;
+        let a1 = (-1.414 * omega).exp();
+        let b1 = 2.0 * a1 * (1.414 * omega).cos();
+        let c2 = b1;
+        let c3 = -a1 * a1;
+        let c1 = 1.0 - c2 - c3;
+
+        // First pass
+        if n > 0 {
+            result[0] = close[0];
+        }
+        if n > 1 {
+            result[1] = close[1];
+        }
+
+        for i in 2..n {
+            result[i] = c1 * (close[i] + close[i - 1]) / 2.0 + c2 * result[i - 1] + c3 * result[i - 2];
+        }
+
+        // Additional smoothing passes for higher pole count
+        for _ in 1..self.poles {
+            let mut next = result.clone();
+            if n > 2 {
+                for i in 2..n {
+                    next[i] = c1 * (result[i] + result[i - 1]) / 2.0 + c2 * next[i - 1] + c3 * next[i - 2];
+                }
+            }
+            result = next;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for LowpassFilter {
+    fn name(&self) -> &str {
+        "Lowpass Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.cutoff_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Notch Filter - Removes a specific frequency from the signal
+///
+/// This indicator implements a notch (band-reject) filter that attenuates
+/// a narrow band of frequencies while passing all others. Useful for removing
+/// known cyclical interference patterns from price data, such as weekly or
+/// monthly seasonality effects. The output is price with the specified
+/// frequency component removed.
+#[derive(Debug, Clone)]
+pub struct NotchFilter {
+    notch_period: usize,
+    notch_width: f64,
+}
+
+impl NotchFilter {
+    /// Creates a new NotchFilter
+    ///
+    /// # Parameters
+    /// - `notch_period`: The period to remove from the signal (minimum 5)
+    /// - `notch_width`: The width of the notch as a fraction of center frequency (0.05 to 0.5)
+    ///
+    /// # Returns
+    /// A Result containing the NotchFilter or an error if parameters are invalid
+    pub fn new(notch_period: usize, notch_width: f64) -> Result<Self> {
+        if notch_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "notch_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if notch_width < 0.05 || notch_width > 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "notch_width".to_string(),
+                reason: "must be between 0.05 and 0.5".to_string(),
+            });
+        }
+        Ok(Self { notch_period, notch_width })
+    }
+
+    /// Calculate notch filter output
+    ///
+    /// The filter removes the specified frequency component while preserving
+    /// other frequencies in the signal.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let window = self.notch_period * 2;
+
+        for i in window..n {
+            let start = i.saturating_sub(window);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Calculate nearby frequencies within the notch width
+            let low_period = (self.notch_period as f64 * (1.0 + self.notch_width / 2.0)) as usize;
+            let high_period = (self.notch_period as f64 * (1.0 - self.notch_width / 2.0)).max(3.0) as usize;
+
+            let mut notch_component = 0.0;
+            let j = len - 1;
+
+            for freq_period in high_period..=low_period {
+                if freq_period < 3 || freq_period > len / 2 {
+                    continue;
+                }
+
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (k, &val) in slice.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * k as f64 / freq_period as f64;
+                    let centered = val - mean;
+                    real += centered * angle.cos();
+                    imag += centered * angle.sin();
+                }
+
+                // Notch attenuation: strongest at center, tapers at edges
+                let freq_dist = ((freq_period as f64 - self.notch_period as f64) / self.notch_period as f64).abs();
+                let attenuation = (1.0 - freq_dist / (self.notch_width / 2.0)).max(0.0);
+
+                let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+                notch_component += (real * angle.cos() + imag * angle.sin()) * attenuation * 2.0 / len as f64;
+            }
+
+            // Subtract the notch component from the current price
+            result[i] = close[i] - notch_component;
+        }
+
+        // Fill initial values
+        for i in 0..window.min(n) {
+            result[i] = close[i];
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for NotchFilter {
+    fn name(&self) -> &str {
+        "Notch Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.notch_period * 2 + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Allpass Phase Shifter - Phase shift without amplitude change
+///
+/// This indicator implements an allpass filter that shifts the phase of
+/// the signal without changing its amplitude spectrum. Useful for creating
+/// quadrature (90-degree shifted) versions of price for cycle analysis or
+/// for compensating phase delays in other indicators. The output is the
+/// phase-shifted signal.
+#[derive(Debug, Clone)]
+pub struct AllpassPhaseShifter {
+    period: usize,
+    phase_shift_degrees: f64,
+}
+
+impl AllpassPhaseShifter {
+    /// Creates a new AllpassPhaseShifter
+    ///
+    /// # Parameters
+    /// - `period`: The reference period for the phase shift (minimum 5)
+    /// - `phase_shift_degrees`: The desired phase shift in degrees (-180 to 180)
+    ///
+    /// # Returns
+    /// A Result containing the AllpassPhaseShifter or an error if parameters are invalid
+    pub fn new(period: usize, phase_shift_degrees: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if phase_shift_degrees < -180.0 || phase_shift_degrees > 180.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "phase_shift_degrees".to_string(),
+                reason: "must be between -180 and 180".to_string(),
+            });
+        }
+        Ok(Self { period, phase_shift_degrees })
+    }
+
+    /// Calculate allpass phase shifter output
+    ///
+    /// Uses Hilbert transform approximation to create the phase-shifted signal.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let window = self.period * 2;
+        let phase_rad = self.phase_shift_degrees * std::f64::consts::PI / 180.0;
+
+        for i in window..n {
+            let start = i.saturating_sub(window);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Calculate in-phase and quadrature components at the reference period
+            let mut in_phase = 0.0;
+            let mut quadrature = 0.0;
+
+            for (j, &val) in slice.iter().enumerate() {
+                let angle = 2.0 * std::f64::consts::PI * j as f64 / self.period as f64;
+                let centered = val - mean;
+                in_phase += centered * angle.cos();
+                quadrature += centered * angle.sin();
+            }
+
+            in_phase /= len as f64;
+            quadrature /= len as f64;
+
+            // Apply phase rotation
+            let cos_shift = phase_rad.cos();
+            let sin_shift = phase_rad.sin();
+
+            let shifted_i = in_phase * cos_shift - quadrature * sin_shift;
+            let shifted_q = in_phase * sin_shift + quadrature * cos_shift;
+
+            // Reconstruct the signal at the last point with the new phase
+            let j = len - 1;
+            let angle = 2.0 * std::f64::consts::PI * j as f64 / self.period as f64;
+            let shifted_value = shifted_i * angle.cos() + shifted_q * angle.sin();
+
+            // Add back the mean and scale
+            result[i] = mean + shifted_value * 2.0;
+        }
+
+        // Fill initial values
+        for i in 0..window.min(n) {
+            result[i] = close[i];
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AllpassPhaseShifter {
+    fn name(&self) -> &str {
+        "Allpass Phase Shifter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period * 2 + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Moving Average Convergence - Measures convergence of different MAs
+///
+/// This indicator calculates the degree of convergence or divergence between
+/// multiple moving averages of different periods. When MAs converge, it suggests
+/// consolidation; when they diverge, it indicates trending behavior. The output
+/// is a normalized convergence score from 0 (maximum divergence) to 100
+/// (perfect convergence).
+#[derive(Debug, Clone)]
+pub struct MovingAverageConvergence {
+    short_period: usize,
+    medium_period: usize,
+    long_period: usize,
+}
+
+impl MovingAverageConvergence {
+    /// Creates a new MovingAverageConvergence
+    ///
+    /// # Parameters
+    /// - `short_period`: The period for the short MA (minimum 5)
+    /// - `medium_period`: The period for the medium MA (must be > short_period)
+    /// - `long_period`: The period for the long MA (must be > medium_period)
+    ///
+    /// # Returns
+    /// A Result containing the MovingAverageConvergence or an error if parameters are invalid
+    pub fn new(short_period: usize, medium_period: usize, long_period: usize) -> Result<Self> {
+        if short_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if medium_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "medium_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if long_period <= medium_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than medium_period".to_string(),
+            });
+        }
+        Ok(Self { short_period, medium_period, long_period })
+    }
+
+    /// Calculate simple moving average at a position
+    fn sma(&self, close: &[f64], end_idx: usize, period: usize) -> f64 {
+        if period == 0 || end_idx + 1 < period {
+            return close[end_idx];
+        }
+        let start = end_idx + 1 - period;
+        let sum: f64 = close[start..=end_idx].iter().sum();
+        sum / period as f64
+    }
+
+    /// Calculate moving average convergence
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Pre-calculate all three moving averages
+        let mut short_ma = vec![0.0; n];
+        let mut medium_ma = vec![0.0; n];
+        let mut long_ma = vec![0.0; n];
+
+        for i in 0..n {
+            short_ma[i] = self.sma(close, i, self.short_period);
+            medium_ma[i] = self.sma(close, i, self.medium_period);
+            long_ma[i] = self.sma(close, i, self.long_period);
+        }
+
+        // Calculate convergence after warmup
+        for i in self.long_period..n {
+            let s = short_ma[i];
+            let m = medium_ma[i];
+            let l = long_ma[i];
+
+            // Calculate average of the MAs
+            let avg_ma = (s + m + l) / 3.0;
+
+            // Calculate spread as percentage of average
+            let max_ma = s.max(m).max(l);
+            let min_ma = s.min(m).min(l);
+
+            let spread = max_ma - min_ma;
+            let relative_spread = if avg_ma.abs() > 1e-10 {
+                (spread / avg_ma.abs()) * 100.0
+            } else {
+                0.0
+            };
+
+            // Convert to convergence score: 100 = perfect convergence, 0 = max divergence
+            // Use an exponential decay for the spread
+            // A relative spread of 5% or more maps to near-zero convergence
+            let convergence = (100.0 * (-relative_spread / 2.0).exp()).min(100.0).max(0.0);
+
+            result[i] = convergence;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MovingAverageConvergence {
+    fn name(&self) -> &str {
+        "Moving Average Convergence"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2851,6 +3478,405 @@ mod tests {
     }
 
     // =====================================================================
+    // BandpassFilter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_bandpass_filter_basic() {
+        let close = make_test_data();
+        let bpf = BandpassFilter::new(12, 0.5).unwrap();
+        let result = bpf.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values after warmup should be finite
+        for i in 30..result.len() {
+            assert!(result[i].is_finite(), "Expected finite value at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_bandpass_filter_isolates_frequency() {
+        // Create data with known 12-bar cycle plus trend
+        let close: Vec<f64> = (0..100)
+            .map(|i| {
+                let trend = 100.0 + i as f64 * 0.5;
+                let cycle = (i as f64 * 2.0 * std::f64::consts::PI / 12.0).sin() * 5.0;
+                trend + cycle
+            })
+            .collect();
+        let bpf = BandpassFilter::new(12, 0.5).unwrap();
+        let result = bpf.calculate(&close);
+
+        // Bandpass should isolate the cycle component (oscillating around 0)
+        let mut has_positive = false;
+        let mut has_negative = false;
+        for i in 40..result.len() {
+            if result[i] > 0.5 {
+                has_positive = true;
+            }
+            if result[i] < -0.5 {
+                has_negative = true;
+            }
+        }
+        assert!(has_positive && has_negative, "Bandpass filter should oscillate");
+    }
+
+    #[test]
+    fn test_bandpass_filter_validation() {
+        // center_period too small
+        assert!(BandpassFilter::new(3, 0.5).is_err());
+        // bandwidth invalid
+        assert!(BandpassFilter::new(12, 0.0).is_err());
+        assert!(BandpassFilter::new(12, 1.5).is_err());
+        // valid
+        assert!(BandpassFilter::new(12, 0.5).is_ok());
+        assert!(BandpassFilter::new(5, 0.1).is_ok());
+        assert!(BandpassFilter::new(20, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_bandpass_filter_trait() {
+        let data = make_ohlcv_series();
+        let bpf = BandpassFilter::new(12, 0.5).unwrap();
+
+        assert_eq!(bpf.name(), "Bandpass Filter");
+        assert_eq!(bpf.min_periods(), 25);
+
+        let output = bpf.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // HighpassFilter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_highpass_filter_basic() {
+        let close = make_test_data();
+        let hpf = HighpassFilter::new(20, 2).unwrap();
+        let result = hpf.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be finite
+        for i in 0..result.len() {
+            assert!(result[i].is_finite(), "Expected finite value at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_highpass_filter_removes_trend() {
+        // Create trending data
+        let close: Vec<f64> = (0..100).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let hpf = HighpassFilter::new(20, 2).unwrap();
+        let result = hpf.calculate(&close);
+
+        // After warmup, highpass should oscillate near zero (trend removed)
+        let avg: f64 = result[30..].iter().sum::<f64>() / (result.len() - 30) as f64;
+        assert!(avg.abs() < 50.0, "Highpass should remove trend, got avg {}", avg);
+    }
+
+    #[test]
+    fn test_highpass_filter_validation() {
+        // cutoff_period too small
+        assert!(HighpassFilter::new(3, 2).is_err());
+        // poles out of range
+        assert!(HighpassFilter::new(20, 0).is_err());
+        assert!(HighpassFilter::new(20, 5).is_err());
+        // valid
+        assert!(HighpassFilter::new(20, 1).is_ok());
+        assert!(HighpassFilter::new(20, 4).is_ok());
+        assert!(HighpassFilter::new(5, 2).is_ok());
+    }
+
+    #[test]
+    fn test_highpass_filter_trait() {
+        let data = make_ohlcv_series();
+        let hpf = HighpassFilter::new(15, 2).unwrap();
+
+        assert_eq!(hpf.name(), "Highpass Filter");
+        assert_eq!(hpf.min_periods(), 16);
+
+        let output = hpf.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // LowpassFilter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_lowpass_filter_basic() {
+        let close = make_test_data();
+        let lpf = LowpassFilter::new(10, 2).unwrap();
+        let result = lpf.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be positive and close to price
+        for i in 15..result.len() {
+            assert!(result[i] > 0.0, "Expected positive value at index {}", i);
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 30.0, "Lowpass should track price, diff {} at {}", diff, i);
+        }
+    }
+
+    #[test]
+    fn test_lowpass_filter_smoothing() {
+        // Noisy data
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + i as f64 * 0.5 + ((i * 17) % 7) as f64 - 3.0)
+            .collect();
+        let lpf = LowpassFilter::new(10, 2).unwrap();
+        let result = lpf.calculate(&close);
+
+        // Filtered data should be smoother (less variance)
+        let raw_variance: f64 = close[20..].windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .sum::<f64>() / (close.len() - 21) as f64;
+        let filtered_variance: f64 = result[20..].windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .sum::<f64>() / (result.len() - 21) as f64;
+
+        assert!(filtered_variance < raw_variance,
+                "Lowpass should reduce variance: raw {} vs filtered {}", raw_variance, filtered_variance);
+    }
+
+    #[test]
+    fn test_lowpass_filter_validation() {
+        // cutoff_period too small
+        assert!(LowpassFilter::new(3, 2).is_err());
+        // poles out of range
+        assert!(LowpassFilter::new(10, 0).is_err());
+        assert!(LowpassFilter::new(10, 5).is_err());
+        // valid
+        assert!(LowpassFilter::new(10, 1).is_ok());
+        assert!(LowpassFilter::new(10, 4).is_ok());
+        assert!(LowpassFilter::new(5, 2).is_ok());
+    }
+
+    #[test]
+    fn test_lowpass_filter_trait() {
+        let data = make_ohlcv_series();
+        let lpf = LowpassFilter::new(15, 2).unwrap();
+
+        assert_eq!(lpf.name(), "Lowpass Filter");
+        assert_eq!(lpf.min_periods(), 16);
+
+        let output = lpf.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // NotchFilter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_notch_filter_basic() {
+        let close = make_test_data();
+        let nf = NotchFilter::new(10, 0.2).unwrap();
+        let result = nf.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be positive (near price)
+        for i in 25..result.len() {
+            assert!(result[i] > 0.0, "Expected positive value at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_notch_filter_removes_frequency() {
+        // Create data with a specific frequency to remove
+        let close: Vec<f64> = (0..100)
+            .map(|i| {
+                let base = 100.0;
+                let target_freq = (i as f64 * 2.0 * std::f64::consts::PI / 10.0).sin() * 5.0;
+                let other_freq = (i as f64 * 2.0 * std::f64::consts::PI / 20.0).sin() * 3.0;
+                base + target_freq + other_freq
+            })
+            .collect();
+        let nf = NotchFilter::new(10, 0.2).unwrap();
+        let result = nf.calculate(&close);
+
+        // The notch filter should reduce the 10-period component
+        // Output should still oscillate but differently than input
+        assert!(result[50] != close[50], "Notch filter should modify the signal");
+    }
+
+    #[test]
+    fn test_notch_filter_validation() {
+        // notch_period too small
+        assert!(NotchFilter::new(3, 0.2).is_err());
+        // notch_width out of range
+        assert!(NotchFilter::new(10, 0.01).is_err());
+        assert!(NotchFilter::new(10, 0.6).is_err());
+        // valid
+        assert!(NotchFilter::new(10, 0.05).is_ok());
+        assert!(NotchFilter::new(10, 0.5).is_ok());
+        assert!(NotchFilter::new(5, 0.2).is_ok());
+    }
+
+    #[test]
+    fn test_notch_filter_trait() {
+        let data = make_ohlcv_series();
+        let nf = NotchFilter::new(10, 0.2).unwrap();
+
+        assert_eq!(nf.name(), "Notch Filter");
+        assert_eq!(nf.min_periods(), 21);
+
+        let output = nf.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // AllpassPhaseShifter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_allpass_phase_shifter_basic() {
+        let close = make_test_data();
+        let aps = AllpassPhaseShifter::new(12, 90.0).unwrap();
+        let result = aps.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be positive
+        for i in 30..result.len() {
+            assert!(result[i] > 0.0, "Expected positive value at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_allpass_phase_shifter_shifts_phase() {
+        // Create sine wave
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 2.0 * std::f64::consts::PI / 12.0).sin() * 5.0)
+            .collect();
+
+        // 90 degree shift
+        let aps = AllpassPhaseShifter::new(12, 90.0).unwrap();
+        let result = aps.calculate(&close);
+
+        // The shifted signal should differ from original
+        let mut diff_count = 0;
+        for i in 40..result.len() {
+            if (result[i] - close[i]).abs() > 0.5 {
+                diff_count += 1;
+            }
+        }
+        assert!(diff_count > 10, "Phase shifter should modify the signal");
+    }
+
+    #[test]
+    fn test_allpass_phase_shifter_zero_shift() {
+        // Zero degree shift should approximately preserve the signal
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 5.0)
+            .collect();
+        let aps = AllpassPhaseShifter::new(12, 0.0).unwrap();
+        let result = aps.calculate(&close);
+
+        // With zero shift, output should be close to input (after warmup)
+        for i in 40..result.len() {
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 20.0, "Zero shift should preserve signal approximately, diff {} at {}", diff, i);
+        }
+    }
+
+    #[test]
+    fn test_allpass_phase_shifter_validation() {
+        // period too small
+        assert!(AllpassPhaseShifter::new(3, 90.0).is_err());
+        // phase_shift out of range
+        assert!(AllpassPhaseShifter::new(12, -200.0).is_err());
+        assert!(AllpassPhaseShifter::new(12, 200.0).is_err());
+        // valid
+        assert!(AllpassPhaseShifter::new(12, -180.0).is_ok());
+        assert!(AllpassPhaseShifter::new(12, 180.0).is_ok());
+        assert!(AllpassPhaseShifter::new(5, 0.0).is_ok());
+        assert!(AllpassPhaseShifter::new(20, 45.0).is_ok());
+    }
+
+    #[test]
+    fn test_allpass_phase_shifter_trait() {
+        let data = make_ohlcv_series();
+        let aps = AllpassPhaseShifter::new(12, 90.0).unwrap();
+
+        assert_eq!(aps.name(), "Allpass Phase Shifter");
+        assert_eq!(aps.min_periods(), 25);
+
+        let output = aps.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // MovingAverageConvergence Tests
+    // =====================================================================
+
+    #[test]
+    fn test_moving_average_convergence_basic() {
+        let close = make_test_data();
+        let mac = MovingAverageConvergence::new(5, 10, 20).unwrap();
+        let result = mac.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Convergence should be between 0 and 100
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Convergence {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_moving_average_convergence_trending() {
+        // Strong trending data should have lower convergence (MAs spread out)
+        let close: Vec<f64> = (0..100).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let mac = MovingAverageConvergence::new(5, 10, 20).unwrap();
+        let result = mac.calculate(&close);
+
+        // In a strong trend, MAs diverge
+        let avg_conv: f64 = result[30..].iter().sum::<f64>() / (result.len() - 30) as f64;
+        assert!(avg_conv < 80.0, "Strong trend should show MA divergence, got {}", avg_conv);
+    }
+
+    #[test]
+    fn test_moving_average_convergence_flat() {
+        // Flat price should have high convergence (MAs close together)
+        let close: Vec<f64> = (0..100).map(|_| 100.0).collect();
+        let mac = MovingAverageConvergence::new(5, 10, 20).unwrap();
+        let result = mac.calculate(&close);
+
+        // Flat price means all MAs equal, perfect convergence
+        for i in 25..result.len() {
+            assert!(result[i] > 90.0, "Flat price should have high convergence, got {} at {}", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_moving_average_convergence_validation() {
+        // short_period too small
+        assert!(MovingAverageConvergence::new(3, 10, 20).is_err());
+        // medium_period <= short_period
+        assert!(MovingAverageConvergence::new(10, 10, 20).is_err());
+        assert!(MovingAverageConvergence::new(10, 5, 20).is_err());
+        // long_period <= medium_period
+        assert!(MovingAverageConvergence::new(5, 10, 10).is_err());
+        assert!(MovingAverageConvergence::new(5, 10, 8).is_err());
+        // valid
+        assert!(MovingAverageConvergence::new(5, 10, 20).is_ok());
+        assert!(MovingAverageConvergence::new(5, 15, 30).is_ok());
+    }
+
+    #[test]
+    fn test_moving_average_convergence_trait() {
+        let data = make_ohlcv_series();
+        let mac = MovingAverageConvergence::new(5, 10, 20).unwrap();
+
+        assert_eq!(mac.name(), "Moving Average Convergence");
+        assert_eq!(mac.min_periods(), 21);
+
+        let output = mac.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
     // Integration Tests
     // =====================================================================
 
@@ -2870,13 +3896,20 @@ mod tests {
         let cd = CycleDominance::new(5, 25).unwrap();
         let ha = HarmonicAnalyzer::new(20, 3).unwrap();
         let pc = PhaseCoherence::new(20, 5).unwrap();
-        // New indicators
+        // Existing new indicators
         let fdma = FrequencyDomainMA::new(20, 5).unwrap();
         let psi = PhaseShiftIndicator::new(20, 10).unwrap();
         let spi = SpectralPowerIndex::new(25, 4).unwrap();
         let nf = NoiseFilter::new(20, 0.5).unwrap();
         let cpe = CyclePeriodEstimator::new(5, 25, 3).unwrap();
         let snr = SignalToNoiseRatioAdvanced::new(25, 5).unwrap();
+        // 6 newest DSP filter indicators
+        let bpf = BandpassFilter::new(12, 0.5).unwrap();
+        let hpf = HighpassFilter::new(15, 2).unwrap();
+        let lpf = LowpassFilter::new(10, 2).unwrap();
+        let notch = NotchFilter::new(10, 0.2).unwrap();
+        let aps = AllpassPhaseShifter::new(12, 90.0).unwrap();
+        let mac = MovingAverageConvergence::new(5, 10, 20).unwrap();
 
         let results = vec![
             aff.compute(&data).unwrap().primary,
@@ -2891,13 +3924,20 @@ mod tests {
             cd.compute(&data).unwrap().primary,
             ha.compute(&data).unwrap().primary,
             pc.compute(&data).unwrap().primary,
-            // New indicators
+            // Existing new indicators
             fdma.compute(&data).unwrap().primary,
             psi.compute(&data).unwrap().primary,
             spi.compute(&data).unwrap().primary,
             nf.compute(&data).unwrap().primary,
             cpe.compute(&data).unwrap().primary,
             snr.compute(&data).unwrap().primary,
+            // 6 newest DSP filter indicators
+            bpf.compute(&data).unwrap().primary,
+            hpf.compute(&data).unwrap().primary,
+            lpf.compute(&data).unwrap().primary,
+            notch.compute(&data).unwrap().primary,
+            aps.compute(&data).unwrap().primary,
+            mac.compute(&data).unwrap().primary,
         ];
 
         for result in results {
@@ -2946,5 +3986,69 @@ mod tests {
         let nf_sum: f64 = nf_result.primary[30..].iter().sum();
         assert!(fdma_sum > 0.0, "FrequencyDomainMA should produce non-zero values");
         assert!(nf_sum > 0.0, "NoiseFilter should produce non-zero values");
+    }
+
+    #[test]
+    fn test_six_new_dsp_filter_indicators_integration() {
+        // Test that all 6 newest DSP filter indicators work together
+        let close: Vec<f64> = (0..120)
+            .map(|i| {
+                let trend = 100.0 + i as f64 * 0.2;
+                let cycle1 = (i as f64 * 2.0 * std::f64::consts::PI / 12.0).sin() * 4.0;
+                let cycle2 = (i as f64 * 2.0 * std::f64::consts::PI / 25.0).sin() * 2.0;
+                let noise = ((i * 19) % 7) as f64 * 0.15 - 0.5;
+                trend + cycle1 + cycle2 + noise
+            })
+            .collect();
+        let data = OHLCVSeries::from_close(close.clone());
+
+        // Create all 6 new filter indicators
+        let bpf = BandpassFilter::new(12, 0.5).unwrap();
+        let hpf = HighpassFilter::new(20, 2).unwrap();
+        let lpf = LowpassFilter::new(10, 2).unwrap();
+        let notch = NotchFilter::new(12, 0.2).unwrap();
+        let aps = AllpassPhaseShifter::new(12, 90.0).unwrap();
+        let mac = MovingAverageConvergence::new(5, 12, 25).unwrap();
+
+        // All should compute without errors
+        let bpf_result = bpf.compute(&data).unwrap();
+        let hpf_result = hpf.compute(&data).unwrap();
+        let lpf_result = lpf.compute(&data).unwrap();
+        let notch_result = notch.compute(&data).unwrap();
+        let aps_result = aps.compute(&data).unwrap();
+        let mac_result = mac.compute(&data).unwrap();
+
+        // All should have correct length
+        assert_eq!(bpf_result.primary.len(), 120);
+        assert_eq!(hpf_result.primary.len(), 120);
+        assert_eq!(lpf_result.primary.len(), 120);
+        assert_eq!(notch_result.primary.len(), 120);
+        assert_eq!(aps_result.primary.len(), 120);
+        assert_eq!(mac_result.primary.len(), 120);
+
+        // Verify bandpass filter oscillates (has positive and negative values after warmup)
+        let bpf_has_positive = bpf_result.primary[40..].iter().any(|&x| x > 0.5);
+        let bpf_has_negative = bpf_result.primary[40..].iter().any(|&x| x < -0.5);
+        assert!(bpf_has_positive && bpf_has_negative, "Bandpass filter should oscillate");
+
+        // Verify lowpass filter tracks price (positive values)
+        let lpf_sum: f64 = lpf_result.primary[20..].iter().sum();
+        assert!(lpf_sum > 0.0, "Lowpass filter should produce positive values");
+
+        // Verify MA convergence is in valid range (0-100)
+        for i in 30..mac_result.primary.len() {
+            assert!(mac_result.primary[i] >= 0.0 && mac_result.primary[i] <= 100.0,
+                    "MA Convergence {} at index {} out of range", mac_result.primary[i], i);
+        }
+
+        // Verify allpass shifter produces positive values (near price level)
+        let aps_sum: f64 = aps_result.primary[40..].iter().sum();
+        assert!(aps_sum > 0.0, "Allpass phase shifter should produce positive values");
+
+        // Verify notch filter produces values near original price
+        for i in 40..notch_result.primary.len() {
+            let diff = (notch_result.primary[i] - close[i]).abs();
+            assert!(diff < 20.0, "Notch filter should be close to original price, diff {} at {}", diff, i);
+        }
     }
 }

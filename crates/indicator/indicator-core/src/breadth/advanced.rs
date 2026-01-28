@@ -2221,6 +2221,649 @@ impl TechnicalIndicator for BreadthAcceleration {
     }
 }
 
+// ============================================================================
+// 6 NEW Breadth Indicators (AdvanceDeclineRatio, BreadthMomentumIndicator, etc.)
+// ============================================================================
+
+/// AdvanceDeclineRatio - Simple Advance/Decline Ratio
+///
+/// Calculates the ratio of advancing periods to declining periods over a
+/// specified lookback window. Unlike oscillators that smooth the data, this
+/// provides a raw ratio that can range from 0 (all declines) to infinity
+/// (all advances). Values above 1.0 indicate more advances than declines.
+///
+/// # Formula
+/// A/D Ratio = Advances / Declines
+///
+/// # Interpretation
+/// - Ratio > 1.0: More advances than declines (bullish)
+/// - Ratio = 1.0: Equal advances and declines (neutral)
+/// - Ratio < 1.0: More declines than advances (bearish)
+/// - Extreme readings (> 2.0 or < 0.5) may indicate overbought/oversold
+#[derive(Debug, Clone)]
+pub struct AdvanceDeclineRatio {
+    /// Period for calculating the ratio
+    period: usize,
+}
+
+impl AdvanceDeclineRatio {
+    /// Creates a new AdvanceDeclineRatio indicator.
+    ///
+    /// # Arguments
+    /// * `period` - The lookback period for calculating advances/declines (minimum 5)
+    ///
+    /// # Errors
+    /// Returns an error if period is less than 5
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::AdvanceDeclineRatio;
+    /// let adr = AdvanceDeclineRatio::new(10).unwrap();
+    /// ```
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate the advance/decline ratio for each bar.
+    ///
+    /// # Arguments
+    /// * `close` - Array of closing prices
+    ///
+    /// # Returns
+    /// Vector of A/D ratios. Values of 0.0 indicate warmup period or
+    /// periods with no declines (ratio would be infinity, capped at 10.0).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut declines = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                } else if close[j] < close[j - 1] {
+                    declines += 1;
+                }
+            }
+
+            // Calculate ratio, handling division by zero
+            if declines > 0 {
+                result[i] = advances as f64 / declines as f64;
+            } else if advances > 0 {
+                // All advances, no declines - cap at 10.0
+                result[i] = 10.0;
+            } else {
+                // No advances or declines (all unchanged)
+                result[i] = 1.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AdvanceDeclineRatio {
+    fn name(&self) -> &str {
+        "Advance Decline Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthMomentumIndicator - Rate of Change in Breadth
+///
+/// Measures the momentum of market breadth by calculating the rate of change
+/// in the advance percentage. This differs from other breadth momentum indicators
+/// by focusing specifically on the percentage change in breadth rather than
+/// cumulative or smoothed values.
+///
+/// # Formula
+/// Breadth Momentum = (Current Advance% - Previous Advance%) / Previous Advance% * 100
+///
+/// # Interpretation
+/// - Positive values: Breadth is improving (momentum increasing)
+/// - Negative values: Breadth is deteriorating (momentum decreasing)
+/// - Extreme values may signal trend exhaustion
+#[derive(Debug, Clone)]
+pub struct BreadthMomentumIndicator {
+    /// Period for calculating advance percentage
+    period: usize,
+    /// Rate of change period
+    roc_period: usize,
+}
+
+impl BreadthMomentumIndicator {
+    /// Creates a new BreadthMomentumIndicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating advance percentage (minimum 5)
+    /// * `roc_period` - Period for rate of change calculation (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if period < 5 or roc_period < 2
+    pub fn new(period: usize, roc_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if roc_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "roc_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, roc_period })
+    }
+
+    /// Calculate breadth momentum indicator values.
+    ///
+    /// # Returns
+    /// Vector of momentum values as percentage change in breadth.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // First calculate advance percentage for each period
+        let mut advance_pct = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut total = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                }
+                total += 1;
+            }
+
+            if total > 0 {
+                advance_pct[i] = (advances as f64 / total as f64) * 100.0;
+            }
+        }
+
+        // Calculate rate of change of advance percentage
+        let min_idx = self.period + self.roc_period;
+        for i in min_idx..n {
+            let current = advance_pct[i];
+            let previous = advance_pct[i - self.roc_period];
+
+            // Calculate percentage change (ROC style)
+            if previous > 1e-10 {
+                result[i] = ((current - previous) / previous) * 100.0;
+            } else if current > 1e-10 {
+                // Previous was near zero, current is positive
+                result[i] = 100.0;
+            }
+            // If both near zero, result stays 0.0
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthMomentumIndicator {
+    fn name(&self) -> &str {
+        "Breadth Momentum Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.roc_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// CumulativeBreadthLine - Running Sum of Net Advances
+///
+/// Calculates a cumulative line by adding the net advances (advances minus
+/// declines) for each period. This creates a running total that rises when
+/// advances dominate and falls when declines dominate, similar to an
+/// Advance/Decline Line but using price data as a proxy.
+///
+/// # Formula
+/// CBL[i] = CBL[i-1] + (Advances[i] - Declines[i])
+///
+/// # Interpretation
+/// - Rising line: Overall market participation is bullish
+/// - Falling line: Overall market participation is bearish
+/// - Divergence from price may signal trend weakness
+#[derive(Debug, Clone)]
+pub struct CumulativeBreadthLine {
+    /// Starting value for the cumulative line
+    base_value: f64,
+}
+
+impl CumulativeBreadthLine {
+    /// Creates a new CumulativeBreadthLine indicator.
+    ///
+    /// # Arguments
+    /// * `base_value` - Starting value for the cumulative line (default: 1000.0)
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::CumulativeBreadthLine;
+    /// let cbl = CumulativeBreadthLine::new(1000.0).unwrap();
+    /// ```
+    pub fn new(base_value: f64) -> Result<Self> {
+        if base_value < 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_value".to_string(),
+                reason: "must be non-negative".to_string(),
+            });
+        }
+        Ok(Self { base_value })
+    }
+
+    /// Creates a CumulativeBreadthLine with default base value of 1000.0
+    pub fn default_params() -> Result<Self> {
+        Self::new(1000.0)
+    }
+
+    /// Calculate the cumulative breadth line.
+    ///
+    /// # Returns
+    /// Vector of cumulative breadth values starting from base_value.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![self.base_value; n];
+
+        for i in 1..n {
+            let daily_change = if close[i] > close[i - 1] {
+                1.0 // Advance
+            } else if close[i] < close[i - 1] {
+                -1.0 // Decline
+            } else {
+                0.0 // Unchanged
+            };
+
+            result[i] = result[i - 1] + daily_change;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CumulativeBreadthLine {
+    fn name(&self) -> &str {
+        "Cumulative Breadth Line"
+    }
+
+    fn min_periods(&self) -> usize {
+        2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// HighLowIndex - New Highs vs New Lows Ratio
+///
+/// Measures the ratio of bars making new period highs versus new period lows.
+/// This provides insight into the breadth of market strength by tracking
+/// how many periods are reaching new highs compared to new lows.
+///
+/// # Formula
+/// HLI = (New Highs - New Lows) / (New Highs + New Lows) * 100
+///
+/// # Interpretation
+/// - Values > 0: More new highs than lows (bullish)
+/// - Values < 0: More new lows than highs (bearish)
+/// - Extreme readings (>50 or <-50) indicate strong trends
+#[derive(Debug, Clone)]
+pub struct HighLowIndex {
+    /// Period for determining new highs/lows
+    lookback_period: usize,
+    /// Period for calculating the index
+    calculation_period: usize,
+}
+
+impl HighLowIndex {
+    /// Creates a new HighLowIndex indicator.
+    ///
+    /// # Arguments
+    /// * `lookback_period` - Period for determining if price is at high/low (minimum 5)
+    /// * `calculation_period` - Period for summing new highs/lows (minimum 5)
+    ///
+    /// # Errors
+    /// Returns an error if either period is less than 5
+    pub fn new(lookback_period: usize, calculation_period: usize) -> Result<Self> {
+        if lookback_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if calculation_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "calculation_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { lookback_period, calculation_period })
+    }
+
+    /// Calculate the high/low index values.
+    ///
+    /// # Returns
+    /// Vector of index values ranging from -100 to +100.
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // First, mark each bar as new high, new low, or neither
+        let mut new_high = vec![false; n];
+        let mut new_low = vec![false; n];
+
+        for i in self.lookback_period..n {
+            let start = i.saturating_sub(self.lookback_period);
+
+            // Check if current high is highest in lookback
+            let period_high = high[start..i].iter().fold(f64::MIN, |max, &v| v.max(max));
+            if high[i] > period_high {
+                new_high[i] = true;
+            }
+
+            // Check if current low is lowest in lookback
+            let period_low = low[start..i].iter().fold(f64::MAX, |min, &v| v.min(min));
+            if low[i] < period_low {
+                new_low[i] = true;
+            }
+        }
+
+        // Calculate index over calculation period
+        let min_idx = self.lookback_period + self.calculation_period;
+        for i in min_idx..n {
+            let start = i.saturating_sub(self.calculation_period);
+
+            let highs_count = new_high[(start + 1)..=i].iter().filter(|&&x| x).count();
+            let lows_count = new_low[(start + 1)..=i].iter().filter(|&&x| x).count();
+
+            let total = highs_count + lows_count;
+            if total > 0 {
+                // Scale to -100 to +100
+                result[i] = ((highs_count as f64 - lows_count as f64) / total as f64) * 100.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for HighLowIndex {
+    fn name(&self) -> &str {
+        "High Low Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback_period + self.calculation_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+/// PercentAboveMA - Percentage of Bars Above Moving Average
+///
+/// Calculates the percentage of recent bars where the close price is above
+/// a simple moving average. This measures the breadth of price action relative
+/// to its trend, indicating how consistently price stays above average.
+///
+/// # Formula
+/// PAMA = (Count of closes > SMA) / Period * 100
+///
+/// # Interpretation
+/// - Values > 50: Majority of closes above MA (bullish trend)
+/// - Values < 50: Majority of closes below MA (bearish trend)
+/// - Extreme readings (>80 or <20) may indicate overbought/oversold
+#[derive(Debug, Clone)]
+pub struct PercentAboveMA {
+    /// Moving average period
+    ma_period: usize,
+    /// Calculation period for percentage
+    calc_period: usize,
+}
+
+impl PercentAboveMA {
+    /// Creates a new PercentAboveMA indicator.
+    ///
+    /// # Arguments
+    /// * `ma_period` - Period for the moving average (minimum 5)
+    /// * `calc_period` - Period for calculating the percentage (minimum 5)
+    ///
+    /// # Errors
+    /// Returns an error if either period is less than 5
+    pub fn new(ma_period: usize, calc_period: usize) -> Result<Self> {
+        if ma_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "ma_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if calc_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "calc_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { ma_period, calc_period })
+    }
+
+    /// Calculate the percentage of bars above MA.
+    ///
+    /// # Returns
+    /// Vector of percentage values (0-100).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate simple moving average
+        let mut sma = vec![0.0; n];
+        for i in self.ma_period..n {
+            let start = i.saturating_sub(self.ma_period);
+            let sum: f64 = close[(start + 1)..=i].iter().sum();
+            sma[i] = sum / self.ma_period as f64;
+        }
+
+        // Mark bars above MA
+        let mut above_ma = vec![false; n];
+        for i in self.ma_period..n {
+            above_ma[i] = close[i] > sma[i];
+        }
+
+        // Calculate percentage over calculation period
+        let min_idx = self.ma_period + self.calc_period;
+        for i in min_idx..n {
+            let start = i.saturating_sub(self.calc_period);
+            let count_above = above_ma[(start + 1)..=i].iter().filter(|&&x| x).count();
+            result[i] = (count_above as f64 / self.calc_period as f64) * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PercentAboveMA {
+    fn name(&self) -> &str {
+        "Percent Above MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.ma_period + self.calc_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthDiffusion - Diffusion Index of Breadth
+///
+/// Measures the diffusion of positive breadth readings across multiple
+/// timeframes. It calculates breadth over several lookback periods and
+/// counts how many show positive readings, providing a multi-timeframe
+/// view of market participation.
+///
+/// # Formula
+/// Diffusion = (Count of positive breadth readings across timeframes) / (Number of timeframes) * 100
+///
+/// # Interpretation
+/// - Values > 50: Majority of timeframes show positive breadth
+/// - Values < 50: Majority of timeframes show negative breadth
+/// - Extremes near 0 or 100 indicate broad agreement across timeframes
+#[derive(Debug, Clone)]
+pub struct BreadthDiffusion {
+    /// Short-term period
+    short_period: usize,
+    /// Medium-term period
+    medium_period: usize,
+    /// Long-term period
+    long_period: usize,
+    /// Smoothing period for final output
+    smoothing: usize,
+}
+
+impl BreadthDiffusion {
+    /// Creates a new BreadthDiffusion indicator.
+    ///
+    /// # Arguments
+    /// * `short_period` - Short-term lookback (minimum 5)
+    /// * `medium_period` - Medium-term lookback (must be > short_period)
+    /// * `long_period` - Long-term lookback (must be > medium_period)
+    /// * `smoothing` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if periods are invalid or not in ascending order
+    pub fn new(short_period: usize, medium_period: usize, long_period: usize, smoothing: usize) -> Result<Self> {
+        if short_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if medium_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "medium_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if long_period <= medium_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than medium_period".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { short_period, medium_period, long_period, smoothing })
+    }
+
+    /// Calculate breadth diffusion index values.
+    ///
+    /// # Returns
+    /// Vector of diffusion values (0-100).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate breadth for each timeframe
+        let periods = [self.short_period, self.medium_period, self.long_period];
+        let mut breadth_signals: Vec<Vec<i32>> = vec![vec![0; n]; 3];
+
+        for (idx, &period) in periods.iter().enumerate() {
+            for i in period..n {
+                let start = i.saturating_sub(period);
+                let mut advances = 0;
+                let mut declines = 0;
+
+                for j in (start + 1)..=i {
+                    if close[j] > close[j - 1] {
+                        advances += 1;
+                    } else if close[j] < close[j - 1] {
+                        declines += 1;
+                    }
+                }
+
+                // Positive breadth = more advances than declines
+                if advances > declines {
+                    breadth_signals[idx][i] = 1;
+                } else if declines > advances {
+                    breadth_signals[idx][i] = -1;
+                }
+                // Equal: stays 0
+            }
+        }
+
+        // Calculate raw diffusion (how many timeframes are positive)
+        let mut raw_diffusion = vec![0.0; n];
+        for i in self.long_period..n {
+            let positive_count = breadth_signals.iter()
+                .filter(|signals| signals[i] > 0)
+                .count();
+            let negative_count = breadth_signals.iter()
+                .filter(|signals| signals[i] < 0)
+                .count();
+
+            // Scale: 0 = all negative, 50 = mixed, 100 = all positive
+            // Using a weighted approach: +1 for positive, 0 for neutral, -1 for negative
+            let score = positive_count as f64 - negative_count as f64;
+            // Map from -3..+3 to 0..100
+            raw_diffusion[i] = ((score + 3.0) / 6.0) * 100.0;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in self.long_period..n {
+            if i == self.long_period {
+                result[i] = raw_diffusion[i];
+            } else {
+                result[i] = alpha * raw_diffusion[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthDiffusion {
+    fn name(&self) -> &str {
+        "Breadth Diffusion"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3070,5 +3713,386 @@ mod tests {
 
         let ba = BreadthAcceleration::new(5, 3, 3).unwrap();
         let _ = ba.compute(&data).unwrap();
+    }
+
+    // ============================================================================
+    // Tests for 6 NEW breadth indicators (AdvanceDeclineRatio, etc.)
+    // ============================================================================
+
+    #[test]
+    fn test_advance_decline_ratio() {
+        let data = make_test_data();
+        let adr = AdvanceDeclineRatio::new(10).unwrap();
+        let result = adr.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..10 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Ratio should be positive
+        for i in 15..result.len() {
+            assert!(result[i] >= 0.0, "Ratio should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_advance_decline_ratio_validation() {
+        assert!(AdvanceDeclineRatio::new(4).is_err()); // period too small
+        assert!(AdvanceDeclineRatio::new(5).is_ok());
+        assert!(AdvanceDeclineRatio::new(10).is_ok());
+    }
+
+    #[test]
+    fn test_advance_decline_ratio_trait() {
+        let data = make_test_data();
+        let adr = AdvanceDeclineRatio::new(10).unwrap();
+        assert_eq!(adr.name(), "Advance Decline Ratio");
+        assert_eq!(adr.min_periods(), 11);
+        let output = adr.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_advance_decline_ratio_bullish() {
+        // Create strongly bullish data
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+
+        let adr = AdvanceDeclineRatio::new(5).unwrap();
+        let result = adr.calculate(&close);
+
+        // Ratio should be > 1.0 in strong uptrend (more advances than declines)
+        let avg_ratio = result[10..].iter().sum::<f64>() / result[10..].len() as f64;
+        assert!(avg_ratio > 1.0, "Bullish market should have ratio > 1.0, got {}", avg_ratio);
+    }
+
+    #[test]
+    fn test_advance_decline_ratio_bearish() {
+        // Create strongly bearish data
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+
+        let adr = AdvanceDeclineRatio::new(5).unwrap();
+        let result = adr.calculate(&close);
+
+        // Ratio should be < 1.0 in downtrend (more declines than advances)
+        let avg_ratio = result[10..].iter().sum::<f64>() / result[10..].len() as f64;
+        assert!(avg_ratio < 1.0, "Bearish market should have ratio < 1.0, got {}", avg_ratio);
+    }
+
+    #[test]
+    fn test_breadth_momentum_indicator() {
+        let data = make_test_data();
+        let bmi = BreadthMomentumIndicator::new(10, 5).unwrap();
+        let result = bmi.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..15 {
+            assert_eq!(result[i], 0.0);
+        }
+    }
+
+    #[test]
+    fn test_breadth_momentum_indicator_validation() {
+        assert!(BreadthMomentumIndicator::new(4, 5).is_err()); // period too small
+        assert!(BreadthMomentumIndicator::new(10, 1).is_err()); // roc_period too small
+        assert!(BreadthMomentumIndicator::new(10, 5).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_momentum_indicator_trait() {
+        let data = make_test_data();
+        let bmi = BreadthMomentumIndicator::new(10, 5).unwrap();
+        assert_eq!(bmi.name(), "Breadth Momentum Indicator");
+        assert_eq!(bmi.min_periods(), 16);
+        let output = bmi.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_momentum_indicator_acceleration() {
+        // Create data that transitions from mixed to strongly bullish
+        let mut close: Vec<f64> = vec![100.0; 50];
+        // First section: mixed (oscillating with slight decline tendency)
+        for i in 1..25 {
+            if i % 3 == 0 {
+                close[i] = close[i - 1] + 0.3; // Up
+            } else {
+                close[i] = close[i - 1] - 0.2; // Down
+            }
+        }
+        // Second section: strongly bullish (all advances)
+        for i in 25..50 {
+            close[i] = close[i - 1] + 1.0; // All up days
+        }
+
+        let bmi = BreadthMomentumIndicator::new(5, 3).unwrap();
+        let result = bmi.calculate(&close);
+
+        // Should have non-zero values after warmup period
+        let has_nonzero = result[15..].iter().any(|&v| v.abs() > 0.01);
+        assert!(has_nonzero, "Should produce non-zero momentum values");
+    }
+
+    #[test]
+    fn test_cumulative_breadth_line() {
+        let data = make_test_data();
+        let cbl = CumulativeBreadthLine::new(1000.0).unwrap();
+        let result = cbl.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First value should be base value
+        assert_eq!(result[0], 1000.0);
+        // Values should be cumulative
+        let has_variation = result.windows(2).any(|w| w[0] != w[1]);
+        assert!(has_variation, "Cumulative line should have variation");
+    }
+
+    #[test]
+    fn test_cumulative_breadth_line_validation() {
+        assert!(CumulativeBreadthLine::new(-100.0).is_err()); // negative base
+        assert!(CumulativeBreadthLine::new(0.0).is_ok());
+        assert!(CumulativeBreadthLine::new(1000.0).is_ok());
+    }
+
+    #[test]
+    fn test_cumulative_breadth_line_trait() {
+        let data = make_test_data();
+        let cbl = CumulativeBreadthLine::new(1000.0).unwrap();
+        assert_eq!(cbl.name(), "Cumulative Breadth Line");
+        assert_eq!(cbl.min_periods(), 2);
+        let output = cbl.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_cumulative_breadth_line_rising() {
+        // Create bullish data
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+
+        let cbl = CumulativeBreadthLine::new(0.0).unwrap();
+        let result = cbl.calculate(&close);
+
+        // Line should rise in uptrend
+        assert!(result[49] > result[0], "CBL should rise in uptrend");
+    }
+
+    #[test]
+    fn test_cumulative_breadth_line_falling() {
+        // Create bearish data
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+
+        let cbl = CumulativeBreadthLine::new(100.0).unwrap();
+        let result = cbl.calculate(&close);
+
+        // Line should fall in downtrend
+        assert!(result[49] < result[0], "CBL should fall in downtrend");
+    }
+
+    #[test]
+    fn test_cumulative_breadth_line_default() {
+        let cbl = CumulativeBreadthLine::default_params().unwrap();
+        let close = vec![100.0, 101.0, 102.0, 101.5, 103.0];
+        let result = cbl.calculate(&close);
+
+        assert_eq!(result[0], 1000.0);
+    }
+
+    #[test]
+    fn test_high_low_index() {
+        let data = make_test_data();
+        let hli = HighLowIndex::new(10, 10).unwrap();
+        let result = hli.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..20 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be bounded -100 to +100
+        for i in 25..result.len() {
+            assert!(result[i] >= -100.0 && result[i] <= 100.0,
+                "HLI should be -100 to 100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_high_low_index_validation() {
+        assert!(HighLowIndex::new(4, 10).is_err()); // lookback too small
+        assert!(HighLowIndex::new(10, 4).is_err()); // calc_period too small
+        assert!(HighLowIndex::new(10, 10).is_ok());
+    }
+
+    #[test]
+    fn test_high_low_index_trait() {
+        let data = make_test_data();
+        let hli = HighLowIndex::new(10, 10).unwrap();
+        assert_eq!(hli.name(), "High Low Index");
+        assert_eq!(hli.min_periods(), 21);
+        let output = hli.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_high_low_index_uptrend() {
+        // Create strong uptrend with new highs
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 0.5).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 0.5).collect();
+
+        let hli = HighLowIndex::new(5, 5).unwrap();
+        let result = hli.calculate(&high, &low, &close);
+
+        // Should have positive readings in uptrend (more new highs)
+        let avg = result[15..].iter().sum::<f64>() / result[15..].len() as f64;
+        assert!(avg >= 0.0, "Uptrend should have non-negative HLI, got {}", avg);
+    }
+
+    #[test]
+    fn test_percent_above_ma() {
+        let data = make_test_data();
+        let pama = PercentAboveMA::new(10, 10).unwrap();
+        let result = pama.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..20 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "PAMA should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_percent_above_ma_validation() {
+        assert!(PercentAboveMA::new(4, 10).is_err()); // ma_period too small
+        assert!(PercentAboveMA::new(10, 4).is_err()); // calc_period too small
+        assert!(PercentAboveMA::new(10, 10).is_ok());
+    }
+
+    #[test]
+    fn test_percent_above_ma_trait() {
+        let data = make_test_data();
+        let pama = PercentAboveMA::new(10, 10).unwrap();
+        assert_eq!(pama.name(), "Percent Above MA");
+        assert_eq!(pama.min_periods(), 21);
+        let output = pama.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_percent_above_ma_uptrend() {
+        // Create strong uptrend - price consistently above MA
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let pama = PercentAboveMA::new(5, 10).unwrap();
+        let result = pama.calculate(&close);
+
+        // In uptrend, most closes should be above MA
+        let avg = result[20..].iter().sum::<f64>() / result[20..].len() as f64;
+        assert!(avg > 50.0, "Uptrend should have PAMA > 50%, got {}", avg);
+    }
+
+    #[test]
+    fn test_percent_above_ma_downtrend() {
+        // Create strong downtrend - price consistently below MA
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64 * 2.0).collect();
+
+        let pama = PercentAboveMA::new(5, 10).unwrap();
+        let result = pama.calculate(&close);
+
+        // In downtrend, most closes should be below MA
+        let avg = result[20..].iter().sum::<f64>() / result[20..].len() as f64;
+        assert!(avg < 50.0, "Downtrend should have PAMA < 50%, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_diffusion() {
+        let data = make_test_data();
+        let bd = BreadthDiffusion::new(5, 10, 20, 3).unwrap();
+        let result = bd.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..20 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "Diffusion should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_breadth_diffusion_validation() {
+        assert!(BreadthDiffusion::new(4, 10, 20, 3).is_err()); // short too small
+        assert!(BreadthDiffusion::new(5, 5, 20, 3).is_err()); // medium <= short
+        assert!(BreadthDiffusion::new(5, 10, 10, 3).is_err()); // long <= medium
+        assert!(BreadthDiffusion::new(5, 10, 20, 1).is_err()); // smoothing too small
+        assert!(BreadthDiffusion::new(5, 10, 20, 3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_diffusion_trait() {
+        let data = make_test_data();
+        let bd = BreadthDiffusion::new(5, 10, 20, 3).unwrap();
+        assert_eq!(bd.name(), "Breadth Diffusion");
+        assert_eq!(bd.min_periods(), 23);
+        let output = bd.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_diffusion_bullish() {
+        // Create strong uptrend - all timeframes should show positive
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+
+        let bd = BreadthDiffusion::new(5, 10, 15, 2).unwrap();
+        let result = bd.calculate(&close);
+
+        // Strong uptrend should show high diffusion (near 100)
+        let avg = result[20..].iter().sum::<f64>() / result[20..].len() as f64;
+        assert!(avg > 50.0, "Bullish market should have high diffusion, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_diffusion_bearish() {
+        // Create strong downtrend - all timeframes should show negative
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+
+        let bd = BreadthDiffusion::new(5, 10, 15, 2).unwrap();
+        let result = bd.calculate(&close);
+
+        // Strong downtrend should show low diffusion (near 0)
+        let avg = result[20..].iter().sum::<f64>() / result[20..].len() as f64;
+        assert!(avg < 50.0, "Bearish market should have low diffusion, got {}", avg);
+    }
+
+    #[test]
+    fn test_all_newest_six_indicators_compute() {
+        let data = make_test_data();
+
+        // Verify all 6 NEWEST indicators can compute successfully
+        let adr = AdvanceDeclineRatio::new(10).unwrap();
+        let _ = adr.compute(&data).unwrap();
+
+        let bmi = BreadthMomentumIndicator::new(10, 5).unwrap();
+        let _ = bmi.compute(&data).unwrap();
+
+        let cbl = CumulativeBreadthLine::new(1000.0).unwrap();
+        let _ = cbl.compute(&data).unwrap();
+
+        let hli = HighLowIndex::new(10, 10).unwrap();
+        let _ = hli.compute(&data).unwrap();
+
+        let pama = PercentAboveMA::new(10, 10).unwrap();
+        let _ = pama.compute(&data).unwrap();
+
+        let bd = BreadthDiffusion::new(5, 10, 20, 3).unwrap();
+        let _ = bd.compute(&data).unwrap();
     }
 }

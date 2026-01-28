@@ -3739,6 +3739,1020 @@ impl TechnicalIndicator for EnhancedPairsTradingSignal {
 }
 
 // ============================================================================
+// RelativeRotation
+// ============================================================================
+
+/// Relative Rotation - RRG-style relative rotation indicator.
+///
+/// This indicator implements a Relative Rotation Graph (RRG) style analysis,
+/// measuring both relative strength (RS) and momentum of relative strength (RS-Momentum).
+/// It helps identify the rotation of assets through different market phases.
+///
+/// # RRG Quadrants
+/// - Leading (RS > 100, RS-Momentum > 100): Strong and strengthening
+/// - Weakening (RS > 100, RS-Momentum < 100): Strong but weakening
+/// - Lagging (RS < 100, RS-Momentum < 100): Weak and weakening
+/// - Improving (RS < 100, RS-Momentum > 100): Weak but improving
+///
+/// # Output
+/// Returns a composite score combining RS and RS-Momentum normalized around 0.
+/// - Positive values: Leading/Improving phases
+/// - Negative values: Weakening/Lagging phases
+#[derive(Debug, Clone)]
+pub struct RelativeRotation {
+    /// Period for relative strength calculation.
+    rs_period: usize,
+    /// Period for momentum calculation.
+    momentum_period: usize,
+    /// Smoothing period for output.
+    smooth_period: usize,
+    /// Benchmark series for comparison.
+    benchmark_series: Vec<f64>,
+}
+
+impl RelativeRotation {
+    /// Create a new RelativeRotation indicator.
+    ///
+    /// # Arguments
+    /// * `rs_period` - Period for relative strength (must be >= 10)
+    /// * `momentum_period` - Period for RS momentum (must be >= 5)
+    /// * `smooth_period` - Smoothing period (must be >= 1)
+    pub fn new(rs_period: usize, momentum_period: usize, smooth_period: usize) -> Result<Self> {
+        if rs_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "rs_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if momentum_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self {
+            rs_period,
+            momentum_period,
+            smooth_period,
+            benchmark_series: Vec::new(),
+        })
+    }
+
+    /// Set the benchmark series for comparison.
+    pub fn with_benchmark(mut self, series: &[f64]) -> Self {
+        self.benchmark_series = series.to_vec();
+        self
+    }
+
+    /// Calculate relative rotation for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let min_req = self.rs_period + self.momentum_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_req {
+            return result;
+        }
+
+        // Calculate relative strength ratio (asset / benchmark)
+        let mut rs_ratio = vec![100.0; n];
+        for i in (self.rs_period - 1)..n {
+            let start = i + 1 - self.rs_period;
+
+            // Calculate performance over the period
+            if dual.series1[start] > 1e-10 && dual.series2[start] > 1e-10 {
+                let asset_perf = dual.series1[i] / dual.series1[start];
+                let bench_perf = dual.series2[i] / dual.series2[start];
+
+                if bench_perf > 1e-10 {
+                    // RS normalized to 100 (100 = equal performance)
+                    rs_ratio[i] = (asset_perf / bench_perf) * 100.0;
+                }
+            }
+        }
+
+        // Calculate RS-Momentum (rate of change of RS)
+        let mut rs_momentum = vec![100.0; n];
+        for i in (self.rs_period + self.momentum_period - 1)..n {
+            if rs_ratio[i - self.momentum_period] > 1e-10 {
+                // Momentum normalized to 100 (100 = no change)
+                rs_momentum[i] = (rs_ratio[i] / rs_ratio[i - self.momentum_period]) * 100.0;
+            }
+        }
+
+        // Combine into rotation score
+        // Positive = Leading or Improving, Negative = Weakening or Lagging
+        let mut raw_score = vec![0.0; n];
+        for i in (min_req - 1)..n {
+            // Center around 0: RS - 100 gives deviation from benchmark
+            // RS-Momentum - 100 gives direction of change
+            let rs_dev = rs_ratio[i] - 100.0;
+            let mom_dev = rs_momentum[i] - 100.0;
+
+            // Weighted combination: RS deviation + momentum direction
+            raw_score[i] = rs_dev * 0.6 + mom_dev * 10.0 * 0.4;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        let start_idx = min_req - 1;
+
+        if start_idx < n {
+            result[start_idx] = raw_score[start_idx];
+            for i in (start_idx + 1)..n {
+                result[i] = alpha * raw_score[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for RelativeRotation {
+    fn name(&self) -> &str {
+        "Relative Rotation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.rs_period + self.momentum_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.benchmark_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "benchmark_series".to_string(),
+                reason: "Benchmark series must be set before computing RelativeRotation".to_string(),
+            });
+        }
+
+        if self.benchmark_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "benchmark_series".to_string(),
+                reason: format!(
+                    "Benchmark series length ({}) must match primary series length ({})",
+                    self.benchmark_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.benchmark_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// AlphaGenerator
+// ============================================================================
+
+/// Alpha Generator - Calculates rolling alpha (excess return) vs benchmark.
+///
+/// This indicator measures the alpha component of returns - the portion of
+/// performance that cannot be explained by benchmark/market movements.
+/// It uses a simple regression approach to separate alpha from beta-driven returns.
+///
+/// # Formula
+/// Alpha = Asset Return - Beta * Benchmark Return
+///
+/// # Interpretation
+/// - Positive alpha: Asset outperforming on risk-adjusted basis
+/// - Negative alpha: Asset underperforming on risk-adjusted basis
+/// - Annualized alpha values for easier interpretation
+#[derive(Debug, Clone)]
+pub struct AlphaGenerator {
+    /// Period for alpha calculation.
+    period: usize,
+    /// Annualization factor (252 for daily, 52 for weekly).
+    annualization_factor: f64,
+    /// Benchmark series for comparison.
+    benchmark_series: Vec<f64>,
+}
+
+impl AlphaGenerator {
+    /// Create a new AlphaGenerator indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period (must be >= 20)
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            annualization_factor: 252.0,
+            benchmark_series: Vec::new(),
+        })
+    }
+
+    /// Set the annualization factor (default: 252 for daily data).
+    pub fn with_annualization(mut self, factor: f64) -> Self {
+        self.annualization_factor = factor;
+        self
+    }
+
+    /// Set the benchmark series for comparison.
+    pub fn with_benchmark(mut self, series: &[f64]) -> Self {
+        self.benchmark_series = series.to_vec();
+        self
+    }
+
+    /// Calculate rolling alpha for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate returns for both series
+        let mut returns1 = vec![0.0; n];
+        let mut returns2 = vec![0.0; n];
+
+        for i in 1..n {
+            if dual.series1[i - 1] > 1e-10 {
+                returns1[i] = dual.series1[i] / dual.series1[i - 1] - 1.0;
+            }
+            if dual.series2[i - 1] > 1e-10 {
+                returns2[i] = dual.series2[i] / dual.series2[i - 1] - 1.0;
+            }
+        }
+
+        // Calculate rolling alpha using regression
+        for i in self.period..n {
+            let start = i + 1 - self.period;
+            let r1 = &returns1[start..=i];
+            let r2 = &returns2[start..=i];
+
+            let mean1: f64 = r1.iter().sum::<f64>() / self.period as f64;
+            let mean2: f64 = r2.iter().sum::<f64>() / self.period as f64;
+
+            // Calculate beta (covariance / variance)
+            let mut cov = 0.0;
+            let mut var2 = 0.0;
+
+            for (ret1, ret2) in r1.iter().zip(r2.iter()) {
+                let d1 = ret1 - mean1;
+                let d2 = ret2 - mean2;
+                cov += d1 * d2;
+                var2 += d2 * d2;
+            }
+
+            let beta = if var2 > 1e-10 { cov / var2 } else { 1.0 };
+
+            // Alpha = mean asset return - beta * mean benchmark return
+            let alpha = mean1 - beta * mean2;
+
+            // Annualize alpha (multiply by annualization factor)
+            result[i] = alpha * self.annualization_factor * 100.0; // Express as percentage
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for AlphaGenerator {
+    fn name(&self) -> &str {
+        "Alpha Generator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.benchmark_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "benchmark_series".to_string(),
+                reason: "Benchmark series must be set before computing AlphaGenerator".to_string(),
+            });
+        }
+
+        if self.benchmark_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "benchmark_series".to_string(),
+                reason: format!(
+                    "Benchmark series length ({}) must match primary series length ({})",
+                    self.benchmark_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.benchmark_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// TrackingError
+// ============================================================================
+
+/// Tracking Error - Measures the standard deviation of active returns.
+///
+/// Tracking error quantifies how closely a portfolio follows its benchmark.
+/// Lower tracking error indicates the portfolio tracks the benchmark closely,
+/// while higher values indicate more deviation from the benchmark.
+///
+/// # Formula
+/// Tracking Error = StdDev(Asset Return - Benchmark Return) * sqrt(Annualization Factor)
+///
+/// # Interpretation
+/// - < 1%: Very tight tracking (index fund-like)
+/// - 1-3%: Low tracking error (enhanced index)
+/// - 3-6%: Moderate tracking error (active management)
+/// - > 6%: High tracking error (aggressive active management)
+#[derive(Debug, Clone)]
+pub struct TrackingError {
+    /// Period for tracking error calculation.
+    period: usize,
+    /// Annualization factor (252 for daily, 52 for weekly).
+    annualization_factor: f64,
+    /// Benchmark series for comparison.
+    benchmark_series: Vec<f64>,
+}
+
+impl TrackingError {
+    /// Create a new TrackingError indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period (must be >= 20)
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            annualization_factor: 252.0,
+            benchmark_series: Vec::new(),
+        })
+    }
+
+    /// Set the annualization factor (default: 252 for daily data).
+    pub fn with_annualization(mut self, factor: f64) -> Self {
+        self.annualization_factor = factor;
+        self
+    }
+
+    /// Set the benchmark series for comparison.
+    pub fn with_benchmark(mut self, series: &[f64]) -> Self {
+        self.benchmark_series = series.to_vec();
+        self
+    }
+
+    /// Calculate rolling tracking error for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate returns for both series
+        let mut returns1 = vec![0.0; n];
+        let mut returns2 = vec![0.0; n];
+
+        for i in 1..n {
+            if dual.series1[i - 1] > 1e-10 {
+                returns1[i] = dual.series1[i] / dual.series1[i - 1] - 1.0;
+            }
+            if dual.series2[i - 1] > 1e-10 {
+                returns2[i] = dual.series2[i] / dual.series2[i - 1] - 1.0;
+            }
+        }
+
+        // Calculate active returns (difference between asset and benchmark)
+        let active_returns: Vec<f64> = returns1.iter()
+            .zip(returns2.iter())
+            .map(|(r1, r2)| r1 - r2)
+            .collect();
+
+        // Calculate rolling tracking error
+        for i in self.period..n {
+            let start = i + 1 - self.period;
+            let window = &active_returns[start..=i];
+
+            let mean: f64 = window.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = window.iter()
+                .map(|x| (x - mean).powi(2))
+                .sum::<f64>() / (self.period - 1) as f64; // Sample variance
+
+            // Annualized tracking error
+            let tracking_error = variance.sqrt() * self.annualization_factor.sqrt();
+            result[i] = tracking_error * 100.0; // Express as percentage
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for TrackingError {
+    fn name(&self) -> &str {
+        "Tracking Error"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.benchmark_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "benchmark_series".to_string(),
+                reason: "Benchmark series must be set before computing TrackingError".to_string(),
+            });
+        }
+
+        if self.benchmark_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "benchmark_series".to_string(),
+                reason: format!(
+                    "Benchmark series length ({}) must match primary series length ({})",
+                    self.benchmark_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.benchmark_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// IntermarketInformationRatio
+// ============================================================================
+
+/// Intermarket Information Ratio - Risk-adjusted excess return measurement.
+///
+/// This indicator calculates the information ratio specific to intermarket analysis,
+/// measuring how consistently one asset outperforms another on a risk-adjusted basis.
+/// Unlike standard IR, this is optimized for comparing two assets directly.
+///
+/// # Formula
+/// IR = Mean(Asset Return - Benchmark Return) / StdDev(Asset Return - Benchmark Return)
+/// Annualized IR = IR * sqrt(Annualization Factor)
+///
+/// # Interpretation
+/// - IR > 0.5: Good risk-adjusted outperformance
+/// - IR > 1.0: Excellent risk-adjusted outperformance
+/// - IR < 0: Underperformance
+/// - Higher absolute values indicate more consistent relative performance
+#[derive(Debug, Clone)]
+pub struct IntermarketInformationRatio {
+    /// Period for IR calculation.
+    period: usize,
+    /// Annualization factor (252 for daily, 52 for weekly).
+    annualization_factor: f64,
+    /// Secondary series for comparison.
+    secondary_series: Vec<f64>,
+}
+
+impl IntermarketInformationRatio {
+    /// Create a new IntermarketInformationRatio indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period (must be >= 20)
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            annualization_factor: 252.0,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the annualization factor (default: 252 for daily data).
+    pub fn with_annualization(mut self, factor: f64) -> Self {
+        self.annualization_factor = factor;
+        self
+    }
+
+    /// Set the secondary series for comparison.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate rolling information ratio for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate returns for both series
+        let mut returns1 = vec![0.0; n];
+        let mut returns2 = vec![0.0; n];
+
+        for i in 1..n {
+            if dual.series1[i - 1] > 1e-10 {
+                returns1[i] = dual.series1[i] / dual.series1[i - 1] - 1.0;
+            }
+            if dual.series2[i - 1] > 1e-10 {
+                returns2[i] = dual.series2[i] / dual.series2[i - 1] - 1.0;
+            }
+        }
+
+        // Calculate active returns
+        let active_returns: Vec<f64> = returns1.iter()
+            .zip(returns2.iter())
+            .map(|(r1, r2)| r1 - r2)
+            .collect();
+
+        // Calculate rolling information ratio
+        for i in self.period..n {
+            let start = i + 1 - self.period;
+            let window = &active_returns[start..=i];
+
+            let mean: f64 = window.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = window.iter()
+                .map(|x| (x - mean).powi(2))
+                .sum::<f64>() / (self.period - 1) as f64;
+            let std_dev = variance.sqrt();
+
+            // Information Ratio = mean excess return / tracking error
+            if std_dev > 1e-10 {
+                let ir = mean / std_dev;
+                // Annualize the IR
+                result[i] = ir * self.annualization_factor.sqrt();
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for IntermarketInformationRatio {
+    fn name(&self) -> &str {
+        "Intermarket Information Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing IntermarketInformationRatio".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// IntermarketCorrelationBreakdown
+// ============================================================================
+
+/// Intermarket Correlation Breakdown - Detects correlation regime changes between two series.
+///
+/// This indicator monitors the correlation between two market series and detects
+/// when the correlation structure breaks down or undergoes significant changes.
+/// Unlike autocorrelation-based breakdown detection, this focuses on cross-asset
+/// correlation dynamics.
+///
+/// # Interpretation
+/// - Values near 0: Stable correlation regime
+/// - Large positive values: Correlation increasing rapidly (convergence)
+/// - Large negative values: Correlation decreasing rapidly (divergence)
+/// - Spikes indicate potential regime changes requiring attention
+#[derive(Debug, Clone)]
+pub struct IntermarketCorrelationBreakdown {
+    /// Short-term correlation period.
+    short_period: usize,
+    /// Long-term correlation period.
+    long_period: usize,
+    /// Threshold for breakdown detection.
+    threshold: f64,
+    /// Secondary series for correlation.
+    secondary_series: Vec<f64>,
+}
+
+impl IntermarketCorrelationBreakdown {
+    /// Create a new IntermarketCorrelationBreakdown indicator.
+    ///
+    /// # Arguments
+    /// * `short_period` - Short-term correlation window (must be >= 10)
+    /// * `long_period` - Long-term correlation window (must be > short_period)
+    /// * `threshold` - Breakdown detection threshold (must be > 0)
+    pub fn new(short_period: usize, long_period: usize, threshold: f64) -> Result<Self> {
+        if short_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if long_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if threshold <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        Ok(Self {
+            short_period,
+            long_period,
+            threshold,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the secondary series for correlation.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate correlation for a window.
+    fn correlation(series1: &[f64], series2: &[f64]) -> f64 {
+        let n = series1.len() as f64;
+        if n < 2.0 {
+            return 0.0;
+        }
+
+        let mean1: f64 = series1.iter().sum::<f64>() / n;
+        let mean2: f64 = series2.iter().sum::<f64>() / n;
+
+        let mut cov = 0.0;
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+
+        for (v1, v2) in series1.iter().zip(series2.iter()) {
+            let d1 = v1 - mean1;
+            let d2 = v2 - mean2;
+            cov += d1 * d2;
+            var1 += d1 * d1;
+            var2 += d2 * d2;
+        }
+
+        let denom = (var1 * var2).sqrt();
+        if denom < 1e-10 {
+            0.0
+        } else {
+            cov / denom
+        }
+    }
+
+    /// Calculate correlation breakdown score for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.long_period {
+            return result;
+        }
+
+        // Calculate rolling correlations
+        let mut short_corr = vec![0.0; n];
+        let mut long_corr = vec![0.0; n];
+
+        for i in (self.short_period - 1)..n {
+            let start = i + 1 - self.short_period;
+            short_corr[i] = Self::correlation(
+                &dual.series1[start..=i],
+                &dual.series2[start..=i],
+            );
+        }
+
+        for i in (self.long_period - 1)..n {
+            let start = i + 1 - self.long_period;
+            long_corr[i] = Self::correlation(
+                &dual.series1[start..=i],
+                &dual.series2[start..=i],
+            );
+        }
+
+        // Detect correlation breakdown
+        for i in (self.long_period - 1)..n {
+            // Correlation change (short vs long)
+            let corr_diff = short_corr[i] - long_corr[i];
+
+            // Rate of correlation change
+            let corr_change = if i >= self.short_period {
+                short_corr[i] - short_corr[i - self.short_period / 2]
+            } else {
+                0.0
+            };
+
+            // Breakdown score: combination of level difference and rate of change
+            let raw_score = corr_diff.abs() + corr_change.abs() * 2.0;
+
+            // Apply threshold and scale
+            if raw_score > self.threshold {
+                // Positive = correlation increasing (convergence)
+                // Negative = correlation decreasing (divergence)
+                let direction = if corr_diff >= 0.0 { 1.0 } else { -1.0 };
+                result[i] = direction * (raw_score / self.threshold - 1.0) * 50.0;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for IntermarketCorrelationBreakdown {
+    fn name(&self) -> &str {
+        "Intermarket Correlation Breakdown"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing IntermarketCorrelationBreakdown".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// RegimeCorrelation
+// ============================================================================
+
+/// Regime Correlation - Calculates correlation conditioned on market regime.
+///
+/// This indicator measures correlation differently based on the current market
+/// regime (trending up, trending down, or ranging). This is important because
+/// correlations often change dramatically during different market conditions.
+///
+/// # Interpretation
+/// - Output includes regime-adjusted correlation
+/// - Positive values indicate positive correlation in current regime
+/// - Negative values indicate negative correlation in current regime
+/// - Magnitude indicates correlation strength
+/// - Changes in regime correlation can signal portfolio rebalancing needs
+#[derive(Debug, Clone)]
+pub struct RegimeCorrelation {
+    /// Period for correlation calculation.
+    correlation_period: usize,
+    /// Period for regime detection.
+    regime_period: usize,
+    /// Regime threshold (return threshold for up/down classification).
+    regime_threshold: f64,
+    /// Secondary series for correlation.
+    secondary_series: Vec<f64>,
+}
+
+impl RegimeCorrelation {
+    /// Create a new RegimeCorrelation indicator.
+    ///
+    /// # Arguments
+    /// * `correlation_period` - Period for correlation (must be >= 10)
+    /// * `regime_period` - Period for regime detection (must be >= 5)
+    /// * `regime_threshold` - Return threshold for regime classification (must be >= 0)
+    pub fn new(correlation_period: usize, regime_period: usize, regime_threshold: f64) -> Result<Self> {
+        if correlation_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "correlation_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if regime_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "regime_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if regime_threshold < 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "regime_threshold".to_string(),
+                reason: "must be at least 0".to_string(),
+            });
+        }
+        Ok(Self {
+            correlation_period,
+            regime_period,
+            regime_threshold,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the secondary series for correlation.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Determine market regime: 1 = up, -1 = down, 0 = ranging.
+    fn detect_regime(returns: &[f64], threshold: f64) -> i32 {
+        let mean_return: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+        let annualized = mean_return * 252.0; // Approximate annualization
+
+        if annualized > threshold {
+            1 // Up regime
+        } else if annualized < -threshold {
+            -1 // Down regime
+        } else {
+            0 // Ranging
+        }
+    }
+
+    /// Calculate correlation for a window.
+    fn correlation(series1: &[f64], series2: &[f64]) -> f64 {
+        let n = series1.len() as f64;
+        if n < 2.0 {
+            return 0.0;
+        }
+
+        let mean1: f64 = series1.iter().sum::<f64>() / n;
+        let mean2: f64 = series2.iter().sum::<f64>() / n;
+
+        let mut cov = 0.0;
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+
+        for (v1, v2) in series1.iter().zip(series2.iter()) {
+            let d1 = v1 - mean1;
+            let d2 = v2 - mean2;
+            cov += d1 * d2;
+            var1 += d1 * d1;
+            var2 += d2 * d2;
+        }
+
+        let denom = (var1 * var2).sqrt();
+        if denom < 1e-10 {
+            0.0
+        } else {
+            cov / denom
+        }
+    }
+
+    /// Calculate regime-adjusted correlation for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let min_req = self.correlation_period.max(self.regime_period);
+        let mut result = vec![0.0; n];
+
+        if n < min_req + 1 {
+            return result;
+        }
+
+        // Calculate returns for regime detection (using first series as market proxy)
+        let mut returns1 = vec![0.0; n];
+        for i in 1..n {
+            if dual.series1[i - 1] > 1e-10 {
+                returns1[i] = dual.series1[i] / dual.series1[i - 1] - 1.0;
+            }
+        }
+
+        // Calculate rolling regime-adjusted correlation
+        for i in (min_req - 1)..n {
+            // Detect current regime
+            let regime_start = i + 1 - self.regime_period;
+            let regime_window = &returns1[regime_start..=i];
+            let regime = Self::detect_regime(regime_window, self.regime_threshold);
+
+            // Calculate correlation
+            let corr_start = i + 1 - self.correlation_period;
+            let corr = Self::correlation(
+                &dual.series1[corr_start..=i],
+                &dual.series2[corr_start..=i],
+            );
+
+            // Regime-adjusted output: correlation scaled by regime
+            // - In up regime: positive correlation is good (both rising)
+            // - In down regime: negative correlation is good (hedge)
+            // - In ranging: raw correlation
+            match regime {
+                1 => result[i] = corr * 100.0, // Up regime: report correlation
+                -1 => result[i] = -corr * 100.0, // Down regime: invert perspective
+                _ => result[i] = corr * 50.0, // Ranging: reduced weight
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for RegimeCorrelation {
+    fn name(&self) -> &str {
+        "Regime Correlation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.correlation_period.max(self.regime_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing RegimeCorrelation".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -5941,5 +6955,697 @@ mod tests {
 
         assert_eq!(result.len(), 15);
         assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ========================================================================
+    // Tests for 6 NEW intermarket indicators
+    // ========================================================================
+
+    // RelativeRotation tests
+    #[test]
+    fn test_relative_rotation_new() {
+        assert!(RelativeRotation::new(10, 5, 3).is_ok());
+        assert!(RelativeRotation::new(20, 10, 5).is_ok());
+        assert!(RelativeRotation::new(9, 5, 3).is_err()); // rs_period too small
+        assert!(RelativeRotation::new(10, 4, 3).is_err()); // momentum_period too small
+        assert!(RelativeRotation::new(10, 5, 0).is_err()); // smooth_period too small
+    }
+
+    #[test]
+    fn test_relative_rotation_new_validation() {
+        let err = RelativeRotation::new(9, 5, 3).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "rs_period");
+                assert_eq!(reason, "must be at least 10");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = RelativeRotation::new(10, 4, 3).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "momentum_period");
+                assert_eq!(reason, "must be at least 5");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err3 = RelativeRotation::new(10, 5, 0).unwrap_err();
+        match err3 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "smooth_period");
+                assert_eq!(reason, "must be at least 1");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_relative_rotation_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = RelativeRotation::new(15, 5, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be 0
+        for i in 0..19 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values after warmup should be finite
+        for i in 25..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_relative_rotation_outperformance() {
+        // Series1 strongly outperforming Series2
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64).powf(1.2) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.1).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = RelativeRotation::new(15, 5, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Should show positive rotation (leading)
+        let avg_score: f64 = result[30..].iter().sum::<f64>() / (result.len() - 30) as f64;
+        assert!(avg_score > 0.0, "Expected positive rotation for outperformance, got {}", avg_score);
+    }
+
+    #[test]
+    fn test_relative_rotation_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = RelativeRotation::new(15, 5, 3).unwrap().with_benchmark(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Relative Rotation");
+        assert_eq!(indicator.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_relative_rotation_missing_benchmark() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let data = OHLCVSeries::from_close(series1);
+
+        let indicator = RelativeRotation::new(15, 5, 3).unwrap();
+        assert!(indicator.compute(&data).is_err());
+    }
+
+    #[test]
+    fn test_relative_rotation_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = RelativeRotation::new(15, 5, 3).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 25..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_relative_rotation_insufficient_data() {
+        let dual = create_test_dual_series(15);
+        let indicator = RelativeRotation::new(15, 5, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 15);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // AlphaGenerator tests
+    #[test]
+    fn test_alpha_generator_new() {
+        assert!(AlphaGenerator::new(20).is_ok());
+        assert!(AlphaGenerator::new(30).is_ok());
+        assert!(AlphaGenerator::new(19).is_err()); // period too small
+    }
+
+    #[test]
+    fn test_alpha_generator_new_validation() {
+        let err = AlphaGenerator::new(19).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "period");
+                assert_eq!(reason, "must be at least 20");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_alpha_generator_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = AlphaGenerator::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be 0
+        for i in 0..30 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values after warmup should be finite
+        for i in 35..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_alpha_generator_positive_alpha() {
+        // Series1 with independent positive movement (not correlated with series2)
+        // to generate positive alpha
+        let series1: Vec<f64> = (0..100).map(|i| {
+            100.0 + (i as f64) * 0.5 + ((i as f64) * 0.2).sin() * 2.0
+        }).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + ((i as f64) * 0.3).cos() * 1.0).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = AlphaGenerator::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Alpha values should be finite and non-zero when there's independent performance
+        let has_nonzero = result[40..].iter().any(|&v| v != 0.0 && v.is_finite());
+        assert!(has_nonzero, "Alpha should produce non-zero finite values");
+    }
+
+    #[test]
+    fn test_alpha_generator_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = AlphaGenerator::new(30).unwrap().with_benchmark(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Alpha Generator");
+        assert_eq!(indicator.min_periods(), 31);
+    }
+
+    #[test]
+    fn test_alpha_generator_with_annualization() {
+        let dual = create_test_dual_series(100);
+        let indicator = AlphaGenerator::new(30).unwrap().with_annualization(52.0); // Weekly
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        for i in 35..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_alpha_generator_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = AlphaGenerator::new(30).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 35..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_alpha_generator_insufficient_data() {
+        let dual = create_test_dual_series(20);
+        let indicator = AlphaGenerator::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 20);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // TrackingError tests
+    #[test]
+    fn test_tracking_error_new() {
+        assert!(TrackingError::new(20).is_ok());
+        assert!(TrackingError::new(30).is_ok());
+        assert!(TrackingError::new(19).is_err()); // period too small
+    }
+
+    #[test]
+    fn test_tracking_error_new_validation() {
+        let err = TrackingError::new(19).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "period");
+                assert_eq!(reason, "must be at least 20");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_tracking_error_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = TrackingError::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be 0
+        for i in 0..30 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Tracking error should be positive
+        for i in 35..100 {
+            assert!(result[i] >= 0.0, "Tracking error should be >= 0, got {} at {}", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_tracking_error_tight_tracking() {
+        // Two nearly identical series (tight tracking)
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5 + 0.01).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = TrackingError::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Should have very low tracking error
+        let avg_te: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_te < 5.0, "Expected low tracking error for tight tracking, got {}", avg_te);
+    }
+
+    #[test]
+    fn test_tracking_error_high_deviation() {
+        // Two series with different volatility (high tracking error)
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + ((i as f64) * 0.3).sin() * 10.0).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.5).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = TrackingError::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Should have higher tracking error
+        let has_positive = result[40..].iter().any(|&v| v > 0.0);
+        assert!(has_positive, "Expected some positive tracking error values");
+    }
+
+    #[test]
+    fn test_tracking_error_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = TrackingError::new(30).unwrap().with_benchmark(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Tracking Error");
+        assert_eq!(indicator.min_periods(), 31);
+    }
+
+    #[test]
+    fn test_tracking_error_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = TrackingError::new(30).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 35..100 {
+            assert!(result[i] >= 0.0);
+        }
+    }
+
+    #[test]
+    fn test_tracking_error_insufficient_data() {
+        let dual = create_test_dual_series(20);
+        let indicator = TrackingError::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 20);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // IntermarketInformationRatio tests
+    #[test]
+    fn test_intermarket_information_ratio_new() {
+        assert!(IntermarketInformationRatio::new(20).is_ok());
+        assert!(IntermarketInformationRatio::new(30).is_ok());
+        assert!(IntermarketInformationRatio::new(19).is_err()); // period too small
+    }
+
+    #[test]
+    fn test_intermarket_information_ratio_new_validation() {
+        let err = IntermarketInformationRatio::new(19).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "period");
+                assert_eq!(reason, "must be at least 20");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_intermarket_information_ratio_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = IntermarketInformationRatio::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be 0
+        for i in 0..30 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be finite
+        for i in 35..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_intermarket_information_ratio_consistent_outperformance() {
+        // Series1 consistently outperforming (high IR)
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.8).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.3).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = IntermarketInformationRatio::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Should have positive IR for consistent outperformance
+        let avg_ir: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_ir > 0.0, "Expected positive IR for outperformance, got {}", avg_ir);
+    }
+
+    #[test]
+    fn test_intermarket_information_ratio_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = IntermarketInformationRatio::new(30).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Intermarket Information Ratio");
+        assert_eq!(indicator.min_periods(), 31);
+    }
+
+    #[test]
+    fn test_intermarket_information_ratio_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = IntermarketInformationRatio::new(30).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 35..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_intermarket_information_ratio_insufficient_data() {
+        let dual = create_test_dual_series(20);
+        let indicator = IntermarketInformationRatio::new(30).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 20);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // IntermarketCorrelationBreakdown tests
+    #[test]
+    fn test_intermarket_correlation_breakdown_new() {
+        assert!(IntermarketCorrelationBreakdown::new(10, 30, 0.3).is_ok());
+        assert!(IntermarketCorrelationBreakdown::new(15, 40, 0.2).is_ok());
+        assert!(IntermarketCorrelationBreakdown::new(9, 30, 0.3).is_err()); // short_period too small
+        assert!(IntermarketCorrelationBreakdown::new(30, 20, 0.3).is_err()); // long_period <= short
+        assert!(IntermarketCorrelationBreakdown::new(10, 30, 0.0).is_err()); // threshold <= 0
+    }
+
+    #[test]
+    fn test_intermarket_correlation_breakdown_new_validation() {
+        let err = IntermarketCorrelationBreakdown::new(9, 30, 0.3).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "short_period");
+                assert_eq!(reason, "must be at least 10");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = IntermarketCorrelationBreakdown::new(30, 20, 0.3).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "long_period");
+                assert_eq!(reason, "must be greater than short_period");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err3 = IntermarketCorrelationBreakdown::new(10, 30, 0.0).unwrap_err();
+        match err3 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "threshold");
+                assert_eq!(reason, "must be greater than 0");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_intermarket_correlation_breakdown_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = IntermarketCorrelationBreakdown::new(10, 30, 0.2).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be 0
+        for i in 0..29 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be finite
+        for i in 35..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_intermarket_correlation_breakdown_regime_change() {
+        // Create series with correlation regime change
+        let mut series1 = Vec::with_capacity(150);
+        let mut series2 = Vec::with_capacity(150);
+
+        // First half: positively correlated
+        for i in 0..75 {
+            series1.push(100.0 + (i as f64) * 0.5);
+            series2.push(50.0 + (i as f64) * 0.25);
+        }
+        // Second half: negatively correlated
+        for i in 75..150 {
+            series1.push(137.5 + ((i - 75) as f64) * 0.5);
+            series2.push(68.75 - ((i - 75) as f64) * 0.25);
+        }
+
+        let dual = DualSeries::new(series1, series2);
+        let indicator = IntermarketCorrelationBreakdown::new(15, 40, 0.1).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Should detect some breakdown activity
+        let has_nonzero = result[50..].iter().any(|&v| v != 0.0);
+        assert!(has_nonzero, "Should detect correlation breakdown during regime change");
+    }
+
+    #[test]
+    fn test_intermarket_correlation_breakdown_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = IntermarketCorrelationBreakdown::new(10, 30, 0.2).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Intermarket Correlation Breakdown");
+        assert_eq!(indicator.min_periods(), 30);
+    }
+
+    #[test]
+    fn test_intermarket_correlation_breakdown_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = IntermarketCorrelationBreakdown::new(10, 30, 0.2).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 35..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_intermarket_correlation_breakdown_insufficient_data() {
+        let dual = create_test_dual_series(20);
+        let indicator = IntermarketCorrelationBreakdown::new(10, 30, 0.2).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 20);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // RegimeCorrelation tests
+    #[test]
+    fn test_regime_correlation_new() {
+        assert!(RegimeCorrelation::new(10, 5, 0.05).is_ok());
+        assert!(RegimeCorrelation::new(20, 10, 0.1).is_ok());
+        assert!(RegimeCorrelation::new(9, 5, 0.05).is_err()); // correlation_period too small
+        assert!(RegimeCorrelation::new(10, 4, 0.05).is_err()); // regime_period too small
+        assert!(RegimeCorrelation::new(10, 5, -0.05).is_err()); // threshold < 0
+    }
+
+    #[test]
+    fn test_regime_correlation_new_validation() {
+        let err = RegimeCorrelation::new(9, 5, 0.05).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "correlation_period");
+                assert_eq!(reason, "must be at least 10");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = RegimeCorrelation::new(10, 4, 0.05).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "regime_period");
+                assert_eq!(reason, "must be at least 5");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err3 = RegimeCorrelation::new(10, 5, -0.05).unwrap_err();
+        match err3 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "regime_threshold");
+                assert_eq!(reason, "must be at least 0");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_regime_correlation_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = RegimeCorrelation::new(15, 10, 0.05).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be 0
+        for i in 0..14 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values after warmup should be finite
+        for i in 20..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_regime_correlation_uptrend_regime() {
+        // Two positively correlated series in uptrend
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 1.0).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.5).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = RegimeCorrelation::new(15, 10, 0.01).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // In up regime with positive correlation, should see positive values
+        let avg_corr: f64 = result[25..].iter().sum::<f64>() / (result.len() - 25) as f64;
+        assert!(avg_corr > 0.0, "Expected positive regime correlation in uptrend, got {}", avg_corr);
+    }
+
+    #[test]
+    fn test_regime_correlation_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = RegimeCorrelation::new(15, 10, 0.05).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Regime Correlation");
+        assert_eq!(indicator.min_periods(), 16);
+    }
+
+    #[test]
+    fn test_regime_correlation_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = RegimeCorrelation::new(15, 10, 0.05).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 20..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_regime_correlation_insufficient_data() {
+        let dual = create_test_dual_series(10);
+        let indicator = RegimeCorrelation::new(15, 10, 0.05).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 10);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_regime_correlation_different_regimes() {
+        // Test that different regimes produce different outputs
+        // Create trending up series
+        let series1_up: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 1.5).collect();
+        let series2_up: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.75).collect();
+        let dual_up = DualSeries::new(series1_up, series2_up);
+
+        // Create flat/ranging series
+        let series1_flat: Vec<f64> = (0..100).map(|i| 100.0 + ((i as f64) * 0.3).sin() * 0.5).collect();
+        let series2_flat: Vec<f64> = (0..100).map(|i| 50.0 + ((i as f64) * 0.3).sin() * 0.25).collect();
+        let dual_flat = DualSeries::new(series1_flat, series2_flat);
+
+        let indicator = RegimeCorrelation::new(15, 10, 0.1).unwrap();
+        let result_up = indicator.calculate(&dual_up);
+        let result_flat = indicator.calculate(&dual_flat);
+
+        // Results should be different due to regime detection
+        let avg_up: f64 = result_up[25..].iter().map(|v| v.abs()).sum::<f64>() / (result_up.len() - 25) as f64;
+        let avg_flat: f64 = result_flat[25..].iter().map(|v| v.abs()).sum::<f64>() / (result_flat.len() - 25) as f64;
+
+        // Uptrend should have stronger signals (higher correlation weight)
+        assert!(avg_up != avg_flat || result_up[50] != result_flat[50],
+            "Expected different outputs for different regimes");
     }
 }

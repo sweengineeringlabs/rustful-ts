@@ -94,4 +94,11 @@ pub use advanced::{
     MultiFactorSignal, MultiFactorSignalConfig, MultiFactorSignalOutput,
     AdaptiveMarketScore, AdaptiveMarketScoreConfig, AdaptiveMarketScoreOutput,
     CompositeLeadingIndicator, CompositeLeadingIndicatorConfig, CompositeLeadingIndicatorOutput,
+    // New indicators
+    TechnicalScorecard, TechnicalScorecardConfig, TechnicalScorecardOutput,
+    TrendMomentumVolume, TrendMomentumVolumeConfig, TrendMomentumVolumeOutput,
+    MultiIndicatorConfluence, MultiIndicatorConfluenceConfig, MultiIndicatorConfluenceOutput,
+    MarketConditionIndex, MarketConditionIndexConfig, MarketConditionIndexOutput,
+    SignalStrengthComposite, SignalStrengthCompositeConfig, SignalStrengthCompositeOutput,
+    AdaptiveCompositeMA, AdaptiveCompositeMAConfig, AdaptiveCompositeMAOutput,
 };

@@ -44,6 +44,9 @@ pub use advanced::{
     // New intermarket indicators
     RelativePerformanceIndex, SpreadOscillator, BetaEstimator,
     CointegrationScore, CorrelationTrendAnalyzer, EnhancedPairsTradingSignal,
+    // 6 NEW intermarket indicators
+    RelativeRotation, AlphaGenerator, TrackingError,
+    IntermarketInformationRatio, IntermarketCorrelationBreakdown, RegimeCorrelation,
 };
 
 // ============================================================================

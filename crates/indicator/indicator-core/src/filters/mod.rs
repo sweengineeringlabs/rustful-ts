@@ -29,4 +29,7 @@ pub use advanced::{
     CycleExtractionFilter, AdaptiveHighPassFilter, BandwidthAdaptiveFilter,
     ButterworthBandpassFilter, ChebyshevFilter, WeightedMedianFilter,
     DoubleExponentialFilter, AdaptiveBandpassFilter, HodrickPrescottFilter,
+    // 6 NEW filter indicators
+    GaussianAdaptiveFilter, SavitzkyGolayFilter, TriangularFilter,
+    HammingFilter, SuperSmootherFilter, DecyclerFilter,
 };

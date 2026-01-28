@@ -2472,6 +2472,931 @@ impl TechnicalIndicator for TrendContinuationStrength {
 }
 
 // ============================================================================
+// SwingPointDetector
+// ============================================================================
+
+/// Swing Point Detector - Detects swing highs and lows in price data
+///
+/// Identifies significant price pivot points (swing highs and swing lows)
+/// that can be used for trend analysis, support/resistance identification,
+/// and pattern recognition. A swing high is a high surrounded by lower highs,
+/// and a swing low is a low surrounded by higher lows.
+#[derive(Debug, Clone)]
+pub struct SwingPointDetector {
+    /// Number of bars on each side to confirm swing point
+    strength: usize,
+    /// Minimum percentage move from swing point to confirm
+    min_move_pct: f64,
+}
+
+impl SwingPointDetector {
+    /// Create a new SwingPointDetector indicator.
+    ///
+    /// # Arguments
+    /// * `strength` - Number of bars on each side for swing confirmation (2-20)
+    /// * `min_move_pct` - Minimum percentage move to confirm swing (0.1-5.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(strength: usize, min_move_pct: f64) -> Result<Self> {
+        if strength < 2 || strength > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "strength".to_string(),
+                reason: "must be between 2 and 20".to_string(),
+            });
+        }
+        if min_move_pct < 0.1 || min_move_pct > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_move_pct".to_string(),
+                reason: "must be between 0.1 and 5.0".to_string(),
+            });
+        }
+        Ok(Self { strength, min_move_pct })
+    }
+
+    /// Calculate swing point signals.
+    ///
+    /// Returns:
+    /// * +1.0: Swing low detected (potential support)
+    /// * -1.0: Swing high detected (potential resistance)
+    /// * 0.0: No swing point
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.strength * 2 + 1 {
+            return result;
+        }
+
+        for i in self.strength..(n - self.strength) {
+            let avg_price = close[i];
+            if avg_price < 1e-10 {
+                continue;
+            }
+
+            let min_move = avg_price * self.min_move_pct / 100.0;
+
+            // Check for swing high
+            let mut is_swing_high = true;
+            let current_high = high[i];
+
+            for j in 1..=self.strength {
+                // Left side: current high must be higher
+                if high[i - j] >= current_high {
+                    is_swing_high = false;
+                    break;
+                }
+                // Right side: current high must be higher
+                if high[i + j] >= current_high {
+                    is_swing_high = false;
+                    break;
+                }
+            }
+
+            // Verify minimum move from swing high
+            if is_swing_high {
+                let left_low = low[(i - self.strength)..i].iter().cloned().fold(f64::MAX, f64::min);
+                let right_low = low[(i + 1)..=(i + self.strength)].iter().cloned().fold(f64::MAX, f64::min);
+                let max_drop = (current_high - left_low).max(current_high - right_low);
+                if max_drop >= min_move {
+                    result[i] = -1.0; // Swing high (resistance)
+                    continue;
+                }
+            }
+
+            // Check for swing low
+            let mut is_swing_low = true;
+            let current_low = low[i];
+
+            for j in 1..=self.strength {
+                // Left side: current low must be lower
+                if low[i - j] <= current_low {
+                    is_swing_low = false;
+                    break;
+                }
+                // Right side: current low must be lower
+                if low[i + j] <= current_low {
+                    is_swing_low = false;
+                    break;
+                }
+            }
+
+            // Verify minimum move from swing low
+            if is_swing_low {
+                let left_high = high[(i - self.strength)..i].iter().cloned().fold(f64::MIN, f64::max);
+                let right_high = high[(i + 1)..=(i + self.strength)].iter().cloned().fold(f64::MIN, f64::max);
+                let max_rise = (left_high - current_low).max(right_high - current_low);
+                if max_rise >= min_move {
+                    result[i] = 1.0; // Swing low (support)
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SwingPointDetector {
+    fn name(&self) -> &str {
+        "Swing Point Detector"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.strength * 2 + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// SupportResistanceStrength
+// ============================================================================
+
+/// Support Resistance Strength - Measures the strength of S/R levels
+///
+/// Evaluates the quality and strength of support and resistance levels based on
+/// multiple price touches, volume at level, time at level, and rejection strength.
+#[derive(Debug, Clone)]
+pub struct SupportResistanceStrength {
+    /// Lookback period for S/R analysis
+    lookback: usize,
+    /// Tolerance zone for level touches (percentage)
+    tolerance_pct: f64,
+    /// Minimum touches required to confirm level
+    min_touches: usize,
+}
+
+impl SupportResistanceStrength {
+    /// Create a new SupportResistanceStrength indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for S/R analysis (10-200)
+    /// * `tolerance_pct` - Tolerance zone for level touches (0.1-3.0%)
+    /// * `min_touches` - Minimum touches to confirm level (2-10)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, tolerance_pct: f64, min_touches: usize) -> Result<Self> {
+        if lookback < 10 || lookback > 200 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 10 and 200".to_string(),
+            });
+        }
+        if tolerance_pct < 0.1 || tolerance_pct > 3.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "tolerance_pct".to_string(),
+                reason: "must be between 0.1 and 3.0".to_string(),
+            });
+        }
+        if min_touches < 2 || min_touches > 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_touches".to_string(),
+                reason: "must be between 2 and 10".to_string(),
+            });
+        }
+        Ok(Self { lookback, tolerance_pct, min_touches })
+    }
+
+    /// Calculate S/R strength values.
+    ///
+    /// Returns strength between -1 and 1:
+    /// * Positive values (0 to 1): Support strength (current price near support)
+    /// * Negative values (-1 to 0): Resistance strength (current price near resistance)
+    /// * 0: No significant S/R level nearby
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.lookback..n {
+            let start = i - self.lookback;
+            let current_price = close[i];
+
+            if current_price < 1e-10 {
+                continue;
+            }
+
+            let tolerance = current_price * self.tolerance_pct / 100.0;
+
+            // Find potential support levels (swing lows)
+            let mut support_levels: Vec<(f64, f64)> = Vec::new(); // (level, volume)
+            // Find potential resistance levels (swing highs)
+            let mut resistance_levels: Vec<(f64, f64)> = Vec::new();
+
+            for j in (start + 1)..(i - 1) {
+                // Swing low (support)
+                if low[j] < low[j - 1] && low[j] < low[j + 1] {
+                    support_levels.push((low[j], volume[j]));
+                }
+                // Swing high (resistance)
+                if high[j] > high[j - 1] && high[j] > high[j + 1] {
+                    resistance_levels.push((high[j], volume[j]));
+                }
+            }
+
+            // Calculate support strength at current price
+            let mut support_touches = 0;
+            let mut support_vol_sum = 0.0;
+            for (level, vol) in &support_levels {
+                if (current_price - level).abs() <= tolerance {
+                    support_touches += 1;
+                    support_vol_sum += vol;
+                }
+            }
+
+            // Calculate resistance strength at current price
+            let mut resistance_touches = 0;
+            let mut resistance_vol_sum = 0.0;
+            for (level, vol) in &resistance_levels {
+                if (current_price - level).abs() <= tolerance {
+                    resistance_touches += 1;
+                    resistance_vol_sum += vol;
+                }
+            }
+
+            // Calculate average volume for normalization
+            let avg_vol = volume[start..i].iter().sum::<f64>() / self.lookback as f64;
+
+            // Calculate support strength
+            if support_touches >= self.min_touches {
+                let touch_score = (support_touches as f64 / self.min_touches as f64).min(2.0) / 2.0;
+                let vol_score = if avg_vol > 1e-10 && support_touches > 0 {
+                    ((support_vol_sum / support_touches as f64) / avg_vol).min(2.0) / 2.0
+                } else {
+                    0.5
+                };
+
+                // Check for recent bounces off this level
+                let mut bounce_count = 0;
+                for j in (i.saturating_sub(10))..i {
+                    if low[j] <= current_price + tolerance && close[j] > current_price {
+                        bounce_count += 1;
+                    }
+                }
+                let bounce_score = (bounce_count as f64 / 3.0).min(1.0);
+
+                let strength = (touch_score * 0.4 + vol_score * 0.3 + bounce_score * 0.3).min(1.0);
+                result[i] = strength;
+            }
+            // Calculate resistance strength
+            else if resistance_touches >= self.min_touches {
+                let touch_score = (resistance_touches as f64 / self.min_touches as f64).min(2.0) / 2.0;
+                let vol_score = if avg_vol > 1e-10 && resistance_touches > 0 {
+                    ((resistance_vol_sum / resistance_touches as f64) / avg_vol).min(2.0) / 2.0
+                } else {
+                    0.5
+                };
+
+                // Check for recent rejections at this level
+                let mut rejection_count = 0;
+                for j in (i.saturating_sub(10))..i {
+                    if high[j] >= current_price - tolerance && close[j] < current_price {
+                        rejection_count += 1;
+                    }
+                }
+                let rejection_score = (rejection_count as f64 / 3.0).min(1.0);
+
+                let strength = (touch_score * 0.4 + vol_score * 0.3 + rejection_score * 0.3).min(1.0);
+                result[i] = -strength;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SupportResistanceStrength {
+    fn name(&self) -> &str {
+        "Support Resistance Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// PriceActionMomentum
+// ============================================================================
+
+/// Price Action Momentum - Measures momentum from price action patterns
+///
+/// Calculates momentum based on price action characteristics including
+/// candle body strength, wick patterns, and close position within range.
+#[derive(Debug, Clone)]
+pub struct PriceActionMomentum {
+    /// Lookback period for momentum calculation
+    lookback: usize,
+    /// Smoothing period for the momentum signal
+    smoothing: usize,
+}
+
+impl PriceActionMomentum {
+    /// Create a new PriceActionMomentum indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for momentum calculation (5-50)
+    /// * `smoothing` - Smoothing period for signal (1-20)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, smoothing: usize) -> Result<Self> {
+        if lookback < 5 || lookback > 50 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 5 and 50".to_string(),
+            });
+        }
+        if smoothing < 1 || smoothing > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be between 1 and 20".to_string(),
+            });
+        }
+        if smoothing > lookback {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "cannot exceed lookback".to_string(),
+            });
+        }
+        Ok(Self { lookback, smoothing })
+    }
+
+    /// Calculate price action momentum.
+    ///
+    /// Returns momentum between -1 and 1:
+    /// * Positive values: Bullish momentum (strong buying pressure)
+    /// * Negative values: Bearish momentum (strong selling pressure)
+    /// * 0: Neutral or indecisive
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut raw_momentum = vec![0.0; n];
+        let mut result = vec![0.0; n];
+
+        // Calculate raw price action momentum for each bar
+        for i in 0..n {
+            let range = high[i] - low[i];
+            if range < 1e-10 {
+                continue;
+            }
+
+            let body = close[i] - open[i];
+            let body_size = body.abs();
+            let is_bullish = body > 0.0;
+
+            // Close position within range (0 = at low, 1 = at high)
+            let close_position = (close[i] - low[i]) / range;
+
+            // Body strength (body size relative to range)
+            let body_strength = body_size / range;
+
+            // Wick analysis
+            let upper_wick = high[i] - close[i].max(open[i]);
+            let lower_wick = close[i].min(open[i]) - low[i];
+
+            // Bullish pressure: close near high, small upper wick
+            let bullish_pressure = close_position * (1.0 - upper_wick / range);
+
+            // Bearish pressure: close near low, small lower wick
+            let bearish_pressure = (1.0 - close_position) * (1.0 - lower_wick / range);
+
+            // Combined momentum
+            let direction = if is_bullish { 1.0 } else { -1.0 };
+            raw_momentum[i] = direction * body_strength * 0.5 +
+                              (bullish_pressure - bearish_pressure) * 0.5;
+        }
+
+        // Calculate smoothed momentum over lookback period
+        for i in self.lookback..n {
+            let start = i - self.lookback;
+
+            // Sum of raw momentum in lookback
+            let momentum_sum: f64 = raw_momentum[start..=i].iter().sum();
+            let avg_momentum = momentum_sum / (self.lookback + 1) as f64;
+
+            // Apply additional smoothing
+            if i >= self.lookback + self.smoothing - 1 {
+                let smooth_start = i - self.smoothing + 1;
+                let mut smooth_sum = 0.0;
+                for j in smooth_start..=i {
+                    let inner_start = j.saturating_sub(self.lookback);
+                    let inner_sum: f64 = raw_momentum[inner_start..=j].iter().sum();
+                    smooth_sum += inner_sum / (self.lookback + 1) as f64;
+                }
+                result[i] = (smooth_sum / self.smoothing as f64).max(-1.0).min(1.0);
+            } else {
+                result[i] = avg_momentum.max(-1.0).min(1.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PriceActionMomentum {
+    fn name(&self) -> &str {
+        "Price Action Momentum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// CandleRangeAnalysis
+// ============================================================================
+
+/// Candle Range Analysis - Analyzes candle range patterns
+///
+/// Evaluates candle ranges to identify expansion, contraction, and range patterns
+/// that indicate volatility changes and potential breakouts or consolidation.
+#[derive(Debug, Clone)]
+pub struct CandleRangeAnalysis {
+    /// Period for average range calculation
+    atr_period: usize,
+    /// Threshold for narrow range (ATR multiple)
+    narrow_threshold: f64,
+    /// Threshold for wide range (ATR multiple)
+    wide_threshold: f64,
+}
+
+impl CandleRangeAnalysis {
+    /// Create a new CandleRangeAnalysis indicator.
+    ///
+    /// # Arguments
+    /// * `atr_period` - Period for average range calculation (5-50)
+    /// * `narrow_threshold` - Threshold for narrow range detection (0.3-0.8)
+    /// * `wide_threshold` - Threshold for wide range detection (1.5-4.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(atr_period: usize, narrow_threshold: f64, wide_threshold: f64) -> Result<Self> {
+        if atr_period < 5 || atr_period > 50 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be between 5 and 50".to_string(),
+            });
+        }
+        if narrow_threshold < 0.3 || narrow_threshold > 0.8 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "narrow_threshold".to_string(),
+                reason: "must be between 0.3 and 0.8".to_string(),
+            });
+        }
+        if wide_threshold < 1.5 || wide_threshold > 4.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "wide_threshold".to_string(),
+                reason: "must be between 1.5 and 4.0".to_string(),
+            });
+        }
+        if narrow_threshold >= wide_threshold {
+            return Err(IndicatorError::InvalidParameter {
+                name: "narrow_threshold".to_string(),
+                reason: "must be less than wide_threshold".to_string(),
+            });
+        }
+        Ok(Self { atr_period, narrow_threshold, wide_threshold })
+    }
+
+    /// Calculate candle range analysis values.
+    ///
+    /// Returns range classification and strength:
+    /// * Values > 1.0: Wide range (expansion) - value indicates strength
+    /// * Values between -1.0 and 1.0: Normal range
+    /// * Values < -1.0: Narrow range (contraction) - absolute value indicates strength
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.atr_period + 1 {
+            return result;
+        }
+
+        // Calculate ATR
+        let mut atr = vec![0.0; n];
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.atr_period {
+                // Initial ATR using simple average
+                let mut sum = 0.0;
+                for j in 1..=i {
+                    let tr_j = (high[j] - low[j])
+                        .max((high[j] - close[j - 1]).abs())
+                        .max((low[j] - close[j - 1]).abs());
+                    sum += tr_j;
+                }
+                atr[i] = sum / i as f64;
+            } else if i == self.atr_period {
+                // First full ATR
+                let mut sum = 0.0;
+                for j in 1..=self.atr_period {
+                    let tr_j = (high[j] - low[j])
+                        .max((high[j] - close[j - 1]).abs())
+                        .max((low[j] - close[j - 1]).abs());
+                    sum += tr_j;
+                }
+                atr[i] = sum / self.atr_period as f64;
+            } else {
+                // Smoothed ATR
+                atr[i] = (atr[i - 1] * (self.atr_period - 1) as f64 + tr) / self.atr_period as f64;
+            }
+        }
+
+        // Analyze candle ranges
+        for i in self.atr_period..n {
+            let current_range = high[i] - low[i];
+            let current_atr = atr[i];
+
+            if current_atr < 1e-10 {
+                continue;
+            }
+
+            let range_ratio = current_range / current_atr;
+
+            // Wide range (expansion)
+            if range_ratio >= self.wide_threshold {
+                // Strength based on how much it exceeds threshold
+                let strength = ((range_ratio - self.wide_threshold) / self.wide_threshold + 1.0).min(3.0);
+                result[i] = strength;
+            }
+            // Narrow range (contraction)
+            else if range_ratio <= self.narrow_threshold {
+                // Strength based on how much below threshold
+                let strength = ((self.narrow_threshold - range_ratio) / self.narrow_threshold + 1.0).min(3.0);
+                result[i] = -strength;
+            }
+            // Normal range - output normalized ratio
+            else {
+                // Normalize to -1 to 1 range
+                let mid_point = (self.narrow_threshold + self.wide_threshold) / 2.0;
+                let half_range = (self.wide_threshold - self.narrow_threshold) / 2.0;
+                result[i] = (range_ratio - mid_point) / half_range;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CandleRangeAnalysis {
+    fn name(&self) -> &str {
+        "Candle Range Analysis"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.atr_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// TrendLineBreak
+// ============================================================================
+
+/// Trend Line Break - Detects trend line breaks
+///
+/// Identifies when price breaks through dynamically calculated trend lines
+/// based on swing points, signaling potential trend reversals or continuations.
+#[derive(Debug, Clone)]
+pub struct TrendLineBreak {
+    /// Lookback period for trend line calculation
+    lookback: usize,
+    /// Minimum swing points to form trend line
+    min_points: usize,
+    /// Breakout confirmation threshold (percentage)
+    breakout_pct: f64,
+}
+
+impl TrendLineBreak {
+    /// Create a new TrendLineBreak indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for trend line calculation (10-100)
+    /// * `min_points` - Minimum swing points for trend line (2-5)
+    /// * `breakout_pct` - Breakout confirmation threshold (0.1-2.0%)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, min_points: usize, breakout_pct: f64) -> Result<Self> {
+        if lookback < 10 || lookback > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 10 and 100".to_string(),
+            });
+        }
+        if min_points < 2 || min_points > 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_points".to_string(),
+                reason: "must be between 2 and 5".to_string(),
+            });
+        }
+        if breakout_pct < 0.1 || breakout_pct > 2.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "breakout_pct".to_string(),
+                reason: "must be between 0.1 and 2.0".to_string(),
+            });
+        }
+        Ok(Self { lookback, min_points, breakout_pct })
+    }
+
+    /// Calculate trend line break signals.
+    ///
+    /// Returns:
+    /// * +1.0: Bullish break (price breaks above downtrend line)
+    /// * -1.0: Bearish break (price breaks below uptrend line)
+    /// * 0.0: No trend line break
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.lookback + 2 {
+            return result;
+        }
+
+        for i in self.lookback..n {
+            let start = i - self.lookback;
+            let avg_price = close[start..=i].iter().sum::<f64>() / (self.lookback + 1) as f64;
+
+            if avg_price < 1e-10 {
+                continue;
+            }
+
+            let breakout_threshold = avg_price * self.breakout_pct / 100.0;
+
+            // Find swing highs and lows in lookback period
+            let mut swing_highs: Vec<(usize, f64)> = Vec::new();
+            let mut swing_lows: Vec<(usize, f64)> = Vec::new();
+
+            for j in (start + 1)..(i - 1) {
+                if high[j] > high[j - 1] && high[j] > high[j + 1] {
+                    swing_highs.push((j, high[j]));
+                }
+                if low[j] < low[j - 1] && low[j] < low[j + 1] {
+                    swing_lows.push((j, low[j]));
+                }
+            }
+
+            // Check for downtrend line break (bullish)
+            if swing_highs.len() >= self.min_points {
+                // Calculate downtrend line using most recent swing highs
+                let recent_highs: Vec<_> = swing_highs.iter()
+                    .rev()
+                    .take(self.min_points)
+                    .collect();
+
+                if recent_highs.len() >= 2 {
+                    // Simple linear regression for trend line
+                    let first = recent_highs.last().unwrap();
+                    let last = recent_highs.first().unwrap();
+
+                    if last.0 > first.0 {
+                        let slope = (last.1 - first.1) / (last.0 - first.0) as f64;
+
+                        // Only consider downtrend lines (negative or slightly positive slope)
+                        if slope < 0.01 * avg_price {
+                            let trend_line_value = last.1 + slope * (i - last.0) as f64;
+
+                            // Check for break above trend line
+                            if close[i] > trend_line_value + breakout_threshold {
+                                // Confirm break wasn't already triggered
+                                if i > 0 && close[i - 1] <= trend_line_value {
+                                    result[i] = 1.0;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check for uptrend line break (bearish)
+            if swing_lows.len() >= self.min_points {
+                let recent_lows: Vec<_> = swing_lows.iter()
+                    .rev()
+                    .take(self.min_points)
+                    .collect();
+
+                if recent_lows.len() >= 2 {
+                    let first = recent_lows.last().unwrap();
+                    let last = recent_lows.first().unwrap();
+
+                    if last.0 > first.0 {
+                        let slope = (last.1 - first.1) / (last.0 - first.0) as f64;
+
+                        // Only consider uptrend lines (positive or slightly negative slope)
+                        if slope > -0.01 * avg_price {
+                            let trend_line_value = last.1 + slope * (i - last.0) as f64;
+
+                            // Check for break below trend line
+                            if close[i] < trend_line_value - breakout_threshold {
+                                // Confirm break wasn't already triggered
+                                if i > 0 && close[i - 1] >= trend_line_value {
+                                    result[i] = -1.0;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendLineBreak {
+    fn name(&self) -> &str {
+        "Trend Line Break"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// PriceStructure
+// ============================================================================
+
+/// Price Structure - Identifies market structure (HH, HL, LH, LL)
+///
+/// Analyzes price structure to identify higher highs (HH), higher lows (HL),
+/// lower highs (LH), and lower lows (LL), which define trend direction
+/// and potential reversals according to market structure theory.
+#[derive(Debug, Clone)]
+pub struct PriceStructure {
+    /// Lookback period for structure analysis
+    lookback: usize,
+    /// Swing detection strength (bars on each side)
+    swing_strength: usize,
+}
+
+impl PriceStructure {
+    /// Create a new PriceStructure indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for structure analysis (10-100)
+    /// * `swing_strength` - Bars on each side for swing detection (2-10)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, swing_strength: usize) -> Result<Self> {
+        if lookback < 10 || lookback > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 10 and 100".to_string(),
+            });
+        }
+        if swing_strength < 2 || swing_strength > 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "swing_strength".to_string(),
+                reason: "must be between 2 and 10".to_string(),
+            });
+        }
+        if swing_strength * 2 >= lookback {
+            return Err(IndicatorError::InvalidParameter {
+                name: "swing_strength".to_string(),
+                reason: "swing_strength * 2 must be less than lookback".to_string(),
+            });
+        }
+        Ok(Self { lookback, swing_strength })
+    }
+
+    /// Calculate price structure values.
+    ///
+    /// Returns structure encoding:
+    /// * +2.0: Higher High (HH) - bullish continuation
+    /// * +1.0: Higher Low (HL) - bullish continuation
+    /// * -1.0: Lower High (LH) - bearish continuation
+    /// * -2.0: Lower Low (LL) - bearish continuation
+    /// * 0.0: No significant structure change
+    pub fn calculate(&self, high: &[f64], low: &[f64]) -> Vec<f64> {
+        let n = high.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.lookback + self.swing_strength {
+            return result;
+        }
+
+        // Track swing highs and lows with their indices
+        let mut swing_highs: Vec<(usize, f64)> = Vec::new();
+        let mut swing_lows: Vec<(usize, f64)> = Vec::new();
+
+        for i in self.swing_strength..(n - self.swing_strength) {
+            // Detect swing high
+            let mut is_swing_high = true;
+            for j in 1..=self.swing_strength {
+                if high[i - j] >= high[i] || high[i + j] >= high[i] {
+                    is_swing_high = false;
+                    break;
+                }
+            }
+            if is_swing_high {
+                swing_highs.push((i, high[i]));
+            }
+
+            // Detect swing low
+            let mut is_swing_low = true;
+            for j in 1..=self.swing_strength {
+                if low[i - j] <= low[i] || low[i + j] <= low[i] {
+                    is_swing_low = false;
+                    break;
+                }
+            }
+            if is_swing_low {
+                swing_lows.push((i, low[i]));
+            }
+        }
+
+        // Analyze structure at each bar
+        for i in self.lookback..n {
+            // Find swing highs and lows within lookback period
+            let recent_highs: Vec<_> = swing_highs.iter()
+                .filter(|(idx, _)| *idx >= i.saturating_sub(self.lookback) && *idx <= i)
+                .collect();
+
+            let recent_lows: Vec<_> = swing_lows.iter()
+                .filter(|(idx, _)| *idx >= i.saturating_sub(self.lookback) && *idx <= i)
+                .collect();
+
+            // Need at least 2 swing points of each type to compare
+            if recent_highs.len() >= 2 {
+                let last_high = recent_highs.last().unwrap();
+                let prev_high = recent_highs[recent_highs.len() - 2];
+
+                // Check for Higher High at current swing high
+                if last_high.0 == i || (i > last_high.0 && i - last_high.0 <= self.swing_strength) {
+                    if last_high.1 > prev_high.1 {
+                        result[i] = 2.0; // Higher High
+                    }
+                }
+                // Check for Lower High at current swing high
+                if last_high.0 == i || (i > last_high.0 && i - last_high.0 <= self.swing_strength) {
+                    if last_high.1 < prev_high.1 && result[i] == 0.0 {
+                        result[i] = -1.0; // Lower High
+                    }
+                }
+            }
+
+            if recent_lows.len() >= 2 && result[i] == 0.0 {
+                let last_low = recent_lows.last().unwrap();
+                let prev_low = recent_lows[recent_lows.len() - 2];
+
+                // Check for Higher Low at current swing low
+                if last_low.0 == i || (i > last_low.0 && i - last_low.0 <= self.swing_strength) {
+                    if last_low.1 > prev_low.1 {
+                        result[i] = 1.0; // Higher Low
+                    }
+                }
+                // Check for Lower Low at current swing low
+                if last_low.0 == i || (i > last_low.0 && i - last_low.0 <= self.swing_strength) {
+                    if last_low.1 < prev_low.1 && result[i] == 0.0 {
+                        result[i] = -2.0; // Lower Low
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PriceStructure {
+    fn name(&self) -> &str {
+        "Price Structure"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + self.swing_strength
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3689,6 +4614,421 @@ mod tests {
 
         let ps = PatternSymmetry::new(15, 10.0).unwrap();
         let result = ps.calculate(&short_data.high, &short_data.low, &short_data.close);
+        assert_eq!(result.len(), 3);
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    // ========== SwingPointDetector Tests ==========
+
+    #[test]
+    fn test_swing_point_detector_new_valid() {
+        let indicator = SwingPointDetector::new(5, 1.0);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_swing_point_detector_invalid_strength() {
+        assert!(SwingPointDetector::new(1, 1.0).is_err());
+        assert!(SwingPointDetector::new(25, 1.0).is_err());
+    }
+
+    #[test]
+    fn test_swing_point_detector_invalid_min_move() {
+        assert!(SwingPointDetector::new(5, 0.05).is_err());
+        assert!(SwingPointDetector::new(5, 6.0).is_err());
+    }
+
+    #[test]
+    fn test_swing_point_detector_calculate() {
+        let data = make_test_data();
+        let indicator = SwingPointDetector::new(3, 0.5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_swing_point_detector_min_periods() {
+        let indicator = SwingPointDetector::new(5, 1.0).unwrap();
+        assert_eq!(indicator.min_periods(), 11); // 5 * 2 + 1
+    }
+
+    #[test]
+    fn test_swing_point_detector_name() {
+        let indicator = SwingPointDetector::new(5, 1.0).unwrap();
+        assert_eq!(indicator.name(), "Swing Point Detector");
+    }
+
+    #[test]
+    fn test_swing_point_detector_compute() {
+        let data = make_test_data();
+        let indicator = SwingPointDetector::new(3, 0.5).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== SupportResistanceStrength Tests ==========
+
+    #[test]
+    fn test_support_resistance_strength_new_valid() {
+        let indicator = SupportResistanceStrength::new(50, 1.0, 3);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_support_resistance_strength_invalid_lookback() {
+        assert!(SupportResistanceStrength::new(5, 1.0, 3).is_err());
+        assert!(SupportResistanceStrength::new(250, 1.0, 3).is_err());
+    }
+
+    #[test]
+    fn test_support_resistance_strength_invalid_tolerance() {
+        assert!(SupportResistanceStrength::new(50, 0.05, 3).is_err());
+        assert!(SupportResistanceStrength::new(50, 4.0, 3).is_err());
+    }
+
+    #[test]
+    fn test_support_resistance_strength_invalid_min_touches() {
+        assert!(SupportResistanceStrength::new(50, 1.0, 1).is_err());
+        assert!(SupportResistanceStrength::new(50, 1.0, 15).is_err());
+    }
+
+    #[test]
+    fn test_support_resistance_strength_calculate() {
+        let data = make_test_data();
+        let indicator = SupportResistanceStrength::new(20, 1.0, 2).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be between -1 and 1
+        for val in &result {
+            assert!(*val >= -1.0 && *val <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_support_resistance_strength_min_periods() {
+        let indicator = SupportResistanceStrength::new(50, 1.0, 3).unwrap();
+        assert_eq!(indicator.min_periods(), 51);
+    }
+
+    #[test]
+    fn test_support_resistance_strength_name() {
+        let indicator = SupportResistanceStrength::new(50, 1.0, 3).unwrap();
+        assert_eq!(indicator.name(), "Support Resistance Strength");
+    }
+
+    #[test]
+    fn test_support_resistance_strength_compute() {
+        let data = make_test_data();
+        let indicator = SupportResistanceStrength::new(20, 1.0, 2).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== PriceActionMomentum Tests ==========
+
+    #[test]
+    fn test_price_action_momentum_new_valid() {
+        let indicator = PriceActionMomentum::new(14, 5);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_price_action_momentum_invalid_lookback() {
+        assert!(PriceActionMomentum::new(3, 2).is_err());
+        assert!(PriceActionMomentum::new(60, 5).is_err());
+    }
+
+    #[test]
+    fn test_price_action_momentum_invalid_smoothing() {
+        assert!(PriceActionMomentum::new(14, 0).is_err());
+        assert!(PriceActionMomentum::new(14, 25).is_err());
+    }
+
+    #[test]
+    fn test_price_action_momentum_smoothing_exceeds_lookback() {
+        assert!(PriceActionMomentum::new(10, 15).is_err());
+    }
+
+    #[test]
+    fn test_price_action_momentum_calculate() {
+        let data = make_test_data();
+        let indicator = PriceActionMomentum::new(10, 3).unwrap();
+        let result = indicator.calculate(&data.open, &data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be between -1 and 1
+        for val in &result {
+            assert!(*val >= -1.0 && *val <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_price_action_momentum_min_periods() {
+        let indicator = PriceActionMomentum::new(14, 5).unwrap();
+        assert_eq!(indicator.min_periods(), 19); // lookback + smoothing
+    }
+
+    #[test]
+    fn test_price_action_momentum_name() {
+        let indicator = PriceActionMomentum::new(14, 5).unwrap();
+        assert_eq!(indicator.name(), "Price Action Momentum");
+    }
+
+    #[test]
+    fn test_price_action_momentum_compute() {
+        let data = make_test_data();
+        let indicator = PriceActionMomentum::new(10, 3).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== CandleRangeAnalysis Tests ==========
+
+    #[test]
+    fn test_candle_range_analysis_new_valid() {
+        let indicator = CandleRangeAnalysis::new(14, 0.5, 2.0);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_candle_range_analysis_invalid_atr_period() {
+        assert!(CandleRangeAnalysis::new(3, 0.5, 2.0).is_err());
+        assert!(CandleRangeAnalysis::new(60, 0.5, 2.0).is_err());
+    }
+
+    #[test]
+    fn test_candle_range_analysis_invalid_narrow_threshold() {
+        assert!(CandleRangeAnalysis::new(14, 0.2, 2.0).is_err());
+        assert!(CandleRangeAnalysis::new(14, 0.9, 2.0).is_err());
+    }
+
+    #[test]
+    fn test_candle_range_analysis_invalid_wide_threshold() {
+        assert!(CandleRangeAnalysis::new(14, 0.5, 1.2).is_err());
+        assert!(CandleRangeAnalysis::new(14, 0.5, 5.0).is_err());
+    }
+
+    #[test]
+    fn test_candle_range_analysis_narrow_exceeds_wide() {
+        assert!(CandleRangeAnalysis::new(14, 0.7, 0.6).is_err());
+    }
+
+    #[test]
+    fn test_candle_range_analysis_calculate() {
+        let data = make_test_data();
+        let indicator = CandleRangeAnalysis::new(10, 0.5, 2.0).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_candle_range_analysis_min_periods() {
+        let indicator = CandleRangeAnalysis::new(14, 0.5, 2.0).unwrap();
+        assert_eq!(indicator.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_candle_range_analysis_name() {
+        let indicator = CandleRangeAnalysis::new(14, 0.5, 2.0).unwrap();
+        assert_eq!(indicator.name(), "Candle Range Analysis");
+    }
+
+    #[test]
+    fn test_candle_range_analysis_compute() {
+        let data = make_test_data();
+        let indicator = CandleRangeAnalysis::new(10, 0.5, 2.0).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== TrendLineBreak Tests ==========
+
+    #[test]
+    fn test_trend_line_break_new_valid() {
+        let indicator = TrendLineBreak::new(30, 3, 0.5);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_trend_line_break_invalid_lookback() {
+        assert!(TrendLineBreak::new(5, 3, 0.5).is_err());
+        assert!(TrendLineBreak::new(150, 3, 0.5).is_err());
+    }
+
+    #[test]
+    fn test_trend_line_break_invalid_min_points() {
+        assert!(TrendLineBreak::new(30, 1, 0.5).is_err());
+        assert!(TrendLineBreak::new(30, 7, 0.5).is_err());
+    }
+
+    #[test]
+    fn test_trend_line_break_invalid_breakout_pct() {
+        assert!(TrendLineBreak::new(30, 3, 0.05).is_err());
+        assert!(TrendLineBreak::new(30, 3, 3.0).is_err());
+    }
+
+    #[test]
+    fn test_trend_line_break_calculate() {
+        let data = make_test_data();
+        let indicator = TrendLineBreak::new(20, 2, 0.5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_line_break_min_periods() {
+        let indicator = TrendLineBreak::new(30, 3, 0.5).unwrap();
+        assert_eq!(indicator.min_periods(), 32); // lookback + 2
+    }
+
+    #[test]
+    fn test_trend_line_break_name() {
+        let indicator = TrendLineBreak::new(30, 3, 0.5).unwrap();
+        assert_eq!(indicator.name(), "Trend Line Break");
+    }
+
+    #[test]
+    fn test_trend_line_break_compute() {
+        let data = make_test_data();
+        let indicator = TrendLineBreak::new(20, 2, 0.5).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== PriceStructure Tests ==========
+
+    #[test]
+    fn test_price_structure_new_valid() {
+        let indicator = PriceStructure::new(30, 3);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_price_structure_invalid_lookback() {
+        assert!(PriceStructure::new(5, 3).is_err());
+        assert!(PriceStructure::new(150, 3).is_err());
+    }
+
+    #[test]
+    fn test_price_structure_invalid_swing_strength() {
+        assert!(PriceStructure::new(30, 1).is_err());
+        assert!(PriceStructure::new(30, 15).is_err());
+    }
+
+    #[test]
+    fn test_price_structure_swing_strength_exceeds_half_lookback() {
+        assert!(PriceStructure::new(20, 10).is_err()); // 10 * 2 >= 20
+    }
+
+    #[test]
+    fn test_price_structure_calculate() {
+        let data = make_test_data();
+        let indicator = PriceStructure::new(20, 3).unwrap();
+        let result = indicator.calculate(&data.high, &data.low);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -2, -1, 0, 1, or 2
+        for val in &result {
+            assert!(*val == -2.0 || *val == -1.0 || *val == 0.0 || *val == 1.0 || *val == 2.0);
+        }
+    }
+
+    #[test]
+    fn test_price_structure_min_periods() {
+        let indicator = PriceStructure::new(30, 3).unwrap();
+        assert_eq!(indicator.min_periods(), 33); // lookback + swing_strength
+    }
+
+    #[test]
+    fn test_price_structure_name() {
+        let indicator = PriceStructure::new(30, 3).unwrap();
+        assert_eq!(indicator.name(), "Price Structure");
+    }
+
+    #[test]
+    fn test_price_structure_compute() {
+        let data = make_test_data();
+        let indicator = PriceStructure::new(20, 3).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== Edge Cases for New 6 Indicators ==========
+
+    #[test]
+    fn test_new_six_indicators_empty_data() {
+        let empty_data = OHLCVSeries {
+            open: vec![],
+            high: vec![],
+            low: vec![],
+            close: vec![],
+            volume: vec![],
+        };
+
+        let spd = SwingPointDetector::new(3, 0.5).unwrap();
+        assert_eq!(spd.calculate(&empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let srs = SupportResistanceStrength::new(20, 1.0, 2).unwrap();
+        assert_eq!(srs.calculate(&empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+
+        let pam = PriceActionMomentum::new(10, 3).unwrap();
+        assert_eq!(pam.calculate(&empty_data.open, &empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let cra = CandleRangeAnalysis::new(10, 0.5, 2.0).unwrap();
+        assert_eq!(cra.calculate(&empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let tlb = TrendLineBreak::new(20, 2, 0.5).unwrap();
+        assert_eq!(tlb.calculate(&empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let ps = PriceStructure::new(20, 3).unwrap();
+        assert_eq!(ps.calculate(&empty_data.high, &empty_data.low).len(), 0);
+    }
+
+    #[test]
+    fn test_new_six_indicators_insufficient_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0, 102.0],
+            high: vec![101.0, 102.0, 103.0],
+            low: vec![99.0, 100.0, 101.0],
+            close: vec![100.5, 101.5, 102.5],
+            volume: vec![1000.0, 1100.0, 1200.0],
+        };
+
+        let spd = SwingPointDetector::new(3, 0.5).unwrap();
+        let result = spd.calculate(&short_data.high, &short_data.low, &short_data.close);
+        assert_eq!(result.len(), 3);
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+
+        let cra = CandleRangeAnalysis::new(10, 0.5, 2.0).unwrap();
+        let result = cra.calculate(&short_data.high, &short_data.low, &short_data.close);
+        assert_eq!(result.len(), 3);
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+
+        let ps = PriceStructure::new(20, 3).unwrap();
+        let result = ps.calculate(&short_data.high, &short_data.low);
         assert_eq!(result.len(), 3);
         for val in &result {
             assert_eq!(*val, 0.0);

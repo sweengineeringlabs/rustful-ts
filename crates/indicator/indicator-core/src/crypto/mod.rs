@@ -23,6 +23,8 @@ pub use advanced::{
     ExchangeFlowMomentum, MinerBehaviorIndex, InstitutionalFlowIndex,
     CryptoTrendStrength, VolatilityRegimeIndex, CryptoMomentumRank,
     MarketSentimentProxy, CryptoCyclePhase, AdaptiveCryptoMA,
+    CryptoVolatilityRank, AltcoinSeasonIndex, CryptoMarketBreadth,
+    CryptoMomentumWave, CryptoTrendPhase, CryptoRiskIndex,
 };
 pub use extended::{
     ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,

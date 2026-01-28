@@ -46,6 +46,9 @@ pub use advanced::{
     // 6 NEW breadth indicators (requested additions)
     BreadthTrustThrust, AdvanceDeclineOscillator, BreadthStrengthIndex,
     MarketInternalsScore, BreadthPersistence, BreadthAcceleration,
+    // 6 NEWEST breadth indicators (AdvanceDeclineRatio, BreadthMomentumIndicator, etc.)
+    AdvanceDeclineRatio, BreadthMomentumIndicator, CumulativeBreadthLine,
+    HighLowIndex as AdvancedHighLowIndex, PercentAboveMA as AdvancedPercentAboveMA, BreadthDiffusion,
 };
 
 // Re-export SPI types from crate root
