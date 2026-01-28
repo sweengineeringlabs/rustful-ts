@@ -22,6 +22,7 @@ pub mod breadth;
 pub mod swing;
 pub mod demark;
 pub mod intermarket;
+pub mod crypto;
 
 #[cfg(feature = "simd")]
 pub mod simd;
@@ -109,6 +110,9 @@ pub use statistical::{
     StandardDeviation, Variance, ZScore, LinearRegression, LinearRegressionOutput,
     Correlation, Spread, Ratio, ZScoreSpread, Autocorrelation, Skewness, Kurtosis,
     FractalDimension, FractalDimensionMethod,
+    HurstExponent, HurstMethod,
+    DetrendedFluctuationAnalysis,
+    MarketEntropy, EntropyMethod,
 };
 
 // ============================================================================
@@ -208,6 +212,17 @@ pub use intermarket::{
 };
 
 // ============================================================================
+// Crypto / On-Chain Exports
+// ============================================================================
+pub use crypto::{
+    NVTRatio, NVTRatioOutput, NVTSignal,
+    MVRVRatio, MVRVOutput, MVRVSignal,
+    SOPR, SOPROutput, SOPRSignal,
+    HashRibbons, HashRibbonsOutput, HashRibbonsPhase,
+    FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedWeights,
+};
+
+// ============================================================================
 // Re-export SPI types
 // ============================================================================
 pub use indicator_spi::{
@@ -245,9 +260,11 @@ pub use indicator_api::{
     // Intermarket
     RelativeStrengthConfig,
     // Statistical
-    FractalDimensionConfig,
+    FractalDimensionConfig, DFAConfig, EntropyConfig, EntropyMethodConfig,
     // Pattern
     KaseBarsConfig,
+    // Crypto
+    NVTRatioConfig,
     // Other
     ElderRayConfig, ElderPowerConfig, PivotType,
 };

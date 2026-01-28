@@ -2000,3 +2000,194 @@ impl Default for KaseBarsConfig {
         }
     }
 }
+
+// ============================================================================
+// Crypto / On-Chain Indicators
+// ============================================================================
+
+/// NVT Ratio (Network Value to Transactions) configuration - IND-085
+///
+/// A valuation metric for cryptocurrencies, similar to P/E ratio for stocks.
+/// NVT = Market Cap / Transaction Volume
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NVTRatioConfig {
+    /// Period for SMA smoothing of transaction volume (default: 14).
+    pub signal_period: usize,
+    /// Lower threshold - below suggests undervaluation (default: 65).
+    pub lower_threshold: f64,
+    /// Upper threshold - above suggests overvaluation (default: 95).
+    pub upper_threshold: f64,
+}
+
+impl NVTRatioConfig {
+    /// Create a new NVT Ratio configuration.
+    pub fn new(signal_period: usize, lower_threshold: f64, upper_threshold: f64) -> Self {
+        Self {
+            signal_period,
+            lower_threshold,
+            upper_threshold,
+        }
+    }
+
+    /// Create with default thresholds (65/95).
+    pub fn with_period(signal_period: usize) -> Self {
+        Self::new(signal_period, 65.0, 95.0)
+    }
+}
+
+impl Default for NVTRatioConfig {
+    fn default() -> Self {
+        Self {
+            signal_period: 14,
+            lower_threshold: 65.0,
+            upper_threshold: 95.0,
+        }
+    }
+}
+
+// ============================================================================
+// Statistical / Advanced Analysis Indicators
+// ============================================================================
+
+/// Detrended Fluctuation Analysis configuration - IND-191
+///
+/// Measures long-range correlations in non-stationary time series.
+/// The DFA exponent (alpha) indicates market behavior:
+/// - alpha = 0.5: Random walk (uncorrelated)
+/// - alpha < 0.5: Anti-correlated (mean-reverting)
+/// - alpha > 0.5: Long-range correlated (trending)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DFAConfig {
+    /// Rolling window period for analysis.
+    pub period: usize,
+    /// Minimum segment size for DFA calculation (default: 4).
+    pub min_segment: usize,
+    /// Maximum segment size (default: period/4).
+    pub max_segment: Option<usize>,
+    /// Detrending order: 1 = linear (DFA-1), 2 = quadratic (DFA-2).
+    pub detrend_order: usize,
+}
+
+impl DFAConfig {
+    /// Create a new DFA configuration.
+    pub fn new(period: usize) -> Self {
+        Self {
+            period,
+            min_segment: 4,
+            max_segment: None,
+            detrend_order: 1,
+        }
+    }
+
+    /// Create with quadratic detrending (DFA-2).
+    pub fn quadratic(period: usize) -> Self {
+        Self {
+            period,
+            min_segment: 4,
+            max_segment: None,
+            detrend_order: 2,
+        }
+    }
+
+    /// Create with custom segment sizes.
+    pub fn with_segments(period: usize, min_segment: usize, max_segment: usize) -> Self {
+        Self {
+            period,
+            min_segment,
+            max_segment: Some(max_segment),
+            detrend_order: 1,
+        }
+    }
+
+    /// Get max segment size (defaults to period/4).
+    pub fn max_segment(&self) -> usize {
+        self.max_segment.unwrap_or(self.period / 4)
+    }
+}
+
+impl Default for DFAConfig {
+    fn default() -> Self {
+        Self {
+            period: 50,
+            min_segment: 4,
+            max_segment: None,
+            detrend_order: 1,
+        }
+    }
+}
+
+/// Market Entropy configuration - IND-192
+///
+/// Measures randomness/predictability of price movements.
+/// Higher entropy = more random, lower entropy = more orderly/predictable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntropyConfig {
+    /// Rolling window period.
+    pub period: usize,
+    /// Entropy calculation method.
+    pub method: EntropyMethodConfig,
+    /// Number of bins for Shannon entropy (default: 10).
+    pub num_bins: usize,
+    /// Embedding dimension for ApEn/SampEn (default: 2).
+    pub embedding_dim: usize,
+    /// Tolerance multiplier for ApEn/SampEn (default: 0.2).
+    pub tolerance_mult: f64,
+}
+
+/// Entropy calculation method for configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EntropyMethodConfig {
+    /// Shannon entropy of discretized returns.
+    Shannon,
+    /// Approximate entropy (ApEn).
+    Approximate,
+    /// Sample entropy (SampEn).
+    Sample,
+}
+
+impl EntropyConfig {
+    /// Create Shannon entropy configuration.
+    pub fn shannon(period: usize, num_bins: usize) -> Self {
+        Self {
+            period,
+            method: EntropyMethodConfig::Shannon,
+            num_bins,
+            embedding_dim: 2,
+            tolerance_mult: 0.2,
+        }
+    }
+
+    /// Create Approximate entropy configuration.
+    pub fn approximate(period: usize, embedding_dim: usize, tolerance_mult: f64) -> Self {
+        Self {
+            period,
+            method: EntropyMethodConfig::Approximate,
+            num_bins: 10,
+            embedding_dim,
+            tolerance_mult,
+        }
+    }
+
+    /// Create Sample entropy configuration.
+    pub fn sample(period: usize, embedding_dim: usize, tolerance_mult: f64) -> Self {
+        Self {
+            period,
+            method: EntropyMethodConfig::Sample,
+            num_bins: 10,
+            embedding_dim,
+            tolerance_mult,
+        }
+    }
+}
+
+impl Default for EntropyConfig {
+    fn default() -> Self {
+        Self {
+            period: 20,
+            method: EntropyMethodConfig::Shannon,
+            num_bins: 10,
+            embedding_dim: 2,
+            tolerance_mult: 0.2,
+        }
+    }
+}

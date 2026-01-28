@@ -1,6 +1,6 @@
 # Indicator Backlog
 
-> **Current:** 187 indicators | **Target:** 2148+ indicators
+> **Current:** 202 indicators | **Target:** 2148+ indicators
 >
 > **200 priority groups** covering technical analysis, quantitative finance, machine learning, alternative data, and industry-specific metrics.
 
@@ -161,11 +161,11 @@ These indicators are already implemented in indicator-core but were not listed i
 
 | ID | Indicator | Category | Description | Complexity | Status |
 |----|-----------|----------|-------------|------------|--------|
-| IND-085 | NVT Ratio | Crypto | Network Value to Transactions | Low | |
-| IND-086 | MVRV Ratio | Crypto | Market Value to Realized Value | Medium | |
-| IND-087 | SOPR | Crypto | Spent Output Profit Ratio | Medium | |
-| IND-088 | Hash Ribbons | Crypto | Mining difficulty MA crossover | Medium | |
-| IND-089 | Fear & Greed Components | Sentiment | Volatility + momentum + volume composite | High | |
+| IND-085 | NVT Ratio | Crypto | Network Value to Transactions | Low | ✅ Done |
+| IND-086 | MVRV Ratio | Crypto | Market Value to Realized Value | Medium | ✅ Done |
+| IND-087 | SOPR | Crypto | Spent Output Profit Ratio | Medium | ✅ Done |
+| IND-088 | Hash Ribbons | Crypto | Mining difficulty MA crossover | Medium | ✅ Done |
+| IND-089 | Fear & Greed Components | Sentiment | Volatility + momentum + volume composite | High | ✅ Done |
 | IND-090 | Squeeze Momentum | Composite | LazyBear's squeeze with momentum | Medium | ✅ Done |
 
 ## Priority 13: DeMark Indicators
@@ -307,10 +307,10 @@ These indicators are already implemented in indicator-core but were not listed i
 
 | ID | Indicator | Category | Description | Complexity | Status |
 |----|-----------|----------|-------------|------------|--------|
-| IND-176 | Elder's SafeZone Stop | Stop | Directional stop loss | Medium | |
-| IND-177 | Elder's AutoEnvelope | Volatility | Adaptive envelope | Medium | |
-| IND-178 | Elder's Market Thermometer | Volatility | Intraday volatility | Medium | |
-| IND-179 | Elder's Bull/Bear Power | Oscillator | Enhanced version | Medium | |
+| IND-176 | Elder's SafeZone Stop | Stop | Directional stop loss | Medium | ✅ Done |
+| IND-177 | Elder's AutoEnvelope | Volatility | Adaptive envelope | Medium | ✅ Done |
+| IND-178 | Elder's Market Thermometer | Volatility | Intraday volatility | Medium | ✅ Done |
+| IND-179 | Elder's Bull/Bear Power | Oscillator | Enhanced version | Medium | ✅ Done |
 | IND-180 | Elder's Triple Screen | Composite | Multi-timeframe system | High | ✅ Done |
 
 ## Priority 24: Kase Indicators
@@ -318,10 +318,10 @@ These indicators are already implemented in indicator-core but were not listed i
 | ID | Indicator | Category | Description | Complexity | Status |
 |----|-----------|----------|-------------|------------|--------|
 | IND-181 | Kase Peak Oscillator | Oscillator | Volatility-adjusted momentum | High | ✅ Done |
-| IND-182 | Kase Dev Stops | Stop | Deviation-based stops | High | |
+| IND-182 | Kase Dev Stops | Stop | Deviation-based stops | High | ✅ Done |
 | IND-183 | Kase Permission Stochastic | Oscillator | Modified stochastic | High | ✅ Done |
 | IND-184 | Kase CD | Trend | Convergence/Divergence | High | ✅ Done |
-| IND-185 | Kase Bars | Transform | Volatility-normalized bars | High | |
+| IND-185 | Kase Bars | Transform | Volatility-normalized bars | High | ✅ Done |
 
 ## Priority 25: Miscellaneous Advanced
 
@@ -330,10 +330,10 @@ These indicators are already implemented in indicator-core but were not listed i
 | IND-186 | Random Walk Index | Trend | Trend vs random walk | Medium | ✅ Done |
 | IND-187 | Vertical Horizontal Filter | Trend | Trending vs ranging | Medium | ✅ Done |
 | IND-188 | Kaufman Efficiency Ratio | Trend | Price efficiency measure | Low | ✅ Done |
-| IND-189 | Fractal Dimension | Statistical | Market complexity measure | High | |
-| IND-190 | Hurst Exponent | Statistical | Long-term memory measure | High | |
-| IND-191 | Detrended Fluctuation Analysis | Statistical | DFA for trending behavior | High | |
-| IND-192 | Entropy | Statistical | Market randomness measure | High | |
+| IND-189 | Fractal Dimension | Statistical | Market complexity measure | High | ✅ Done |
+| IND-190 | Hurst Exponent | Statistical | Long-term memory measure | High | ✅ Done |
+| IND-191 | Detrended Fluctuation Analysis | Statistical | DFA for trending behavior | High | ✅ Done |
+| IND-192 | Entropy | Statistical | Market randomness measure | High | ✅ Done |
 | IND-193 | Autocorrelation | Statistical | Serial correlation | Medium | ✅ Done |
 | IND-194 | Tick Index | Breadth | NYSE tick reading | Low | ✅ Done |
 | IND-195 | Put/Call Ratio | Sentiment | Options sentiment | Low | ✅ Done |
