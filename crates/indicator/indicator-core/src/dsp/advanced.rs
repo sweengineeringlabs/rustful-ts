@@ -652,6 +652,608 @@ impl TechnicalIndicator for PhaseSynchronization {
     }
 }
 
+/// Adaptive Phase Measure - Measures instantaneous phase with adaptive smoothing
+///
+/// This indicator calculates the instantaneous phase of price movements using
+/// an adaptive smoothing technique that adjusts based on detected cycle characteristics.
+/// Phase values are returned in degrees (0-360).
+#[derive(Debug, Clone)]
+pub struct AdaptivePhaseMeasure {
+    period: usize,
+    adaptive_factor: f64,
+}
+
+impl AdaptivePhaseMeasure {
+    pub fn new(period: usize, adaptive_factor: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if adaptive_factor <= 0.0 || adaptive_factor > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "adaptive_factor".to_string(),
+                reason: "must be between 0 (exclusive) and 1 (inclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, adaptive_factor })
+    }
+
+    /// Calculate adaptive phase measure
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut prev_smooth_phase = 0.0;
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let len = slice.len() as f64;
+
+            // Detrend using simple mean
+            let mean: f64 = slice.iter().sum::<f64>() / len;
+
+            // Calculate in-phase and quadrature using DFT at the dominant frequency
+            let mut in_phase = 0.0;
+            let mut quadrature = 0.0;
+            let mut amplitude_sum = 0.0;
+
+            // Adaptive smoothing based on local amplitude
+            for (j, &val) in slice.iter().enumerate() {
+                let centered = val - mean;
+                let angle = 2.0 * std::f64::consts::PI * j as f64 / self.period as f64;
+                in_phase += centered * angle.cos();
+                quadrature += centered * angle.sin();
+                amplitude_sum += centered.abs();
+            }
+
+            // Calculate raw phase
+            let raw_phase = quadrature.atan2(in_phase);
+            let phase_degrees = (raw_phase * 180.0 / std::f64::consts::PI + 360.0) % 360.0;
+
+            // Adaptive smoothing: less smoothing when amplitude is high (clear signal)
+            let avg_amplitude = amplitude_sum / len;
+            let normalized_amp = (avg_amplitude / mean.abs().max(1.0)).min(1.0);
+            let alpha = self.adaptive_factor * (0.5 + 0.5 * normalized_amp);
+
+            // Handle phase wrapping for smoothing
+            let mut phase_diff = phase_degrees - prev_smooth_phase;
+            if phase_diff > 180.0 {
+                phase_diff -= 360.0;
+            } else if phase_diff < -180.0 {
+                phase_diff += 360.0;
+            }
+
+            let smooth_phase = (prev_smooth_phase + alpha * phase_diff + 360.0) % 360.0;
+            prev_smooth_phase = smooth_phase;
+
+            result[i] = smooth_phase;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AdaptivePhaseMeasure {
+    fn name(&self) -> &str {
+        "Adaptive Phase Measure"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Frequency Domain Momentum - Momentum calculated in frequency domain
+///
+/// Unlike traditional momentum which measures price change over time,
+/// this indicator calculates momentum in the frequency domain by analyzing
+/// the rate of change of dominant frequency components.
+#[derive(Debug, Clone)]
+pub struct FrequencyDomainMomentum {
+    period: usize,
+    momentum_period: usize,
+}
+
+impl FrequencyDomainMomentum {
+    pub fn new(period: usize, momentum_period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if momentum_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_period })
+    }
+
+    /// Calculate spectral power at a given frequency
+    fn spectral_power(&self, slice: &[f64], freq_period: usize) -> f64 {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let mut real = 0.0;
+        let mut imag = 0.0;
+
+        for (j, &val) in slice.iter().enumerate() {
+            let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+            let centered = val - mean;
+            real += centered * angle.cos();
+            imag += centered * angle.sin();
+        }
+
+        (real * real + imag * imag).sqrt() / len as f64
+    }
+
+    /// Calculate frequency domain momentum
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let lookback = self.period + self.momentum_period;
+
+        // First, calculate spectral power history
+        let mut spectral_history = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+
+            // Sum power across multiple frequency bands
+            let mut total_power = 0.0;
+            let num_bands = 5;
+            for band in 1..=num_bands {
+                let freq_period = self.period / (band + 1);
+                if freq_period >= 3 {
+                    total_power += self.spectral_power(slice, freq_period);
+                }
+            }
+
+            spectral_history[i] = total_power;
+        }
+
+        // Calculate momentum of spectral power
+        for i in lookback..n {
+            let current = spectral_history[i];
+            let past = spectral_history[i - self.momentum_period];
+
+            if past.abs() > 1e-10 {
+                // Percentage change in spectral power
+                result[i] = ((current - past) / past) * 100.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for FrequencyDomainMomentum {
+    fn name(&self) -> &str {
+        "Frequency Domain Momentum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.momentum_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Spectral Entropy - Entropy of the frequency spectrum
+///
+/// Measures the "flatness" of the frequency spectrum. Low entropy indicates
+/// a dominant frequency (predictable cycle), high entropy indicates
+/// equal power across all frequencies (noise-like, unpredictable).
+/// Returns values between 0 (single frequency) and 100 (uniform spectrum).
+#[derive(Debug, Clone)]
+pub struct SpectralEntropy {
+    period: usize,
+    num_bins: usize,
+}
+
+impl SpectralEntropy {
+    pub fn new(period: usize, num_bins: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if num_bins < 3 || num_bins > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_bins".to_string(),
+                reason: "must be between 3 and 20".to_string(),
+            });
+        }
+        Ok(Self { period, num_bins })
+    }
+
+    /// Calculate spectral entropy
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Calculate power spectrum at different frequency bins
+            let mut powers = Vec::with_capacity(self.num_bins);
+            let mut total_power = 0.0;
+
+            for bin in 0..self.num_bins {
+                // Frequency period for this bin (from period/2 down to ~3)
+                let freq_period = ((self.period as f64 / 2.0)
+                    * (1.0 - bin as f64 / self.num_bins as f64)).max(3.0) as usize;
+
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (j, &val) in slice.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+                    let centered = val - mean;
+                    real += centered * angle.cos();
+                    imag += centered * angle.sin();
+                }
+
+                let power = (real * real + imag * imag) / (len * len) as f64;
+                powers.push(power);
+                total_power += power;
+            }
+
+            // Normalize to probability distribution
+            if total_power > 1e-10 {
+                let probs: Vec<f64> = powers.iter()
+                    .map(|&p| (p / total_power).max(1e-10))
+                    .collect();
+
+                // Calculate Shannon entropy
+                let entropy: f64 = probs.iter()
+                    .map(|&p| -p * p.ln())
+                    .sum();
+
+                // Normalize to 0-100 (max entropy = ln(num_bins))
+                let max_entropy = (self.num_bins as f64).ln();
+                result[i] = (entropy / max_entropy * 100.0).min(100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SpectralEntropy {
+    fn name(&self) -> &str {
+        "Spectral Entropy"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Cycle Dominance - Measures how dominant the detected cycle is
+///
+/// Quantifies the strength of the dominant cycle relative to other frequency
+/// components and noise. High values indicate a strong, clear cycle that
+/// can be traded; low values suggest noisy or multi-frequency behavior.
+/// Returns values between 0 (no dominant cycle) and 100 (pure sinusoid).
+#[derive(Debug, Clone)]
+pub struct CycleDominance {
+    min_period: usize,
+    max_period: usize,
+}
+
+impl CycleDominance {
+    pub fn new(min_period: usize, max_period: usize) -> Result<Self> {
+        if min_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if max_period <= min_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_period".to_string(),
+                reason: "must be greater than min_period".to_string(),
+            });
+        }
+        if max_period > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_period".to_string(),
+                reason: "must be at most 100".to_string(),
+            });
+        }
+        Ok(Self { min_period, max_period })
+    }
+
+    /// Calculate cycle dominance
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.max_period..n {
+            let start = i.saturating_sub(self.max_period);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Calculate power at each period in range
+            let mut powers = Vec::new();
+            let mut max_power = 0.0f64;
+            let mut total_power = 0.0;
+
+            for period in self.min_period..=self.max_period {
+                if period > len / 2 {
+                    continue;
+                }
+
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (j, &val) in slice.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * j as f64 / period as f64;
+                    let centered = val - mean;
+                    real += centered * angle.cos();
+                    imag += centered * angle.sin();
+                }
+
+                let power = (real * real + imag * imag) / (len * len) as f64;
+                powers.push(power);
+                max_power = max_power.max(power);
+                total_power += power;
+            }
+
+            // Dominance ratio: how much of total power is in the dominant frequency
+            if total_power > 1e-10 && !powers.is_empty() {
+                let dominance = (max_power / total_power) * 100.0;
+                result[i] = dominance.min(100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CycleDominance {
+    fn name(&self) -> &str {
+        "Cycle Dominance"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.max_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Harmonic Analyzer - Detects harmonic patterns in price
+///
+/// Analyzes price data for harmonic relationships (2x, 3x, 4x frequency).
+/// Returns a composite score indicating how much of the price movement
+/// can be explained by harmonic frequency relationships.
+#[derive(Debug, Clone)]
+pub struct HarmonicAnalyzer {
+    base_period: usize,
+    num_harmonics: usize,
+}
+
+impl HarmonicAnalyzer {
+    pub fn new(base_period: usize, num_harmonics: usize) -> Result<Self> {
+        if base_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if num_harmonics < 2 || num_harmonics > 6 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_harmonics".to_string(),
+                reason: "must be between 2 and 6".to_string(),
+            });
+        }
+        Ok(Self { base_period, num_harmonics })
+    }
+
+    /// Calculate harmonic analyzer
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let window = self.base_period * 2;
+
+        for i in window..n {
+            let start = i.saturating_sub(window);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Calculate total variance
+            let total_variance: f64 = slice.iter()
+                .map(|&v| (v - mean).powi(2))
+                .sum::<f64>() / len as f64;
+
+            if total_variance < 1e-10 {
+                continue;
+            }
+
+            // Calculate power at base frequency and harmonics
+            let mut harmonic_power = 0.0;
+
+            for h in 1..=self.num_harmonics {
+                let period = self.base_period / h;
+                if period < 3 {
+                    break;
+                }
+
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (j, &val) in slice.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * j as f64 / period as f64;
+                    let centered = val - mean;
+                    real += centered * angle.cos();
+                    imag += centered * angle.sin();
+                }
+
+                let power = (real * real + imag * imag) / (len * len) as f64;
+                // Weight lower harmonics more heavily
+                harmonic_power += power / h as f64;
+            }
+
+            // Score: ratio of harmonic power to total variance
+            let harmonic_ratio = (harmonic_power / total_variance).sqrt() * 100.0;
+            result[i] = harmonic_ratio.min(100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for HarmonicAnalyzer {
+    fn name(&self) -> &str {
+        "Harmonic Analyzer"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.base_period * 2 + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Phase Coherence - Measures phase coherence between price and oscillator
+///
+/// Calculates the phase coherence between the price signal and a derived
+/// oscillator (detrended price). High coherence indicates that the oscillator
+/// is well-synchronized with price, making it more reliable for timing.
+/// Returns values between 0 (no coherence) and 100 (perfect coherence).
+#[derive(Debug, Clone)]
+pub struct PhaseCoherence {
+    period: usize,
+    oscillator_period: usize,
+}
+
+impl PhaseCoherence {
+    pub fn new(period: usize, oscillator_period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if oscillator_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "oscillator_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if oscillator_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "oscillator_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, oscillator_period })
+    }
+
+    /// Calculate phase at a point using Hilbert-like transform
+    fn get_phase(&self, slice: &[f64], ref_period: usize) -> f64 {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let mut in_phase = 0.0;
+        let mut quadrature = 0.0;
+
+        for (j, &val) in slice.iter().enumerate() {
+            let angle = 2.0 * std::f64::consts::PI * j as f64 / ref_period as f64;
+            let centered = val - mean;
+            in_phase += centered * angle.cos();
+            quadrature += centered * angle.sin();
+        }
+
+        quadrature.atan2(in_phase)
+    }
+
+    /// Calculate phase coherence
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate oscillator (momentum-like detrending)
+        let mut oscillator = vec![0.0; n];
+        for i in self.oscillator_period..n {
+            oscillator[i] = close[i] - close[i - self.oscillator_period];
+        }
+
+        // Calculate coherence over rolling window
+        let coherence_window = self.period;
+
+        for i in (self.period + self.oscillator_period)..n {
+            let start = i.saturating_sub(coherence_window);
+
+            let price_slice = &close[start..=i];
+            let osc_slice = &oscillator[start..=i];
+
+            // Get phases at the oscillator period
+            let price_phase = self.get_phase(price_slice, self.oscillator_period);
+            let osc_phase = self.get_phase(osc_slice, self.oscillator_period);
+
+            // Phase difference
+            let phase_diff = (price_phase - osc_phase).abs();
+
+            // Coherence based on phase difference
+            // Perfect coherence (0 or PI diff) -> 100
+            // Worst coherence (PI/2 diff) -> 0
+            let coherence = phase_diff.cos().abs() * 100.0;
+
+            result[i] = coherence;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PhaseCoherence {
+    fn name(&self) -> &str {
+        "Phase Coherence"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.oscillator_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,6 +1555,275 @@ mod tests {
     }
 
     // =====================================================================
+    // AdaptivePhaseMeasure Tests
+    // =====================================================================
+
+    #[test]
+    fn test_adaptive_phase_measure_basic() {
+        let close = make_test_data();
+        let apm = AdaptivePhaseMeasure::new(20, 0.5).unwrap();
+        let result = apm.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Phase should be between 0 and 360
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] < 360.0,
+                    "Phase {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_phase_measure_validation() {
+        // period too small
+        assert!(AdaptivePhaseMeasure::new(5, 0.5).is_err());
+        // invalid adaptive_factor
+        assert!(AdaptivePhaseMeasure::new(20, 0.0).is_err());
+        assert!(AdaptivePhaseMeasure::new(20, 1.5).is_err());
+        // valid
+        assert!(AdaptivePhaseMeasure::new(20, 0.5).is_ok());
+        assert!(AdaptivePhaseMeasure::new(10, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_phase_measure_trait() {
+        let data = make_ohlcv_series();
+        let apm = AdaptivePhaseMeasure::new(15, 0.5).unwrap();
+
+        assert_eq!(apm.name(), "Adaptive Phase Measure");
+        assert_eq!(apm.min_periods(), 16);
+
+        let output = apm.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // FrequencyDomainMomentum Tests
+    // =====================================================================
+
+    #[test]
+    fn test_frequency_domain_momentum_basic() {
+        let close = make_test_data();
+        let fdm = FrequencyDomainMomentum::new(20, 5).unwrap();
+        let result = fdm.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values after warmup should be finite
+        for i in 30..result.len() {
+            assert!(result[i].is_finite(), "Expected finite value at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_frequency_domain_momentum_validation() {
+        // period too small
+        assert!(FrequencyDomainMomentum::new(5, 3).is_err());
+        // momentum_period too small
+        assert!(FrequencyDomainMomentum::new(20, 1).is_err());
+        // momentum_period >= period
+        assert!(FrequencyDomainMomentum::new(20, 20).is_err());
+        assert!(FrequencyDomainMomentum::new(20, 25).is_err());
+        // valid
+        assert!(FrequencyDomainMomentum::new(20, 5).is_ok());
+    }
+
+    #[test]
+    fn test_frequency_domain_momentum_trait() {
+        let data = make_ohlcv_series();
+        let fdm = FrequencyDomainMomentum::new(20, 5).unwrap();
+
+        assert_eq!(fdm.name(), "Frequency Domain Momentum");
+        assert_eq!(fdm.min_periods(), 26);
+
+        let output = fdm.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // SpectralEntropy Tests
+    // =====================================================================
+
+    #[test]
+    fn test_spectral_entropy_basic() {
+        let close = make_test_data();
+        let se = SpectralEntropy::new(30, 5).unwrap();
+        let result = se.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Entropy should be between 0 and 100
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Entropy {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_spectral_entropy_validation() {
+        // period too small
+        assert!(SpectralEntropy::new(10, 5).is_err());
+        // num_bins out of range
+        assert!(SpectralEntropy::new(30, 2).is_err());
+        assert!(SpectralEntropy::new(30, 25).is_err());
+        // valid
+        assert!(SpectralEntropy::new(30, 5).is_ok());
+        assert!(SpectralEntropy::new(20, 3).is_ok());
+        assert!(SpectralEntropy::new(30, 20).is_ok());
+    }
+
+    #[test]
+    fn test_spectral_entropy_trait() {
+        let data = make_ohlcv_series();
+        let se = SpectralEntropy::new(25, 5).unwrap();
+
+        assert_eq!(se.name(), "Spectral Entropy");
+        assert_eq!(se.min_periods(), 26);
+
+        let output = se.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // CycleDominance Tests
+    // =====================================================================
+
+    #[test]
+    fn test_cycle_dominance_basic() {
+        let close = make_test_data();
+        let cd = CycleDominance::new(5, 30).unwrap();
+        let result = cd.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Dominance should be between 0 and 100
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Dominance {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_cycle_dominance_pure_sine() {
+        // Pure sine wave should have high dominance
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 0.5).sin() * 10.0)
+            .collect();
+        let cd = CycleDominance::new(5, 30).unwrap();
+        let result = cd.calculate(&close);
+
+        // Pure sine should have high dominance values
+        let avg_dominance: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_dominance > 20.0, "Expected high dominance for pure sine, got {}", avg_dominance);
+    }
+
+    #[test]
+    fn test_cycle_dominance_validation() {
+        // min_period too small
+        assert!(CycleDominance::new(2, 30).is_err());
+        // max_period <= min_period
+        assert!(CycleDominance::new(10, 10).is_err());
+        assert!(CycleDominance::new(10, 5).is_err());
+        // max_period too large
+        assert!(CycleDominance::new(10, 150).is_err());
+        // valid
+        assert!(CycleDominance::new(5, 30).is_ok());
+    }
+
+    #[test]
+    fn test_cycle_dominance_trait() {
+        let data = make_ohlcv_series();
+        let cd = CycleDominance::new(5, 25).unwrap();
+
+        assert_eq!(cd.name(), "Cycle Dominance");
+        assert_eq!(cd.min_periods(), 26);
+
+        let output = cd.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // HarmonicAnalyzer Tests
+    // =====================================================================
+
+    #[test]
+    fn test_harmonic_analyzer_basic() {
+        let close = make_test_data();
+        let ha = HarmonicAnalyzer::new(20, 3).unwrap();
+        let result = ha.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be non-negative and bounded
+        for i in 45..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Harmonic score {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_harmonic_analyzer_validation() {
+        // base_period too small
+        assert!(HarmonicAnalyzer::new(5, 3).is_err());
+        // num_harmonics out of range
+        assert!(HarmonicAnalyzer::new(20, 1).is_err());
+        assert!(HarmonicAnalyzer::new(20, 10).is_err());
+        // valid
+        assert!(HarmonicAnalyzer::new(20, 2).is_ok());
+        assert!(HarmonicAnalyzer::new(20, 6).is_ok());
+    }
+
+    #[test]
+    fn test_harmonic_analyzer_trait() {
+        let data = make_ohlcv_series();
+        let ha = HarmonicAnalyzer::new(20, 3).unwrap();
+
+        assert_eq!(ha.name(), "Harmonic Analyzer");
+        assert_eq!(ha.min_periods(), 41);
+
+        let output = ha.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // PhaseCoherence Tests
+    // =====================================================================
+
+    #[test]
+    fn test_phase_coherence_basic() {
+        let close = make_test_data();
+        let pc = PhaseCoherence::new(20, 5).unwrap();
+        let result = pc.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Coherence should be between 0 and 100
+        for i in 30..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Coherence {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_phase_coherence_validation() {
+        // period too small
+        assert!(PhaseCoherence::new(5, 3).is_err());
+        // oscillator_period too small
+        assert!(PhaseCoherence::new(20, 2).is_err());
+        // oscillator_period >= period
+        assert!(PhaseCoherence::new(20, 20).is_err());
+        assert!(PhaseCoherence::new(20, 25).is_err());
+        // valid
+        assert!(PhaseCoherence::new(20, 5).is_ok());
+    }
+
+    #[test]
+    fn test_phase_coherence_trait() {
+        let data = make_ohlcv_series();
+        let pc = PhaseCoherence::new(20, 5).unwrap();
+
+        assert_eq!(pc.name(), "Phase Coherence");
+        assert_eq!(pc.min_periods(), 26);
+
+        let output = pc.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
     // Integration Tests
     // =====================================================================
 
@@ -966,6 +1837,12 @@ mod tests {
         let ssm = SignalStrengthMeter::new(20, 5).unwrap();
         let fri = FrequencyResponseIndicator::new(25, 4).unwrap();
         let ps = PhaseSynchronization::new(20, 10).unwrap();
+        let apm = AdaptivePhaseMeasure::new(15, 0.5).unwrap();
+        let fdm = FrequencyDomainMomentum::new(20, 5).unwrap();
+        let se = SpectralEntropy::new(25, 5).unwrap();
+        let cd = CycleDominance::new(5, 25).unwrap();
+        let ha = HarmonicAnalyzer::new(20, 3).unwrap();
+        let pc = PhaseCoherence::new(20, 5).unwrap();
 
         let results = vec![
             aff.compute(&data).unwrap().primary,
@@ -974,6 +1851,12 @@ mod tests {
             ssm.compute(&data).unwrap().primary,
             fri.compute(&data).unwrap().primary,
             ps.compute(&data).unwrap().primary,
+            apm.compute(&data).unwrap().primary,
+            fdm.compute(&data).unwrap().primary,
+            se.compute(&data).unwrap().primary,
+            cd.compute(&data).unwrap().primary,
+            ha.compute(&data).unwrap().primary,
+            pc.compute(&data).unwrap().primary,
         ];
 
         for result in results {

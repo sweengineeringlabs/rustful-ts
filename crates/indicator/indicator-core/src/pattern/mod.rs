@@ -72,4 +72,6 @@ pub use r#final::{
 pub use advanced::{
     TrendContinuationPattern, ReversalCandlePattern, VolumePricePattern,
     MomentumPattern, BreakoutPattern, ConsolidationBreak,
+    PatternStrength, PatternProbability, MultiTimeframePattern,
+    PatternCluster, SequentialPattern, PatternBreakoutStrength,
 };

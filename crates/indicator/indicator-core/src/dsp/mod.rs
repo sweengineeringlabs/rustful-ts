@@ -45,4 +45,6 @@ pub use signal_analysis::{
 pub use advanced::{
     AdaptiveFrequencyFilter, TrendPhaseAnalysis, CycleModeIndicator,
     SignalStrengthMeter, FrequencyResponseIndicator, PhaseSynchronization,
+    AdaptivePhaseMeasure, FrequencyDomainMomentum, SpectralEntropy,
+    CycleDominance, HarmonicAnalyzer, PhaseCoherence,
 };

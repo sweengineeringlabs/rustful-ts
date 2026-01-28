@@ -39,4 +39,6 @@ pub use extended::{
 pub use advanced::{
     DownsideDeviation, UpsidePotentialRatio, KappaRatio,
     WinRate, ProfitFactor, Expectancy,
+    ConditionalBeta, TailVaR, StressTestMetric,
+    LiquidityAdjustedVaR, CorrelationVaR, RegimeAwareRisk,
 };

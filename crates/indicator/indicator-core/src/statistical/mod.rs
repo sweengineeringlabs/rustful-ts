@@ -70,5 +70,6 @@ pub use extended::{
 pub use advanced::{
     RollingCovariance, SerialCorrelation, RunsTest,
     MeanReversionStrength, DistributionMoments, DistributionMomentsOutput,
-    OutlierDetector,
+    OutlierDetector, RollingBeta, RollingAlpha, InformationCoefficient,
+    RankCorrelation, TailDependence, TailDependenceOutput, CopulaCorrelation,
 };

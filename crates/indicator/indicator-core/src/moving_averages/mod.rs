@@ -50,4 +50,6 @@ pub use advanced::{
     FractalAdaptiveMA, VolumeAdaptiveMA, TrendAdaptiveMA,
     NoiseAdaptiveMA, MomentumAdaptiveMA, EfficiencyAdaptiveMA,
     VolatilityAdaptiveMA, CycleAdaptiveMA,
+    RegimeAdaptiveMA, VolumePriceMA, MomentumFilteredMA,
+    TrendStrengthMA, CycleAdjustedMA, AdaptiveLagMA,
 };

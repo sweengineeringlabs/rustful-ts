@@ -702,6 +702,751 @@ impl TechnicalIndicator for ConsolidationBreak {
 }
 
 // ============================================================================
+// PatternStrength
+// ============================================================================
+
+/// Pattern Strength - Measures strength of detected patterns
+///
+/// Calculates a strength score for detected patterns based on multiple factors
+/// including price momentum, volume confirmation, and trend alignment.
+#[derive(Debug, Clone)]
+pub struct PatternStrength {
+    /// Lookback period for strength calculation
+    lookback: usize,
+    /// Threshold for significant pattern strength
+    strength_threshold: f64,
+}
+
+impl PatternStrength {
+    /// Create a new PatternStrength indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for strength calculation (5-100)
+    /// * `strength_threshold` - Minimum strength threshold (0.1-1.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, strength_threshold: f64) -> Result<Self> {
+        if lookback < 5 || lookback > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 5 and 100".to_string(),
+            });
+        }
+        if strength_threshold < 0.1 || strength_threshold > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "strength_threshold".to_string(),
+                reason: "must be between 0.1 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { lookback, strength_threshold })
+    }
+
+    /// Calculate pattern strength values.
+    ///
+    /// Returns strength score between 0 and 1, where:
+    /// * 0-0.3: Weak pattern
+    /// * 0.3-0.6: Moderate pattern
+    /// * 0.6-1.0: Strong pattern
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.lookback..n {
+            let start = i - self.lookback;
+
+            // Price momentum component
+            let price_change = if close[start] > 1e-10 {
+                ((close[i] - close[start]) / close[start]).abs()
+            } else {
+                0.0
+            };
+
+            // Volatility component (normalized ATR)
+            let mut atr_sum = 0.0;
+            for j in (start + 1)..=i {
+                let tr = (high[j] - low[j])
+                    .max((high[j] - close[j - 1]).abs())
+                    .max((low[j] - close[j - 1]).abs());
+                atr_sum += tr;
+            }
+            let avg_atr = atr_sum / self.lookback as f64;
+            let avg_price = close[start..=i].iter().sum::<f64>() / (self.lookback + 1) as f64;
+            let norm_atr = if avg_price > 1e-10 { avg_atr / avg_price } else { 0.0 };
+
+            // Volume component
+            let avg_vol = volume[start..i].iter().sum::<f64>() / self.lookback as f64;
+            let vol_ratio = if avg_vol > 1e-10 { volume[i] / avg_vol } else { 1.0 };
+            let vol_component = (vol_ratio - 1.0).max(0.0).min(1.0);
+
+            // Trend consistency component
+            let mut up_moves = 0;
+            let mut down_moves = 0;
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_moves += 1;
+                } else if close[j] < close[j - 1] {
+                    down_moves += 1;
+                }
+            }
+            let consistency = (up_moves as f64 - down_moves as f64).abs() / self.lookback as f64;
+
+            // Combine components into strength score
+            let momentum_score = (price_change * 10.0).min(1.0);
+            let volatility_score = (norm_atr * 20.0).min(1.0);
+
+            let strength = (momentum_score * 0.35 + volatility_score * 0.25 +
+                           vol_component * 0.2 + consistency * 0.2).min(1.0);
+
+            result[i] = strength;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PatternStrength {
+    fn name(&self) -> &str {
+        "Pattern Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// PatternProbability
+// ============================================================================
+
+/// Pattern Probability - Probability of pattern completion
+///
+/// Calculates the probability that a detected pattern will complete based on
+/// historical pattern success rates and current market conditions.
+#[derive(Debug, Clone)]
+pub struct PatternProbability {
+    /// Lookback period for probability calculation
+    lookback: usize,
+    /// Minimum pattern occurrences for reliable probability
+    min_occurrences: usize,
+}
+
+impl PatternProbability {
+    /// Create a new PatternProbability indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for probability calculation (5-200)
+    /// * `min_occurrences` - Minimum pattern occurrences required (1-20)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, min_occurrences: usize) -> Result<Self> {
+        if lookback < 5 || lookback > 200 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 5 and 200".to_string(),
+            });
+        }
+        if min_occurrences < 1 || min_occurrences > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_occurrences".to_string(),
+                reason: "must be between 1 and 20".to_string(),
+            });
+        }
+        Ok(Self { lookback, min_occurrences })
+    }
+
+    /// Calculate pattern completion probability.
+    ///
+    /// Returns probability between 0 and 1 based on:
+    /// * Historical pattern completion rate
+    /// * Current trend alignment
+    /// * Volume confirmation
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.lookback..n {
+            let start = i - self.lookback;
+
+            // Detect higher highs/higher lows (bullish) or lower highs/lower lows (bearish)
+            let mut bullish_patterns = 0;
+            let mut bullish_completions = 0;
+            let mut bearish_patterns = 0;
+            let mut bearish_completions = 0;
+
+            for j in (start + 2)..i {
+                // Bullish pattern: higher high and higher low
+                if high[j] > high[j - 1] && low[j] > low[j - 1] {
+                    bullish_patterns += 1;
+                    // Check if pattern completed (price continued higher)
+                    if j + 1 < i && close[j + 1] > close[j] {
+                        bullish_completions += 1;
+                    }
+                }
+
+                // Bearish pattern: lower high and lower low
+                if high[j] < high[j - 1] && low[j] < low[j - 1] {
+                    bearish_patterns += 1;
+                    // Check if pattern completed (price continued lower)
+                    if j + 1 < i && close[j + 1] < close[j] {
+                        bearish_completions += 1;
+                    }
+                }
+            }
+
+            // Calculate probability based on current price action
+            let is_bullish_setup = high[i] > high[i - 1] && low[i] > low[i - 1];
+            let is_bearish_setup = high[i] < high[i - 1] && low[i] < low[i - 1];
+
+            if is_bullish_setup && bullish_patterns >= self.min_occurrences {
+                result[i] = bullish_completions as f64 / bullish_patterns as f64;
+            } else if is_bearish_setup && bearish_patterns >= self.min_occurrences {
+                result[i] = bearish_completions as f64 / bearish_patterns as f64;
+            } else {
+                // No clear pattern, use neutral probability
+                let total_patterns = bullish_patterns + bearish_patterns;
+                let total_completions = bullish_completions + bearish_completions;
+                if total_patterns >= self.min_occurrences {
+                    result[i] = total_completions as f64 / total_patterns as f64;
+                } else {
+                    result[i] = 0.5; // Neutral when insufficient data
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PatternProbability {
+    fn name(&self) -> &str {
+        "Pattern Probability"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// MultiTimeframePattern
+// ============================================================================
+
+/// Multi-Timeframe Pattern - Detects patterns across timeframes
+///
+/// Analyzes patterns across multiple simulated timeframes by using different
+/// lookback periods to identify confluence and stronger signals.
+#[derive(Debug, Clone)]
+pub struct MultiTimeframePattern {
+    /// Short timeframe period
+    short_period: usize,
+    /// Long timeframe period
+    long_period: usize,
+    /// Minimum timeframe agreement for signal
+    min_agreement: usize,
+}
+
+impl MultiTimeframePattern {
+    /// Create a new MultiTimeframePattern indicator.
+    ///
+    /// # Arguments
+    /// * `short_period` - Short timeframe period (3-20)
+    /// * `long_period` - Long timeframe period (10-200)
+    /// * `min_agreement` - Minimum timeframes that must agree (1-5)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(short_period: usize, long_period: usize, min_agreement: usize) -> Result<Self> {
+        if short_period < 3 || short_period > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be between 3 and 20".to_string(),
+            });
+        }
+        if long_period < 10 || long_period > 200 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be between 10 and 200".to_string(),
+            });
+        }
+        if short_period >= long_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be less than long_period".to_string(),
+            });
+        }
+        if min_agreement < 1 || min_agreement > 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_agreement".to_string(),
+                reason: "must be between 1 and 5".to_string(),
+            });
+        }
+        Ok(Self { short_period, long_period, min_agreement })
+    }
+
+    /// Calculate multi-timeframe pattern signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish pattern confirmed across timeframes
+    /// * -1: Bearish pattern confirmed across timeframes
+    /// * 0: No confirmed pattern or conflicting signals
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Create multiple timeframe periods
+        let mid_period = (self.short_period + self.long_period) / 2;
+        let periods = [self.short_period, mid_period, self.long_period];
+
+        for i in self.long_period..n {
+            let mut bullish_count = 0;
+            let mut bearish_count = 0;
+
+            for &period in &periods {
+                let start = i - period;
+
+                // Calculate trend direction for this timeframe
+                let period_high = high[start..=i].iter().cloned().fold(f64::MIN, f64::max);
+                let period_low = low[start..=i].iter().cloned().fold(f64::MAX, f64::min);
+                let mid_price = (period_high + period_low) / 2.0;
+
+                // Check if price is in upper or lower half of range
+                let in_upper_half = close[i] > mid_price;
+
+                // Check trend direction (higher highs/lows vs lower highs/lows)
+                let recent_start = i.saturating_sub(period / 2);
+                let recent_high = high[recent_start..=i].iter().cloned().fold(f64::MIN, f64::max);
+                let recent_low = low[recent_start..=i].iter().cloned().fold(f64::MAX, f64::min);
+
+                let earlier_end = recent_start;
+                let earlier_start = start;
+                if earlier_end > earlier_start {
+                    let earlier_high = high[earlier_start..earlier_end].iter().cloned().fold(f64::MIN, f64::max);
+                    let earlier_low = low[earlier_start..earlier_end].iter().cloned().fold(f64::MAX, f64::min);
+
+                    // Bullish: higher highs and higher lows, price in upper half
+                    if recent_high > earlier_high && recent_low > earlier_low && in_upper_half {
+                        bullish_count += 1;
+                    }
+                    // Bearish: lower highs and lower lows, price in lower half
+                    else if recent_high < earlier_high && recent_low < earlier_low && !in_upper_half {
+                        bearish_count += 1;
+                    }
+                }
+            }
+
+            // Require minimum agreement across timeframes
+            if bullish_count >= self.min_agreement {
+                result[i] = 1.0;
+            } else if bearish_count >= self.min_agreement {
+                result[i] = -1.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MultiTimeframePattern {
+    fn name(&self) -> &str {
+        "Multi-Timeframe Pattern"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// PatternCluster
+// ============================================================================
+
+/// Pattern Cluster - Identifies clusters of related patterns
+///
+/// Detects when multiple pattern signals occur in close proximity, indicating
+/// stronger support/resistance zones or trend confirmation.
+#[derive(Debug, Clone)]
+pub struct PatternCluster {
+    /// Lookback period for cluster detection
+    lookback: usize,
+    /// Maximum distance (% of price) for patterns to cluster
+    cluster_distance: f64,
+    /// Minimum patterns required in cluster
+    min_patterns: usize,
+}
+
+impl PatternCluster {
+    /// Create a new PatternCluster indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for cluster detection (5-100)
+    /// * `cluster_distance` - Max distance for clustering (0.1-10.0%)
+    /// * `min_patterns` - Minimum patterns in cluster (2-10)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, cluster_distance: f64, min_patterns: usize) -> Result<Self> {
+        if lookback < 5 || lookback > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 5 and 100".to_string(),
+            });
+        }
+        if cluster_distance < 0.1 || cluster_distance > 10.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cluster_distance".to_string(),
+                reason: "must be between 0.1 and 10.0".to_string(),
+            });
+        }
+        if min_patterns < 2 || min_patterns > 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_patterns".to_string(),
+                reason: "must be between 2 and 10".to_string(),
+            });
+        }
+        Ok(Self { lookback, cluster_distance, min_patterns })
+    }
+
+    /// Calculate pattern cluster signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish pattern cluster detected
+    /// * -1: Bearish pattern cluster detected
+    /// * 0: No significant cluster
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // First pass: detect individual pattern signals
+        let mut bullish_levels: Vec<Vec<f64>> = vec![Vec::new(); n];
+        let mut bearish_levels: Vec<Vec<f64>> = vec![Vec::new(); n];
+
+        for i in 2..n {
+            // Detect swing lows (potential support / bullish reversal)
+            if low[i - 1] < low[i - 2] && low[i - 1] < low[i] {
+                bullish_levels[i].push(low[i - 1]);
+            }
+
+            // Detect swing highs (potential resistance / bearish reversal)
+            if high[i - 1] > high[i - 2] && high[i - 1] > high[i] {
+                bearish_levels[i].push(high[i - 1]);
+            }
+
+            // Volume spike with bullish close
+            if i >= 5 {
+                let avg_vol: f64 = volume[(i - 5)..i].iter().sum::<f64>() / 5.0;
+                if avg_vol > 1e-10 && volume[i] > avg_vol * 1.5 {
+                    if close[i] > close[i - 1] {
+                        bullish_levels[i].push(close[i]);
+                    } else if close[i] < close[i - 1] {
+                        bearish_levels[i].push(close[i]);
+                    }
+                }
+            }
+        }
+
+        // Second pass: detect clusters
+        for i in self.lookback..n {
+            let start = i - self.lookback;
+            let current_price = close[i];
+            let distance_threshold = current_price * self.cluster_distance / 100.0;
+
+            // Collect all bullish levels in lookback
+            let mut all_bullish: Vec<f64> = Vec::new();
+            let mut all_bearish: Vec<f64> = Vec::new();
+
+            for j in start..=i {
+                all_bullish.extend(&bullish_levels[j]);
+                all_bearish.extend(&bearish_levels[j]);
+            }
+
+            // Count levels near current price
+            let bullish_cluster: usize = all_bullish
+                .iter()
+                .filter(|&&level| (level - current_price).abs() <= distance_threshold)
+                .count();
+
+            let bearish_cluster: usize = all_bearish
+                .iter()
+                .filter(|&&level| (level - current_price).abs() <= distance_threshold)
+                .count();
+
+            // Signal if cluster threshold is met
+            if bullish_cluster >= self.min_patterns && bullish_cluster > bearish_cluster {
+                result[i] = 1.0;
+            } else if bearish_cluster >= self.min_patterns && bearish_cluster > bullish_cluster {
+                result[i] = -1.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PatternCluster {
+    fn name(&self) -> &str {
+        "Pattern Cluster"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// SequentialPattern
+// ============================================================================
+
+/// Sequential Pattern - Detects sequential pattern formations
+///
+/// Identifies TD Sequential-style patterns where consecutive closes above/below
+/// prior closes indicate exhaustion or continuation.
+#[derive(Debug, Clone)]
+pub struct SequentialPattern {
+    /// Number of consecutive closes required for setup
+    setup_count: usize,
+    /// Bars back to compare for sequential close
+    comparison_bars: usize,
+}
+
+impl SequentialPattern {
+    /// Create a new SequentialPattern indicator.
+    ///
+    /// # Arguments
+    /// * `setup_count` - Number of consecutive closes for setup (5-20)
+    /// * `comparison_bars` - Bars back to compare (1-10)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(setup_count: usize, comparison_bars: usize) -> Result<Self> {
+        if setup_count < 5 || setup_count > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "setup_count".to_string(),
+                reason: "must be between 5 and 20".to_string(),
+            });
+        }
+        if comparison_bars < 1 || comparison_bars > 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "comparison_bars".to_string(),
+                reason: "must be between 1 and 10".to_string(),
+            });
+        }
+        Ok(Self { setup_count, comparison_bars })
+    }
+
+    /// Calculate sequential pattern signals.
+    ///
+    /// Returns normalized count:
+    /// * Positive values (0 to 1): Bullish setup count / setup_count
+    /// * Negative values (-1 to 0): Bearish setup count / setup_count
+    /// * Values at +/-1 indicate completed setup
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let min_idx = self.comparison_bars;
+        if n <= min_idx {
+            return result;
+        }
+
+        let mut bullish_count = 0;
+        let mut bearish_count = 0;
+
+        for i in min_idx..n {
+            let compare_idx = i - self.comparison_bars;
+
+            // Check for bullish sequential (close > close N bars ago)
+            if close[i] > close[compare_idx] {
+                bullish_count += 1;
+                bearish_count = 0;
+            }
+            // Check for bearish sequential (close < close N bars ago)
+            else if close[i] < close[compare_idx] {
+                bearish_count += 1;
+                bullish_count = 0;
+            }
+            // Reset on no change
+            else {
+                bullish_count = 0;
+                bearish_count = 0;
+            }
+
+            // Cap counts at setup_count
+            bullish_count = bullish_count.min(self.setup_count);
+            bearish_count = bearish_count.min(self.setup_count);
+
+            // Output normalized count
+            if bullish_count > 0 {
+                result[i] = bullish_count as f64 / self.setup_count as f64;
+            } else if bearish_count > 0 {
+                result[i] = -(bearish_count as f64 / self.setup_count as f64);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SequentialPattern {
+    fn name(&self) -> &str {
+        "Sequential Pattern"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.setup_count + self.comparison_bars
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// PatternBreakoutStrength
+// ============================================================================
+
+/// Pattern Breakout Strength - Strength of pattern breakout signals
+///
+/// Measures the strength of breakouts from pattern formations using price
+/// momentum, volume surge, and ATR expansion.
+#[derive(Debug, Clone)]
+pub struct PatternBreakoutStrength {
+    /// Lookback period for breakout analysis
+    lookback: usize,
+    /// ATR multiplier for breakout confirmation
+    atr_multiplier: f64,
+    /// Volume multiplier for confirmation
+    volume_multiplier: f64,
+}
+
+impl PatternBreakoutStrength {
+    /// Create a new PatternBreakoutStrength indicator.
+    ///
+    /// # Arguments
+    /// * `lookback` - Lookback period for analysis (5-100)
+    /// * `atr_multiplier` - ATR multiplier for breakout (0.5-5.0)
+    /// * `volume_multiplier` - Volume multiplier for confirmation (1.0-5.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(lookback: usize, atr_multiplier: f64, volume_multiplier: f64) -> Result<Self> {
+        if lookback < 5 || lookback > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be between 5 and 100".to_string(),
+            });
+        }
+        if atr_multiplier < 0.5 || atr_multiplier > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_multiplier".to_string(),
+                reason: "must be between 0.5 and 5.0".to_string(),
+            });
+        }
+        if volume_multiplier < 1.0 || volume_multiplier > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_multiplier".to_string(),
+                reason: "must be between 1.0 and 5.0".to_string(),
+            });
+        }
+        Ok(Self { lookback, atr_multiplier, volume_multiplier })
+    }
+
+    /// Calculate pattern breakout strength.
+    ///
+    /// Returns strength between -1 and 1:
+    /// * Positive values: Bullish breakout strength
+    /// * Negative values: Bearish breakout strength
+    /// * Values closer to +/-1 indicate stronger breakouts
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.lookback..n {
+            let start = i - self.lookback;
+
+            // Calculate ATR
+            let mut atr_sum = 0.0;
+            for j in (start + 1)..i {
+                let tr = (high[j] - low[j])
+                    .max((high[j] - close[j - 1]).abs())
+                    .max((low[j] - close[j - 1]).abs());
+                atr_sum += tr;
+            }
+            let atr = atr_sum / (self.lookback - 1) as f64;
+
+            // Find consolidation range
+            let range_high = high[start..i].iter().cloned().fold(f64::MIN, f64::max);
+            let range_low = low[start..i].iter().cloned().fold(f64::MAX, f64::min);
+
+            // Calculate average volume
+            let avg_vol = volume[start..i].iter().sum::<f64>() / self.lookback as f64;
+
+            // Calculate current bar's range
+            let current_range = high[i] - low[i];
+            let atr_expansion = if atr > 1e-10 { current_range / atr } else { 1.0 };
+
+            // Volume ratio
+            let vol_ratio = if avg_vol > 1e-10 { volume[i] / avg_vol } else { 1.0 };
+
+            // Determine breakout direction and strength
+            let breakout_threshold = atr * self.atr_multiplier;
+
+            // Bullish breakout: close above range high with ATR expansion
+            if close[i] > range_high + breakout_threshold {
+                let price_strength = ((close[i] - range_high) / atr).min(2.0) / 2.0;
+                let atr_strength = (atr_expansion / self.atr_multiplier).min(1.0);
+                let vol_strength = if vol_ratio >= self.volume_multiplier { 1.0 } else { vol_ratio / self.volume_multiplier };
+
+                let strength = (price_strength * 0.4 + atr_strength * 0.3 + vol_strength * 0.3).min(1.0);
+                result[i] = strength;
+            }
+            // Bearish breakout: close below range low with ATR expansion
+            else if close[i] < range_low - breakout_threshold {
+                let price_strength = ((range_low - close[i]) / atr).min(2.0) / 2.0;
+                let atr_strength = (atr_expansion / self.atr_multiplier).min(1.0);
+                let vol_strength = if vol_ratio >= self.volume_multiplier { 1.0 } else { vol_ratio / self.volume_multiplier };
+
+                let strength = (price_strength * 0.4 + atr_strength * 0.3 + vol_strength * 0.3).min(1.0);
+                result[i] = -strength;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PatternBreakoutStrength {
+    fn name(&self) -> &str {
+        "Pattern Breakout Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1169,5 +1914,347 @@ mod tests {
         for val in &result {
             assert_eq!(*val, 0.0);
         }
+    }
+
+    // ========== PatternStrength Tests ==========
+
+    #[test]
+    fn test_pattern_strength_new_valid() {
+        let indicator = PatternStrength::new(14, 0.7);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_pattern_strength_invalid_lookback() {
+        assert!(PatternStrength::new(2, 0.7).is_err());
+        assert!(PatternStrength::new(150, 0.7).is_err());
+    }
+
+    #[test]
+    fn test_pattern_strength_invalid_threshold() {
+        assert!(PatternStrength::new(14, 0.05).is_err());
+        assert!(PatternStrength::new(14, 1.5).is_err());
+    }
+
+    #[test]
+    fn test_pattern_strength_calculate() {
+        let data = make_test_data();
+        let indicator = PatternStrength::new(14, 0.5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be between 0 and 1
+        for val in &result {
+            assert!(*val >= 0.0 && *val <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_pattern_strength_min_periods() {
+        let indicator = PatternStrength::new(20, 0.6).unwrap();
+        assert_eq!(indicator.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_pattern_strength_name() {
+        let indicator = PatternStrength::new(14, 0.7).unwrap();
+        assert_eq!(indicator.name(), "Pattern Strength");
+    }
+
+    #[test]
+    fn test_pattern_strength_compute() {
+        let data = make_test_data();
+        let indicator = PatternStrength::new(14, 0.5).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== PatternProbability Tests ==========
+
+    #[test]
+    fn test_pattern_probability_new_valid() {
+        let indicator = PatternProbability::new(20, 5);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_pattern_probability_invalid_lookback() {
+        assert!(PatternProbability::new(4, 3).is_err());
+        assert!(PatternProbability::new(250, 10).is_err());
+    }
+
+    #[test]
+    fn test_pattern_probability_invalid_min_occurrences() {
+        assert!(PatternProbability::new(20, 0).is_err());
+        assert!(PatternProbability::new(20, 25).is_err());
+    }
+
+    #[test]
+    fn test_pattern_probability_calculate() {
+        let data = make_test_data();
+        let indicator = PatternProbability::new(15, 3).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be between 0 and 1
+        for val in &result {
+            assert!(*val >= 0.0 && *val <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_pattern_probability_min_periods() {
+        let indicator = PatternProbability::new(25, 5).unwrap();
+        assert_eq!(indicator.min_periods(), 26);
+    }
+
+    #[test]
+    fn test_pattern_probability_name() {
+        let indicator = PatternProbability::new(20, 5).unwrap();
+        assert_eq!(indicator.name(), "Pattern Probability");
+    }
+
+    #[test]
+    fn test_pattern_probability_compute() {
+        let data = make_test_data();
+        let indicator = PatternProbability::new(15, 3).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== MultiTimeframePattern Tests ==========
+
+    #[test]
+    fn test_multi_timeframe_pattern_new_valid() {
+        let indicator = MultiTimeframePattern::new(5, 20, 3);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_multi_timeframe_pattern_invalid_short_period() {
+        assert!(MultiTimeframePattern::new(1, 20, 3).is_err());
+        assert!(MultiTimeframePattern::new(25, 30, 3).is_err());
+    }
+
+    #[test]
+    fn test_multi_timeframe_pattern_invalid_long_period() {
+        assert!(MultiTimeframePattern::new(5, 9, 3).is_err());
+        assert!(MultiTimeframePattern::new(5, 250, 3).is_err());
+    }
+
+    #[test]
+    fn test_multi_timeframe_pattern_invalid_min_agreement() {
+        assert!(MultiTimeframePattern::new(5, 20, 0).is_err());
+        assert!(MultiTimeframePattern::new(5, 20, 6).is_err());
+    }
+
+    #[test]
+    fn test_multi_timeframe_pattern_calculate() {
+        let data = make_test_data();
+        let indicator = MultiTimeframePattern::new(5, 15, 2).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_multi_timeframe_pattern_min_periods() {
+        let indicator = MultiTimeframePattern::new(5, 25, 2).unwrap();
+        assert_eq!(indicator.min_periods(), 26);
+    }
+
+    #[test]
+    fn test_multi_timeframe_pattern_name() {
+        let indicator = MultiTimeframePattern::new(5, 20, 3).unwrap();
+        assert_eq!(indicator.name(), "Multi-Timeframe Pattern");
+    }
+
+    #[test]
+    fn test_multi_timeframe_pattern_compute() {
+        let data = make_test_data();
+        let indicator = MultiTimeframePattern::new(5, 15, 2).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== PatternCluster Tests ==========
+
+    #[test]
+    fn test_pattern_cluster_new_valid() {
+        let indicator = PatternCluster::new(10, 2.0, 3);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_pattern_cluster_invalid_lookback() {
+        assert!(PatternCluster::new(2, 2.0, 2).is_err());
+        assert!(PatternCluster::new(150, 2.0, 3).is_err());
+    }
+
+    #[test]
+    fn test_pattern_cluster_invalid_distance() {
+        assert!(PatternCluster::new(10, 0.05, 2).is_err());
+        assert!(PatternCluster::new(10, 12.0, 3).is_err());
+    }
+
+    #[test]
+    fn test_pattern_cluster_invalid_min_patterns() {
+        assert!(PatternCluster::new(10, 2.0, 1).is_err());
+        assert!(PatternCluster::new(10, 2.0, 15).is_err());
+    }
+
+    #[test]
+    fn test_pattern_cluster_calculate() {
+        let data = make_test_data();
+        let indicator = PatternCluster::new(10, 2.0, 2).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_pattern_cluster_min_periods() {
+        let indicator = PatternCluster::new(15, 2.0, 3).unwrap();
+        assert_eq!(indicator.min_periods(), 16);
+    }
+
+    #[test]
+    fn test_pattern_cluster_name() {
+        let indicator = PatternCluster::new(10, 2.0, 3).unwrap();
+        assert_eq!(indicator.name(), "Pattern Cluster");
+    }
+
+    #[test]
+    fn test_pattern_cluster_compute() {
+        let data = make_test_data();
+        let indicator = PatternCluster::new(10, 2.0, 2).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== SequentialPattern Tests ==========
+
+    #[test]
+    fn test_sequential_pattern_new_valid() {
+        let indicator = SequentialPattern::new(9, 4);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_sequential_pattern_invalid_count() {
+        assert!(SequentialPattern::new(2, 2).is_err());
+        assert!(SequentialPattern::new(25, 5).is_err());
+    }
+
+    #[test]
+    fn test_sequential_pattern_invalid_comparison() {
+        assert!(SequentialPattern::new(9, 0).is_err());
+        assert!(SequentialPattern::new(9, 12).is_err());
+    }
+
+    #[test]
+    fn test_sequential_pattern_calculate() {
+        let data = make_test_data();
+        let indicator = SequentialPattern::new(9, 4).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be between -1 and 1 (normalized count)
+        for val in &result {
+            assert!(*val >= -1.0 && *val <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_sequential_pattern_min_periods() {
+        let indicator = SequentialPattern::new(13, 4).unwrap();
+        assert_eq!(indicator.min_periods(), 17); // setup_count + comparison_bars
+    }
+
+    #[test]
+    fn test_sequential_pattern_name() {
+        let indicator = SequentialPattern::new(9, 4).unwrap();
+        assert_eq!(indicator.name(), "Sequential Pattern");
+    }
+
+    #[test]
+    fn test_sequential_pattern_compute() {
+        let data = make_test_data();
+        let indicator = SequentialPattern::new(9, 4).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== PatternBreakoutStrength Tests ==========
+
+    #[test]
+    fn test_pattern_breakout_strength_new_valid() {
+        let indicator = PatternBreakoutStrength::new(20, 2.0, 1.5);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_pattern_breakout_strength_invalid_lookback() {
+        assert!(PatternBreakoutStrength::new(4, 2.0, 1.5).is_err());
+        assert!(PatternBreakoutStrength::new(150, 2.0, 1.5).is_err());
+    }
+
+    #[test]
+    fn test_pattern_breakout_strength_invalid_atr_mult() {
+        assert!(PatternBreakoutStrength::new(20, 0.3, 1.5).is_err());
+        assert!(PatternBreakoutStrength::new(20, 8.0, 1.5).is_err());
+    }
+
+    #[test]
+    fn test_pattern_breakout_strength_invalid_vol_mult() {
+        assert!(PatternBreakoutStrength::new(20, 2.0, 0.5).is_err());
+        assert!(PatternBreakoutStrength::new(20, 2.0, 8.0).is_err());
+    }
+
+    #[test]
+    fn test_pattern_breakout_strength_calculate() {
+        let data = make_test_data();
+        let indicator = PatternBreakoutStrength::new(14, 1.5, 1.2).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Strength values should be between -1 and 1
+        for val in &result {
+            assert!(*val >= -1.0 && *val <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_pattern_breakout_strength_min_periods() {
+        let indicator = PatternBreakoutStrength::new(25, 2.0, 1.5).unwrap();
+        assert_eq!(indicator.min_periods(), 26);
+    }
+
+    #[test]
+    fn test_pattern_breakout_strength_name() {
+        let indicator = PatternBreakoutStrength::new(20, 2.0, 1.5).unwrap();
+        assert_eq!(indicator.name(), "Pattern Breakout Strength");
+    }
+
+    #[test]
+    fn test_pattern_breakout_strength_compute() {
+        let data = make_test_data();
+        let indicator = PatternBreakoutStrength::new(14, 1.5, 1.2).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
     }
 }

@@ -1201,6 +1201,873 @@ impl TechnicalIndicator for CycleAdaptiveMA {
 }
 
 // ============================================================================
+// Regime Adaptive Moving Average
+// ============================================================================
+
+/// Regime Adaptive Moving Average (RegimeAdaptiveMA)
+///
+/// Adapts the smoothing factor based on detected market regime.
+/// Identifies trending, ranging, and volatile regimes to adjust responsiveness.
+/// Trending regimes use faster response, ranging regimes use more smoothing.
+#[derive(Debug, Clone)]
+pub struct RegimeAdaptiveMA {
+    period: usize,
+    regime_period: usize,
+    fast_alpha: f64,
+    slow_alpha: f64,
+}
+
+impl RegimeAdaptiveMA {
+    /// Create a new RegimeAdaptiveMA.
+    ///
+    /// # Arguments
+    /// * `period` - The base MA period (must be at least 2)
+    /// * `regime_period` - Period for regime detection (must be at least 10)
+    /// * `fast_alpha` - Fast smoothing factor (0.0 to 1.0)
+    /// * `slow_alpha` - Slow smoothing factor (0.0 to 1.0, must be less than fast_alpha)
+    pub fn new(period: usize, regime_period: usize, fast_alpha: f64, slow_alpha: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if regime_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "regime_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if fast_alpha <= 0.0 || fast_alpha > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_alpha".to_string(),
+                reason: "must be between 0.0 (exclusive) and 1.0 (inclusive)".to_string(),
+            });
+        }
+        if slow_alpha <= 0.0 || slow_alpha >= fast_alpha {
+            return Err(IndicatorError::InvalidParameter {
+                name: "slow_alpha".to_string(),
+                reason: "must be between 0.0 (exclusive) and fast_alpha (exclusive)".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            regime_period,
+            fast_alpha,
+            slow_alpha,
+        })
+    }
+
+    /// Calculate the regime adaptive moving average values.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let min_required = self.period.max(self.regime_period);
+
+        if n < min_required {
+            return vec![f64::NAN; n];
+        }
+
+        // Calculate regime scores
+        let regime_scores = self.calculate_regime_score(data);
+
+        let mut result = vec![f64::NAN; n];
+        result[min_required - 1] = data[min_required - 1];
+        let mut rama = data[min_required - 1];
+
+        for i in min_required..n {
+            // Regime score: 1.0 = strong trend, 0.0 = ranging
+            let alpha = self.slow_alpha + regime_scores[i] * (self.fast_alpha - self.slow_alpha);
+
+            rama = alpha * data[i] + (1.0 - alpha) * rama;
+            result[i] = rama;
+        }
+
+        result
+    }
+
+    /// Calculate regime score based on trend strength and directional consistency.
+    fn calculate_regime_score(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![0.5; n];
+
+        if n < self.regime_period {
+            return result;
+        }
+
+        for i in self.regime_period..n {
+            let start = i + 1 - self.regime_period;
+            let window = &data[start..=i];
+
+            // Calculate efficiency ratio (direction vs total movement)
+            let net_change = (window.last().unwrap() - window.first().unwrap()).abs();
+            let total_movement: f64 = (1..window.len())
+                .map(|j| (window[j] - window[j - 1]).abs())
+                .sum();
+
+            let efficiency = if total_movement > 1e-10 {
+                net_change / total_movement
+            } else {
+                0.0
+            };
+
+            // Calculate directional consistency (how often price moves in same direction)
+            let mut same_direction_count = 0;
+            let overall_direction = if net_change > 0.0 { 1 } else { -1 };
+            for j in 1..window.len() {
+                let change = window[j] - window[j - 1];
+                let dir = if change > 0.0 { 1 } else if change < 0.0 { -1 } else { 0 };
+                if dir == overall_direction {
+                    same_direction_count += 1;
+                }
+            }
+            let consistency = same_direction_count as f64 / (window.len() - 1) as f64;
+
+            // Combine efficiency and consistency for regime score
+            result[i] = (efficiency * 0.6 + consistency * 0.4).clamp(0.0, 1.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for RegimeAdaptiveMA {
+    fn name(&self) -> &str {
+        "Regime Adaptive MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.regime_period)
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Volume Price Moving Average
+// ============================================================================
+
+/// Volume Price Moving Average (VolumePriceMA)
+///
+/// Weights the moving average by the volume-price relationship.
+/// High volume on significant price moves carries more weight.
+/// Captures the importance of volume-confirmed price action.
+#[derive(Debug, Clone)]
+pub struct VolumePriceMA {
+    period: usize,
+}
+
+impl VolumePriceMA {
+    /// Create a new VolumePriceMA.
+    ///
+    /// # Arguments
+    /// * `period` - The lookback period (must be at least 2)
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate the volume-price weighted moving average values.
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        if n < self.period || volume.len() < n {
+            return vec![f64::NAN; n];
+        }
+
+        let mut result = vec![f64::NAN; n];
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let window_close = &close[start..=i];
+            let window_volume = &volume[start..=i];
+
+            // Calculate volume-price weights
+            let mut weights = Vec::with_capacity(self.period);
+            let mut weight_sum = 0.0;
+
+            for j in 0..self.period {
+                // Price change magnitude
+                let price_change = if j > 0 {
+                    (window_close[j] - window_close[j - 1]).abs()
+                } else if start > 0 {
+                    (window_close[j] - close[start - 1]).abs()
+                } else {
+                    0.0
+                };
+
+                // Normalize volume
+                let avg_volume: f64 = window_volume.iter().sum::<f64>() / self.period as f64;
+                let vol_ratio = if avg_volume > 1e-10 {
+                    window_volume[j] / avg_volume
+                } else {
+                    1.0
+                };
+
+                // Weight = volume ratio * (1 + price change factor)
+                let avg_price = window_close.iter().sum::<f64>() / self.period as f64;
+                let price_factor = if avg_price > 1e-10 {
+                    price_change / avg_price
+                } else {
+                    0.0
+                };
+
+                let weight = vol_ratio * (1.0 + price_factor * 10.0);
+                weights.push(weight);
+                weight_sum += weight;
+            }
+
+            // Calculate weighted average
+            if weight_sum > 1e-10 {
+                let weighted_sum: f64 = window_close
+                    .iter()
+                    .zip(weights.iter())
+                    .map(|(p, w)| p * w)
+                    .sum();
+                result[i] = weighted_sum / weight_sum;
+            } else {
+                result[i] = window_close.iter().sum::<f64>() / self.period as f64;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolumePriceMA {
+    fn name(&self) -> &str {
+        "Volume Price MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period,
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(
+            self.calculate(&data.close, &data.volume),
+        ))
+    }
+}
+
+// ============================================================================
+// Momentum Filtered Moving Average
+// ============================================================================
+
+/// Momentum Filtered Moving Average (MomentumFilteredMA)
+///
+/// Filters the moving average based on momentum conditions.
+/// Only updates the MA when momentum exceeds a threshold.
+/// Helps reduce whipsaws during low-momentum periods.
+#[derive(Debug, Clone)]
+pub struct MomentumFilteredMA {
+    period: usize,
+    momentum_period: usize,
+    threshold: f64,
+}
+
+impl MomentumFilteredMA {
+    /// Create a new MomentumFilteredMA.
+    ///
+    /// # Arguments
+    /// * `period` - The base MA period (must be at least 2)
+    /// * `momentum_period` - Period for momentum calculation (must be at least 2)
+    /// * `threshold` - Momentum threshold for updates (0.0 to 1.0)
+    pub fn new(period: usize, momentum_period: usize, threshold: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if threshold < 0.0 || threshold > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            momentum_period,
+            threshold,
+        })
+    }
+
+    /// Calculate the momentum filtered moving average values.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let min_required = self.period.max(self.momentum_period);
+
+        if n < min_required {
+            return vec![f64::NAN; n];
+        }
+
+        // Calculate normalized momentum
+        let momentum = self.calculate_normalized_momentum(data);
+
+        let alpha = 2.0 / (self.period as f64 + 1.0);
+        let mut result = vec![f64::NAN; n];
+        result[min_required - 1] = data[min_required - 1];
+        let mut mfma = data[min_required - 1];
+
+        for i in min_required..n {
+            // Only update if momentum exceeds threshold
+            if momentum[i] >= self.threshold {
+                mfma = alpha * data[i] + (1.0 - alpha) * mfma;
+            }
+            // If momentum below threshold, MA stays flat (no update)
+            result[i] = mfma;
+        }
+
+        result
+    }
+
+    /// Calculate normalized momentum.
+    fn calculate_normalized_momentum(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.momentum_period {
+            return result;
+        }
+
+        // Calculate ROC values
+        let mut roc_abs = Vec::new();
+        for i in self.momentum_period..n {
+            if data[i - self.momentum_period].abs() > 1e-10 {
+                let roc = ((data[i] - data[i - self.momentum_period]) / data[i - self.momentum_period]).abs();
+                roc_abs.push(roc);
+            }
+        }
+
+        // Normalize using recent max
+        if !roc_abs.is_empty() {
+            let lookback = (self.momentum_period * 2).min(roc_abs.len());
+            for i in self.momentum_period..n {
+                let idx = i - self.momentum_period;
+                if idx < roc_abs.len() {
+                    let start = idx.saturating_sub(lookback);
+                    let max_roc = roc_abs[start..=idx]
+                        .iter()
+                        .cloned()
+                        .fold(0.01_f64, f64::max);
+                    result[i] = (roc_abs[idx] / max_roc).clamp(0.0, 1.0);
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MomentumFilteredMA {
+    fn name(&self) -> &str {
+        "Momentum Filtered MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.momentum_period)
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Trend Strength Moving Average
+// ============================================================================
+
+/// Trend Strength Moving Average (TrendStrengthMA)
+///
+/// Weights the moving average by trend strength at each point.
+/// Prices during strong trends carry more weight than ranging periods.
+/// Emphasizes trend-confirming price action.
+#[derive(Debug, Clone)]
+pub struct TrendStrengthMA {
+    period: usize,
+    strength_period: usize,
+}
+
+impl TrendStrengthMA {
+    /// Create a new TrendStrengthMA.
+    ///
+    /// # Arguments
+    /// * `period` - The base MA period (must be at least 2)
+    /// * `strength_period` - Period for trend strength calculation (must be at least 2)
+    pub fn new(period: usize, strength_period: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if strength_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "strength_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            strength_period,
+        })
+    }
+
+    /// Calculate the trend strength weighted moving average values.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let min_required = self.period.max(self.strength_period);
+
+        if n < min_required {
+            return vec![f64::NAN; n];
+        }
+
+        // Calculate trend strength for each point
+        let strength = self.calculate_trend_strength(data);
+
+        let mut result = vec![f64::NAN; n];
+
+        for i in (min_required - 1)..n {
+            let start = i + 1 - self.period;
+            let window_data = &data[start..=i];
+            let window_strength = &strength[start..=i];
+
+            // Calculate weighted average using trend strength as weights
+            let mut weight_sum = 0.0;
+            let mut weighted_sum = 0.0;
+
+            for j in 0..self.period {
+                // Add small base weight to avoid zero weights
+                let weight = window_strength[j] + 0.1;
+                weight_sum += weight;
+                weighted_sum += window_data[j] * weight;
+            }
+
+            result[i] = if weight_sum > 1e-10 {
+                weighted_sum / weight_sum
+            } else {
+                window_data.iter().sum::<f64>() / self.period as f64
+            };
+        }
+
+        result
+    }
+
+    /// Calculate trend strength at each point using efficiency ratio.
+    fn calculate_trend_strength(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![0.5; n];
+
+        if n < self.strength_period {
+            return result;
+        }
+
+        for i in self.strength_period..n {
+            let start = i + 1 - self.strength_period;
+            let window = &data[start..=i];
+
+            let net_change = (window.last().unwrap() - window.first().unwrap()).abs();
+            let total_movement: f64 = (1..window.len())
+                .map(|j| (window[j] - window[j - 1]).abs())
+                .sum();
+
+            result[i] = if total_movement > 1e-10 {
+                (net_change / total_movement).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendStrengthMA {
+    fn name(&self) -> &str {
+        "Trend Strength MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.strength_period)
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Cycle Adjusted Moving Average
+// ============================================================================
+
+/// Cycle Adjusted Moving Average (CycleAdjustedMA)
+///
+/// Adjusts the moving average period based on the dominant cycle length.
+/// Detects the dominant cycle using autocorrelation and adjusts accordingly.
+/// Shorter detected cycles lead to shorter MA periods.
+#[derive(Debug, Clone)]
+pub struct CycleAdjustedMA {
+    base_period: usize,
+    cycle_period: usize,
+    min_period: usize,
+    max_period: usize,
+}
+
+impl CycleAdjustedMA {
+    /// Create a new CycleAdjustedMA.
+    ///
+    /// # Arguments
+    /// * `base_period` - The base MA period (must be at least 2)
+    /// * `cycle_period` - Period for cycle detection (must be at least 10)
+    /// * `min_period` - Minimum adaptive period (must be at least 2)
+    /// * `max_period` - Maximum adaptive period (must be greater than min_period)
+    pub fn new(base_period: usize, cycle_period: usize, min_period: usize, max_period: usize) -> Result<Self> {
+        if base_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if cycle_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if min_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if max_period <= min_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_period".to_string(),
+                reason: "must be greater than min_period".to_string(),
+            });
+        }
+        Ok(Self {
+            base_period,
+            cycle_period,
+            min_period,
+            max_period,
+        })
+    }
+
+    /// Calculate the cycle adjusted moving average values.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let min_required = self.base_period.max(self.cycle_period);
+
+        if n < min_required {
+            return vec![f64::NAN; n];
+        }
+
+        // Detect dominant cycle lengths
+        let cycle_lengths = self.detect_cycle_length(data);
+
+        let mut result = vec![f64::NAN; n];
+
+        for i in min_required..n {
+            // Adaptive period based on detected cycle
+            let cycle_len = cycle_lengths[i];
+            let adaptive_period = if cycle_len > 0 {
+                // Use half the cycle length as the MA period
+                ((cycle_len / 2) as usize).clamp(self.min_period, self.max_period)
+            } else {
+                self.base_period
+            };
+
+            // Calculate SMA with adaptive period
+            if i >= adaptive_period - 1 {
+                let start = i + 1 - adaptive_period;
+                let sum: f64 = data[start..=i].iter().sum();
+                result[i] = sum / adaptive_period as f64;
+            }
+        }
+
+        result
+    }
+
+    /// Detect dominant cycle length using autocorrelation.
+    fn detect_cycle_length(&self, data: &[f64]) -> Vec<i32> {
+        let n = data.len();
+        let mut result = vec![0; n];
+
+        if n < self.cycle_period {
+            return result;
+        }
+
+        for i in self.cycle_period..n {
+            let start = i + 1 - self.cycle_period;
+            let window = &data[start..=i];
+
+            // Calculate mean
+            let mean: f64 = window.iter().sum::<f64>() / window.len() as f64;
+
+            // Find lag with maximum autocorrelation
+            let mut max_corr = 0.0_f64;
+            let mut best_lag = 0;
+
+            for lag in 2..(self.cycle_period / 2) {
+                let mut num = 0.0;
+                let mut den1 = 0.0;
+                let mut den2 = 0.0;
+
+                for j in lag..window.len() {
+                    let x = window[j] - mean;
+                    let y = window[j - lag] - mean;
+                    num += x * y;
+                    den1 += x * x;
+                    den2 += y * y;
+                }
+
+                let denom = (den1 * den2).sqrt();
+                let corr = if denom > 1e-10 { num / denom } else { 0.0 };
+
+                if corr > max_corr && corr > 0.3 {
+                    max_corr = corr;
+                    best_lag = lag as i32;
+                }
+            }
+
+            result[i] = best_lag * 2; // Cycle length is approximately 2x the lag
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CycleAdjustedMA {
+    fn name(&self) -> &str {
+        "Cycle Adjusted MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.base_period.max(self.cycle_period)
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Adaptive Lag Moving Average
+// ============================================================================
+
+/// Adaptive Lag Moving Average (AdaptiveLagMA)
+///
+/// Adjusts the effective lag based on price volatility.
+/// High volatility increases lag to reduce noise, low volatility decreases lag.
+/// Balances responsiveness and smoothness based on market conditions.
+#[derive(Debug, Clone)]
+pub struct AdaptiveLagMA {
+    period: usize,
+    volatility_period: usize,
+    min_lag: f64,
+    max_lag: f64,
+}
+
+impl AdaptiveLagMA {
+    /// Create a new AdaptiveLagMA.
+    ///
+    /// # Arguments
+    /// * `period` - The base MA period (must be at least 2)
+    /// * `volatility_period` - Period for volatility calculation (must be at least 2)
+    /// * `min_lag` - Minimum lag factor (0.0 to 1.0)
+    /// * `max_lag` - Maximum lag factor (must be greater than min_lag and at most 1.0)
+    pub fn new(period: usize, volatility_period: usize, min_lag: f64, max_lag: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if volatility_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if min_lag < 0.0 || min_lag > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_lag".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        if max_lag <= min_lag || max_lag > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_lag".to_string(),
+                reason: "must be greater than min_lag and at most 1.0".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            volatility_period,
+            min_lag,
+            max_lag,
+        })
+    }
+
+    /// Calculate the adaptive lag moving average values.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let min_required = self.period.max(self.volatility_period);
+
+        if n < min_required {
+            return vec![f64::NAN; n];
+        }
+
+        // Calculate normalized volatility
+        let volatility = self.calculate_normalized_volatility(data);
+
+        let mut result = vec![f64::NAN; n];
+        result[min_required - 1] = data[min_required - 1];
+        let mut alma = data[min_required - 1];
+
+        for i in min_required..n {
+            // Adaptive lag: high volatility = high lag (slow), low volatility = low lag (fast)
+            let lag_factor = self.min_lag + volatility[i] * (self.max_lag - self.min_lag);
+
+            // Convert lag factor to alpha (inverse relationship)
+            let alpha = (1.0 - lag_factor) * (2.0 / (self.period as f64 + 1.0));
+
+            alma = alpha * data[i] + (1.0 - alpha) * alma;
+            result[i] = alma;
+        }
+
+        result
+    }
+
+    /// Calculate normalized volatility using standard deviation of returns.
+    fn calculate_normalized_volatility(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![0.5; n];
+
+        if n < self.volatility_period {
+            return result;
+        }
+
+        // Calculate rolling volatility
+        let mut vol_values = Vec::new();
+
+        for i in self.volatility_period..n {
+            let start = i + 1 - self.volatility_period;
+            let window = &data[start..=i];
+
+            // Calculate returns
+            let returns: Vec<f64> = (1..window.len())
+                .map(|j| {
+                    if window[j - 1].abs() > 1e-10 {
+                        (window[j] - window[j - 1]) / window[j - 1]
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+
+            if returns.is_empty() {
+                vol_values.push(0.0);
+                continue;
+            }
+
+            // Calculate standard deviation of returns
+            let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+            let variance: f64 = returns.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / returns.len() as f64;
+            let std_dev = variance.sqrt();
+
+            vol_values.push(std_dev);
+        }
+
+        // Normalize volatility
+        if !vol_values.is_empty() {
+            let lookback = (self.volatility_period * 2).min(vol_values.len());
+            for i in self.volatility_period..n {
+                let idx = i - self.volatility_period;
+                if idx < vol_values.len() {
+                    let start = idx.saturating_sub(lookback);
+                    let max_vol = vol_values[start..=idx]
+                        .iter()
+                        .cloned()
+                        .fold(0.001_f64, f64::max);
+                    result[i] = (vol_values[idx] / max_vol).clamp(0.0, 1.0);
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AdaptiveLagMA {
+    fn name(&self) -> &str {
+        "Adaptive Lag MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.volatility_period)
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -1747,6 +2614,397 @@ mod tests {
         let cama = CycleAdaptiveMA::new(10, 20, 0.5, 0.1).unwrap();
         let data = make_ohlcv_data();
         let result = cama.compute(&data);
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // RegimeAdaptiveMA Tests
+    // ========================================================================
+
+    #[test]
+    fn test_regime_adaptive_ma_new_valid() {
+        let rama = RegimeAdaptiveMA::new(10, 20, 0.5, 0.1);
+        assert!(rama.is_ok());
+    }
+
+    #[test]
+    fn test_regime_adaptive_ma_invalid_period() {
+        let result = RegimeAdaptiveMA::new(1, 20, 0.5, 0.1);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "period");
+        }
+    }
+
+    #[test]
+    fn test_regime_adaptive_ma_invalid_regime_period() {
+        let result = RegimeAdaptiveMA::new(10, 5, 0.5, 0.1);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "regime_period");
+        }
+    }
+
+    #[test]
+    fn test_regime_adaptive_ma_invalid_fast_alpha() {
+        let result = RegimeAdaptiveMA::new(10, 20, 0.0, 0.1);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "fast_alpha");
+        }
+    }
+
+    #[test]
+    fn test_regime_adaptive_ma_invalid_slow_alpha() {
+        let result = RegimeAdaptiveMA::new(10, 20, 0.5, 0.6);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "slow_alpha");
+        }
+    }
+
+    #[test]
+    fn test_regime_adaptive_ma_calculate() {
+        let rama = RegimeAdaptiveMA::new(10, 20, 0.5, 0.1).unwrap();
+        let data = make_trending_data();
+        let result = rama.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Values after min_periods should be valid
+        for i in 20..50 {
+            assert!(!result[i].is_nan());
+        }
+    }
+
+    #[test]
+    fn test_regime_adaptive_ma_trait() {
+        let rama = RegimeAdaptiveMA::new(10, 20, 0.5, 0.1).unwrap();
+        assert_eq!(rama.name(), "Regime Adaptive MA");
+        assert_eq!(rama.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_regime_adaptive_ma_compute() {
+        let rama = RegimeAdaptiveMA::new(10, 20, 0.5, 0.1).unwrap();
+        let data = make_ohlcv_data();
+        let result = rama.compute(&data);
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // VolumePriceMA Tests
+    // ========================================================================
+
+    #[test]
+    fn test_volume_price_ma_new_valid() {
+        let vpma = VolumePriceMA::new(10);
+        assert!(vpma.is_ok());
+    }
+
+    #[test]
+    fn test_volume_price_ma_invalid_period() {
+        let result = VolumePriceMA::new(1);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "period");
+        }
+    }
+
+    #[test]
+    fn test_volume_price_ma_calculate() {
+        let vpma = VolumePriceMA::new(10).unwrap();
+        let close = make_trending_data();
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 10.0)).collect();
+        let result = vpma.calculate(&close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        // Values after min_periods should be valid
+        for i in 9..50 {
+            assert!(!result[i].is_nan());
+        }
+    }
+
+    #[test]
+    fn test_volume_price_ma_trait() {
+        let vpma = VolumePriceMA::new(10).unwrap();
+        assert_eq!(vpma.name(), "Volume Price MA");
+        assert_eq!(vpma.min_periods(), 10);
+    }
+
+    #[test]
+    fn test_volume_price_ma_compute() {
+        let vpma = VolumePriceMA::new(10).unwrap();
+        let data = make_ohlcv_data();
+        let result = vpma.compute(&data);
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // MomentumFilteredMA Tests
+    // ========================================================================
+
+    #[test]
+    fn test_momentum_filtered_ma_new_valid() {
+        let mfma = MomentumFilteredMA::new(10, 10, 0.3);
+        assert!(mfma.is_ok());
+    }
+
+    #[test]
+    fn test_momentum_filtered_ma_invalid_period() {
+        let result = MomentumFilteredMA::new(1, 10, 0.3);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "period");
+        }
+    }
+
+    #[test]
+    fn test_momentum_filtered_ma_invalid_momentum_period() {
+        let result = MomentumFilteredMA::new(10, 1, 0.3);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "momentum_period");
+        }
+    }
+
+    #[test]
+    fn test_momentum_filtered_ma_invalid_threshold() {
+        let result = MomentumFilteredMA::new(10, 10, 1.5);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "threshold");
+        }
+    }
+
+    #[test]
+    fn test_momentum_filtered_ma_calculate() {
+        let mfma = MomentumFilteredMA::new(10, 10, 0.3).unwrap();
+        let data = make_trending_data();
+        let result = mfma.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Values after min_periods should be valid
+        for i in 10..50 {
+            assert!(!result[i].is_nan());
+        }
+    }
+
+    #[test]
+    fn test_momentum_filtered_ma_trait() {
+        let mfma = MomentumFilteredMA::new(10, 15, 0.3).unwrap();
+        assert_eq!(mfma.name(), "Momentum Filtered MA");
+        assert_eq!(mfma.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_momentum_filtered_ma_compute() {
+        let mfma = MomentumFilteredMA::new(10, 10, 0.3).unwrap();
+        let data = make_ohlcv_data();
+        let result = mfma.compute(&data);
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // TrendStrengthMA Tests
+    // ========================================================================
+
+    #[test]
+    fn test_trend_strength_ma_new_valid() {
+        let tsma = TrendStrengthMA::new(10, 10);
+        assert!(tsma.is_ok());
+    }
+
+    #[test]
+    fn test_trend_strength_ma_invalid_period() {
+        let result = TrendStrengthMA::new(1, 10);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "period");
+        }
+    }
+
+    #[test]
+    fn test_trend_strength_ma_invalid_strength_period() {
+        let result = TrendStrengthMA::new(10, 1);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "strength_period");
+        }
+    }
+
+    #[test]
+    fn test_trend_strength_ma_calculate() {
+        let tsma = TrendStrengthMA::new(10, 10).unwrap();
+        let data = make_trending_data();
+        let result = tsma.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Values after min_periods should be valid
+        for i in 9..50 {
+            assert!(!result[i].is_nan());
+        }
+    }
+
+    #[test]
+    fn test_trend_strength_ma_trait() {
+        let tsma = TrendStrengthMA::new(10, 15).unwrap();
+        assert_eq!(tsma.name(), "Trend Strength MA");
+        assert_eq!(tsma.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_trend_strength_ma_compute() {
+        let tsma = TrendStrengthMA::new(10, 10).unwrap();
+        let data = make_ohlcv_data();
+        let result = tsma.compute(&data);
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // CycleAdjustedMA Tests
+    // ========================================================================
+
+    #[test]
+    fn test_cycle_adjusted_ma_new_valid() {
+        let cama = CycleAdjustedMA::new(10, 20, 5, 30);
+        assert!(cama.is_ok());
+    }
+
+    #[test]
+    fn test_cycle_adjusted_ma_invalid_base_period() {
+        let result = CycleAdjustedMA::new(1, 20, 5, 30);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "base_period");
+        }
+    }
+
+    #[test]
+    fn test_cycle_adjusted_ma_invalid_cycle_period() {
+        let result = CycleAdjustedMA::new(10, 5, 5, 30);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "cycle_period");
+        }
+    }
+
+    #[test]
+    fn test_cycle_adjusted_ma_invalid_min_period() {
+        let result = CycleAdjustedMA::new(10, 20, 1, 30);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "min_period");
+        }
+    }
+
+    #[test]
+    fn test_cycle_adjusted_ma_invalid_max_period() {
+        let result = CycleAdjustedMA::new(10, 20, 10, 10);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "max_period");
+        }
+    }
+
+    #[test]
+    fn test_cycle_adjusted_ma_calculate() {
+        let cama = CycleAdjustedMA::new(10, 20, 5, 30).unwrap();
+        let data = make_trending_data();
+        let result = cama.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Values after min_periods should be valid
+        for i in 20..50 {
+            assert!(!result[i].is_nan());
+        }
+    }
+
+    #[test]
+    fn test_cycle_adjusted_ma_trait() {
+        let cama = CycleAdjustedMA::new(10, 20, 5, 30).unwrap();
+        assert_eq!(cama.name(), "Cycle Adjusted MA");
+        assert_eq!(cama.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_cycle_adjusted_ma_compute() {
+        let cama = CycleAdjustedMA::new(10, 20, 5, 30).unwrap();
+        let data = make_ohlcv_data();
+        let result = cama.compute(&data);
+        assert!(result.is_ok());
+    }
+
+    // ========================================================================
+    // AdaptiveLagMA Tests
+    // ========================================================================
+
+    #[test]
+    fn test_adaptive_lag_ma_new_valid() {
+        let alma = AdaptiveLagMA::new(10, 10, 0.2, 0.8);
+        assert!(alma.is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_lag_ma_invalid_period() {
+        let result = AdaptiveLagMA::new(1, 10, 0.2, 0.8);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "period");
+        }
+    }
+
+    #[test]
+    fn test_adaptive_lag_ma_invalid_volatility_period() {
+        let result = AdaptiveLagMA::new(10, 1, 0.2, 0.8);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "volatility_period");
+        }
+    }
+
+    #[test]
+    fn test_adaptive_lag_ma_invalid_min_lag() {
+        let result = AdaptiveLagMA::new(10, 10, -0.1, 0.8);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "min_lag");
+        }
+    }
+
+    #[test]
+    fn test_adaptive_lag_ma_invalid_max_lag() {
+        let result = AdaptiveLagMA::new(10, 10, 0.5, 0.3);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "max_lag");
+        }
+    }
+
+    #[test]
+    fn test_adaptive_lag_ma_calculate() {
+        let alma = AdaptiveLagMA::new(10, 10, 0.2, 0.8).unwrap();
+        let data = make_trending_data();
+        let result = alma.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        // Values after min_periods should be valid
+        for i in 10..50 {
+            assert!(!result[i].is_nan());
+        }
+    }
+
+    #[test]
+    fn test_adaptive_lag_ma_trait() {
+        let alma = AdaptiveLagMA::new(10, 15, 0.2, 0.8).unwrap();
+        assert_eq!(alma.name(), "Adaptive Lag MA");
+        assert_eq!(alma.min_periods(), 15);
+    }
+
+    #[test]
+    fn test_adaptive_lag_ma_compute() {
+        let alma = AdaptiveLagMA::new(10, 10, 0.2, 0.8).unwrap();
+        let data = make_ohlcv_data();
+        let result = alma.compute(&data);
         assert!(result.is_ok());
     }
 }

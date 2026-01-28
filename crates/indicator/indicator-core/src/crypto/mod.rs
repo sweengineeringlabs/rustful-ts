@@ -19,6 +19,8 @@ pub use fear_greed::{FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedW
 pub use advanced::{
     HashRateMomentum, MinerCapitulation, WhaleAccumulation,
     RetailSentimentProxy, InstitutionalFlowProxy, NetworkActivityProxy,
+    OnChainMomentum, NetworkHealthIndex, HodlerBehaviorIndex,
+    ExchangeFlowMomentum, MinerBehaviorIndex, InstitutionalFlowIndex,
 };
 pub use extended::{
     ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,

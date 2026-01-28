@@ -10,6 +10,7 @@ pub mod filtered_average;
 pub mod step_vhf_vma;
 pub mod extended;
 pub mod final_pair;
+pub mod advanced;
 
 // Re-exports
 pub use kalman::KalmanFilter;
@@ -23,3 +24,7 @@ pub use extended::{
     BandPassFilter, AdaptiveNoiseFilter, TrendFilter,
 };
 pub use final_pair::{RecursiveFilter, NormalizedPriceFilter};
+pub use advanced::{
+    AdaptiveLowPassFilter, NoiseReductionFilter, TrendExtractionFilter,
+    CycleExtractionFilter, AdaptiveHighPassFilter, BandwidthAdaptiveFilter,
+};

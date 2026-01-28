@@ -1760,7 +1760,7 @@ mod tests {
         assert_eq!(bmi.name(), "Breadth Momentum Index");
         assert_eq!(bmi.min_periods(), 16);
         let output = bmi.compute(&data).unwrap();
-        assert_eq!(output.values.len(), data.close.len());
+        assert_eq!(output.primary.len(), data.close.len());
     }
 
     #[test]
@@ -1793,7 +1793,7 @@ mod tests {
         assert_eq!(cbm.name(), "Cumulative Breadth Momentum");
         assert_eq!(cbm.min_periods(), 14);
         let output = cbm.compute(&data).unwrap();
-        assert_eq!(output.values.len(), data.close.len());
+        assert_eq!(output.primary.len(), data.close.len());
     }
 
     #[test]
@@ -1823,7 +1823,7 @@ mod tests {
         assert_eq!(bv.name(), "Breadth Volatility");
         assert_eq!(bv.min_periods(), 31);
         let output = bv.compute(&data).unwrap();
-        assert_eq!(output.values.len(), data.close.len());
+        assert_eq!(output.primary.len(), data.close.len());
     }
 
     #[test]
@@ -1855,7 +1855,7 @@ mod tests {
         assert_eq!(bts.name(), "Breadth Trend Strength");
         assert_eq!(bts.min_periods(), 21);
         let output = bts.compute(&data).unwrap();
-        assert_eq!(output.values.len(), data.close.len());
+        assert_eq!(output.primary.len(), data.close.len());
     }
 
     #[test]
@@ -1887,7 +1887,7 @@ mod tests {
         assert_eq!(bed.name(), "Breadth Extreme Detector");
         assert_eq!(bed.min_periods(), 11);
         let output = bed.compute(&data).unwrap();
-        assert_eq!(output.values.len(), data.close.len());
+        assert_eq!(output.primary.len(), data.close.len());
     }
 
     #[test]
@@ -1935,7 +1935,7 @@ mod tests {
         assert_eq!(bdi.name(), "Breadth Divergence Index");
         assert_eq!(bdi.min_periods(), 16);
         let output = bdi.compute(&data).unwrap();
-        assert_eq!(output.values.len(), data.close.len());
+        assert_eq!(output.primary.len(), data.close.len());
     }
 
     #[test]

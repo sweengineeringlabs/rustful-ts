@@ -658,6 +658,772 @@ impl TechnicalIndicator for OutlierDetector {
     }
 }
 
+/// Rolling Beta - Rolling beta coefficient vs benchmark
+///
+/// Measures the sensitivity of asset returns to benchmark returns.
+/// Beta > 1: More volatile than benchmark
+/// Beta = 1: Same volatility as benchmark
+/// Beta < 1: Less volatile than benchmark
+/// Beta < 0: Negatively correlated with benchmark
+#[derive(Debug, Clone)]
+pub struct RollingBeta {
+    period: usize,
+}
+
+impl RollingBeta {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate rolling beta coefficient
+    ///
+    /// Beta = Cov(asset, benchmark) / Var(benchmark)
+    pub fn calculate(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 || benchmark.len() != n {
+            return result;
+        }
+
+        // Calculate returns for both series
+        let asset_returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        let bench_returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if benchmark[i - 1] > 0.0 && benchmark[i] > 0.0 {
+                    benchmark[i] / benchmark[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+
+            let asset_window = &asset_returns[start..=return_idx];
+            let bench_window = &bench_returns[start..=return_idx];
+            let n_w = asset_window.len() as f64;
+
+            // Calculate means
+            let mean_asset: f64 = asset_window.iter().sum::<f64>() / n_w;
+            let mean_bench: f64 = bench_window.iter().sum::<f64>() / n_w;
+
+            // Calculate covariance and variance
+            let mut cov = 0.0;
+            let mut var_bench = 0.0;
+
+            for (a, b) in asset_window.iter().zip(bench_window.iter()) {
+                let da = a - mean_asset;
+                let db = b - mean_bench;
+                cov += da * db;
+                var_bench += db * db;
+            }
+
+            if var_bench > 1e-10 {
+                result[i] = cov / var_bench;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for RollingBeta {
+    fn name(&self) -> &str {
+        "Rolling Beta"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        // When no benchmark provided, use volume as proxy
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+}
+
+/// Rolling Alpha - Rolling alpha (excess return)
+///
+/// Measures the excess return of an asset over the expected return based on beta.
+/// Alpha = Asset Return - (Risk-Free Rate + Beta * (Benchmark Return - Risk-Free Rate))
+/// Simplified: Alpha = Asset Return - Beta * Benchmark Return (assuming Rf = 0)
+#[derive(Debug, Clone)]
+pub struct RollingAlpha {
+    period: usize,
+}
+
+impl RollingAlpha {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate rolling alpha (annualized)
+    pub fn calculate(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 || benchmark.len() != n {
+            return result;
+        }
+
+        // Calculate returns for both series
+        let asset_returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        let bench_returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if benchmark[i - 1] > 0.0 && benchmark[i] > 0.0 {
+                    benchmark[i] / benchmark[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+
+            let asset_window = &asset_returns[start..=return_idx];
+            let bench_window = &bench_returns[start..=return_idx];
+            let n_w = asset_window.len() as f64;
+
+            // Calculate means
+            let mean_asset: f64 = asset_window.iter().sum::<f64>() / n_w;
+            let mean_bench: f64 = bench_window.iter().sum::<f64>() / n_w;
+
+            // Calculate beta first
+            let mut cov = 0.0;
+            let mut var_bench = 0.0;
+
+            for (a, b) in asset_window.iter().zip(bench_window.iter()) {
+                let da = a - mean_asset;
+                let db = b - mean_bench;
+                cov += da * db;
+                var_bench += db * db;
+            }
+
+            let beta = if var_bench > 1e-10 { cov / var_bench } else { 0.0 };
+
+            // Alpha = mean(asset) - beta * mean(benchmark)
+            // Annualized (assuming 252 trading days)
+            let daily_alpha = mean_asset - beta * mean_bench;
+            result[i] = daily_alpha * 252.0 * 100.0; // Annualized percentage
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for RollingAlpha {
+    fn name(&self) -> &str {
+        "Rolling Alpha"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        // When no benchmark provided, use volume as proxy
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+}
+
+/// Information Coefficient - IC for factor analysis
+///
+/// Measures the correlation between predicted returns (using current factor)
+/// and actual future returns. Used in quantitative factor analysis.
+#[derive(Debug, Clone)]
+pub struct InformationCoefficient {
+    period: usize,
+    forward_period: usize,
+}
+
+impl InformationCoefficient {
+    pub fn new(period: usize, forward_period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if forward_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "forward_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, forward_period })
+    }
+
+    /// Calculate information coefficient
+    ///
+    /// Uses momentum as the factor (past returns predict future returns)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + self.forward_period + 1 {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        // For each point, calculate IC over the lookback period
+        for i in (self.period + self.forward_period)..n {
+            let mut factor_values = Vec::with_capacity(self.period);
+            let mut future_returns = Vec::with_capacity(self.period);
+
+            // Collect factor (past return) and forward return pairs
+            for j in 0..self.period {
+                let idx = i - self.forward_period - self.period + j;
+                if idx + self.forward_period < returns.len() {
+                    // Factor: return at time t
+                    factor_values.push(returns[idx]);
+                    // Forward return: return at time t + forward_period
+                    future_returns.push(returns[idx + self.forward_period]);
+                }
+            }
+
+            if factor_values.len() < 5 {
+                continue;
+            }
+
+            let n_pairs = factor_values.len() as f64;
+
+            // Calculate Pearson correlation between factor and forward returns
+            let mean_factor: f64 = factor_values.iter().sum::<f64>() / n_pairs;
+            let mean_future: f64 = future_returns.iter().sum::<f64>() / n_pairs;
+
+            let mut cov = 0.0;
+            let mut var_factor = 0.0;
+            let mut var_future = 0.0;
+
+            for (f, r) in factor_values.iter().zip(future_returns.iter()) {
+                let df = f - mean_factor;
+                let dr = r - mean_future;
+                cov += df * dr;
+                var_factor += df * df;
+                var_future += dr * dr;
+            }
+
+            let denominator = (var_factor * var_future).sqrt();
+            if denominator > 1e-10 {
+                result[i] = cov / denominator;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for InformationCoefficient {
+    fn name(&self) -> &str {
+        "Information Coefficient"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.forward_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Rank Correlation - Spearman rank correlation
+///
+/// Non-parametric measure of correlation that assesses monotonic relationships.
+/// More robust to outliers than Pearson correlation.
+#[derive(Debug, Clone)]
+pub struct RankCorrelation {
+    period: usize,
+    lag: usize,
+}
+
+impl RankCorrelation {
+    pub fn new(period: usize, lag: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if lag < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lag".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, lag })
+    }
+
+    /// Convert values to ranks
+    fn rank(values: &[f64]) -> Vec<f64> {
+        let n = values.len();
+        let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+        indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut ranks = vec![0.0; n];
+        let mut i = 0;
+        while i < n {
+            let mut j = i;
+            // Handle ties by averaging ranks
+            while j < n - 1 && (indexed[j].1 - indexed[j + 1].1).abs() < 1e-10 {
+                j += 1;
+            }
+            let avg_rank = (i + j) as f64 / 2.0 + 1.0;
+            for k in i..=j {
+                ranks[indexed[k].0] = avg_rank;
+            }
+            i = j + 1;
+        }
+        ranks
+    }
+
+    /// Calculate Spearman rank correlation
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + self.lag + 1 {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in (self.period + self.lag)..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+
+            if start < self.lag {
+                continue;
+            }
+
+            let current_window: Vec<f64> = returns[start..=return_idx].to_vec();
+            let lagged_window: Vec<f64> = returns[(start - self.lag)..=(return_idx - self.lag)].to_vec();
+
+            // Get ranks
+            let ranks_current = Self::rank(&current_window);
+            let ranks_lagged = Self::rank(&lagged_window);
+
+            let n_w = ranks_current.len() as f64;
+
+            // Calculate Pearson correlation of ranks (which gives Spearman correlation)
+            let mean_current: f64 = ranks_current.iter().sum::<f64>() / n_w;
+            let mean_lagged: f64 = ranks_lagged.iter().sum::<f64>() / n_w;
+
+            let mut cov = 0.0;
+            let mut var_current = 0.0;
+            let mut var_lagged = 0.0;
+
+            for (c, l) in ranks_current.iter().zip(ranks_lagged.iter()) {
+                let dc = c - mean_current;
+                let dl = l - mean_lagged;
+                cov += dc * dl;
+                var_current += dc * dc;
+                var_lagged += dl * dl;
+            }
+
+            let denominator = (var_current * var_lagged).sqrt();
+            if denominator > 1e-10 {
+                result[i] = cov / denominator;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for RankCorrelation {
+    fn name(&self) -> &str {
+        "Rank Correlation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.lag + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Tail Dependence Output - Contains upper and lower tail dependence
+#[derive(Debug, Clone)]
+pub struct TailDependenceOutput {
+    pub upper: Vec<f64>,
+    pub lower: Vec<f64>,
+}
+
+/// Tail Dependence - Measures tail dependence in returns
+///
+/// Measures the probability that extreme returns occur together.
+/// Upper tail: probability of joint extreme positive returns
+/// Lower tail: probability of joint extreme negative returns
+#[derive(Debug, Clone)]
+pub struct TailDependence {
+    period: usize,
+    quantile: f64,
+}
+
+impl TailDependence {
+    pub fn new(period: usize, quantile: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if quantile <= 0.0 || quantile >= 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "quantile".to_string(),
+                reason: "must be between 0 and 0.5 (exclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, quantile })
+    }
+
+    /// Calculate tail dependence coefficients
+    ///
+    /// Uses empirical copula approach to estimate tail dependence
+    pub fn calculate(&self, close: &[f64]) -> TailDependenceOutput {
+        let n = close.len();
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n < self.period + 2 {
+            return TailDependenceOutput { upper, lower };
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in (self.period + 1)..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+
+            if start < 1 {
+                continue;
+            }
+
+            // Get current and lagged returns
+            let current_window: Vec<f64> = returns[start..=return_idx].to_vec();
+            let lagged_window: Vec<f64> = returns[(start - 1)..=(return_idx - 1)].to_vec();
+
+            // Sort to find quantile thresholds
+            let mut sorted_current = current_window.clone();
+            let mut sorted_lagged = lagged_window.clone();
+            sorted_current.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            sorted_lagged.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let lower_idx = (self.period as f64 * self.quantile) as usize;
+            let upper_idx = (self.period as f64 * (1.0 - self.quantile)) as usize;
+
+            if lower_idx >= sorted_current.len() || upper_idx >= sorted_current.len() {
+                continue;
+            }
+
+            let lower_thresh_current = sorted_current[lower_idx];
+            let upper_thresh_current = sorted_current[upper_idx.min(sorted_current.len() - 1)];
+            let lower_thresh_lagged = sorted_lagged[lower_idx];
+            let upper_thresh_lagged = sorted_lagged[upper_idx.min(sorted_lagged.len() - 1)];
+
+            // Count joint exceedances
+            let mut upper_joint = 0;
+            let mut lower_joint = 0;
+            let mut upper_marginal = 0;
+            let mut lower_marginal = 0;
+
+            for (c, l) in current_window.iter().zip(lagged_window.iter()) {
+                // Upper tail
+                if *c > upper_thresh_current {
+                    upper_marginal += 1;
+                    if *l > upper_thresh_lagged {
+                        upper_joint += 1;
+                    }
+                }
+                // Lower tail
+                if *c < lower_thresh_current {
+                    lower_marginal += 1;
+                    if *l < lower_thresh_lagged {
+                        lower_joint += 1;
+                    }
+                }
+            }
+
+            // Tail dependence coefficient = P(Y > thresh | X > thresh)
+            if upper_marginal > 0 {
+                upper[i] = upper_joint as f64 / upper_marginal as f64;
+            }
+            if lower_marginal > 0 {
+                lower[i] = lower_joint as f64 / lower_marginal as f64;
+            }
+        }
+
+        TailDependenceOutput { upper, lower }
+    }
+}
+
+impl TechnicalIndicator for TailDependence {
+    fn name(&self) -> &str {
+        "Tail Dependence"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        Ok(IndicatorOutput::dual(result.upper, result.lower))
+    }
+
+    fn output_features(&self) -> usize {
+        2
+    }
+}
+
+/// Copula Correlation - Copula-based correlation measure
+///
+/// Uses the Gaussian copula approach to measure dependence structure
+/// independent of marginal distributions. More robust than linear correlation.
+#[derive(Debug, Clone)]
+pub struct CopulaCorrelation {
+    period: usize,
+    lag: usize,
+}
+
+impl CopulaCorrelation {
+    pub fn new(period: usize, lag: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if lag < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lag".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, lag })
+    }
+
+    /// Standard normal quantile function (inverse CDF) approximation
+    fn norm_inv(p: f64) -> f64 {
+        if p <= 0.0 {
+            return -3.5;
+        }
+        if p >= 1.0 {
+            return 3.5;
+        }
+
+        // Rational approximation (Abramowitz and Stegun)
+        let a = [
+            -3.969683028665376e+01,
+             2.209460984245205e+02,
+            -2.759285104469687e+02,
+             1.383577518672690e+02,
+            -3.066479806614716e+01,
+             2.506628277459239e+00,
+        ];
+        let b = [
+            -5.447609879822406e+01,
+             1.615858368580409e+02,
+            -1.556989798598866e+02,
+             6.680131188771972e+01,
+            -1.328068155288572e+01,
+        ];
+        let c = [
+            -7.784894002430293e-03,
+            -3.223964580411365e-01,
+            -2.400758277161838e+00,
+            -2.549732539343734e+00,
+             4.374664141464968e+00,
+             2.938163982698783e+00,
+        ];
+        let d = [
+             7.784695709041462e-03,
+             3.224671290700398e-01,
+             2.445134137142996e+00,
+             3.754408661907416e+00,
+        ];
+
+        let p_low = 0.02425;
+        let p_high = 1.0 - p_low;
+
+        let q;
+        let r;
+
+        if p < p_low {
+            q = (-2.0 * p.ln()).sqrt();
+            return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+                / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+        } else if p <= p_high {
+            q = p - 0.5;
+            r = q * q;
+            return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q
+                / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0);
+        } else {
+            q = (-2.0 * (1.0 - p).ln()).sqrt();
+            return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+                / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+        }
+    }
+
+    /// Calculate copula correlation using Gaussian copula
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + self.lag + 1 {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in (self.period + self.lag)..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+
+            if start < self.lag {
+                continue;
+            }
+
+            let current_window: Vec<f64> = returns[start..=return_idx].to_vec();
+            let lagged_window: Vec<f64> = returns[(start - self.lag)..=(return_idx - self.lag)].to_vec();
+
+            // Transform to uniform using empirical CDF (pseudo-observations)
+            let uniform_current = Self::to_pseudo_observations(&current_window);
+            let uniform_lagged = Self::to_pseudo_observations(&lagged_window);
+
+            // Transform to standard normal using inverse CDF
+            let normal_current: Vec<f64> = uniform_current.iter()
+                .map(|&u| Self::norm_inv(u))
+                .collect();
+            let normal_lagged: Vec<f64> = uniform_lagged.iter()
+                .map(|&u| Self::norm_inv(u))
+                .collect();
+
+            // Calculate Pearson correlation of transformed values
+            let n_w = normal_current.len() as f64;
+            let mean_current: f64 = normal_current.iter().sum::<f64>() / n_w;
+            let mean_lagged: f64 = normal_lagged.iter().sum::<f64>() / n_w;
+
+            let mut cov = 0.0;
+            let mut var_current = 0.0;
+            let mut var_lagged = 0.0;
+
+            for (c, l) in normal_current.iter().zip(normal_lagged.iter()) {
+                let dc = c - mean_current;
+                let dl = l - mean_lagged;
+                cov += dc * dl;
+                var_current += dc * dc;
+                var_lagged += dl * dl;
+            }
+
+            let denominator = (var_current * var_lagged).sqrt();
+            if denominator > 1e-10 {
+                result[i] = cov / denominator;
+            }
+        }
+        result
+    }
+
+    /// Transform values to pseudo-observations (empirical CDF)
+    fn to_pseudo_observations(values: &[f64]) -> Vec<f64> {
+        let n = values.len();
+        let mut indexed: Vec<(usize, f64)> = values.iter().copied().enumerate().collect();
+        indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut ranks = vec![0.0; n];
+        for (rank, &(orig_idx, _)) in indexed.iter().enumerate() {
+            // Use (rank + 1) / (n + 1) to avoid 0 and 1
+            ranks[orig_idx] = (rank as f64 + 1.0) / (n as f64 + 1.0);
+        }
+        ranks
+    }
+}
+
+impl TechnicalIndicator for CopulaCorrelation {
+    fn name(&self) -> &str {
+        "Copula Correlation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.lag + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,5 +1636,189 @@ mod tests {
         // For smooth trending data, most points should not be outliers
         let outlier_count: usize = result.iter().filter(|&&v| v >= 1.0).count();
         assert!(outlier_count < close.len() / 2);
+    }
+
+    #[test]
+    fn test_rolling_beta() {
+        let close = make_test_data();
+        let benchmark: Vec<f64> = close.iter().map(|c| c * 1.02).collect();
+        let rb = RollingBeta::new(20).unwrap();
+        let result = rb.calculate(&close, &benchmark);
+
+        assert_eq!(result.len(), close.len());
+        // Beta should be positive for correlated assets
+        for &val in result.iter().skip(21) {
+            if val != 0.0 {
+                assert!(val > 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_rolling_beta_validation() {
+        assert!(RollingBeta::new(5).is_err()); // period too small
+    }
+
+    #[test]
+    fn test_rolling_beta_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let rb = RollingBeta::new(20).unwrap();
+        let output = rb.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_rolling_alpha() {
+        let close = make_test_data();
+        let benchmark: Vec<f64> = close.iter().map(|c| c * 1.02).collect();
+        let ra = RollingAlpha::new(20).unwrap();
+        let result = ra.calculate(&close, &benchmark);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_rolling_alpha_validation() {
+        assert!(RollingAlpha::new(5).is_err()); // period too small
+    }
+
+    #[test]
+    fn test_rolling_alpha_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let ra = RollingAlpha::new(20).unwrap();
+        let output = ra.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_information_coefficient() {
+        let close = make_test_data();
+        let ic = InformationCoefficient::new(20, 1).unwrap();
+        let result = ic.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // IC should be between -1 and 1
+        for &val in result.iter().skip(22) {
+            if val != 0.0 {
+                assert!(val >= -1.0 && val <= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_information_coefficient_validation() {
+        assert!(InformationCoefficient::new(5, 1).is_err()); // period too small
+        assert!(InformationCoefficient::new(20, 0).is_err()); // forward_period too small
+    }
+
+    #[test]
+    fn test_information_coefficient_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let ic = InformationCoefficient::new(20, 1).unwrap();
+        let output = ic.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_rank_correlation() {
+        let close = make_test_data();
+        let rc = RankCorrelation::new(20, 1).unwrap();
+        let result = rc.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Spearman correlation should be between -1 and 1
+        for &val in result.iter().skip(22) {
+            if val != 0.0 {
+                assert!(val >= -1.0 && val <= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_rank_correlation_validation() {
+        assert!(RankCorrelation::new(5, 1).is_err()); // period too small
+        assert!(RankCorrelation::new(20, 0).is_err()); // lag too small
+    }
+
+    #[test]
+    fn test_rank_correlation_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let rc = RankCorrelation::new(20, 1).unwrap();
+        let output = rc.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_tail_dependence() {
+        let close = make_test_data();
+        let td = TailDependence::new(20, 0.1).unwrap();
+        let result = td.calculate(&close);
+
+        assert_eq!(result.upper.len(), close.len());
+        assert_eq!(result.lower.len(), close.len());
+        // Tail dependence should be between 0 and 1
+        for &val in result.upper.iter() {
+            assert!(val >= 0.0 && val <= 1.0);
+        }
+        for &val in result.lower.iter() {
+            assert!(val >= 0.0 && val <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_tail_dependence_validation() {
+        assert!(TailDependence::new(5, 0.1).is_err()); // period too small
+        assert!(TailDependence::new(20, 0.0).is_err()); // quantile too small
+        assert!(TailDependence::new(20, 0.6).is_err()); // quantile too large
+    }
+
+    #[test]
+    fn test_tail_dependence_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let td = TailDependence::new(20, 0.1).unwrap();
+        let output = td.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert!(output.secondary.is_some());
+    }
+
+    #[test]
+    fn test_copula_correlation() {
+        let close = make_test_data();
+        let cc = CopulaCorrelation::new(20, 1).unwrap();
+        let result = cc.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Copula correlation should be between -1 and 1
+        for &val in result.iter().skip(22) {
+            if val != 0.0 {
+                assert!(val >= -1.0 && val <= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_copula_correlation_validation() {
+        assert!(CopulaCorrelation::new(5, 1).is_err()); // period too small
+        assert!(CopulaCorrelation::new(20, 0).is_err()); // lag too small
+    }
+
+    #[test]
+    fn test_copula_correlation_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let cc = CopulaCorrelation::new(20, 1).unwrap();
+        let output = cc.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
     }
 }
