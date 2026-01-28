@@ -2,6 +2,7 @@
 //!
 //! A volume-adaptive moving average that uses volume to dynamically adjust its smoothing.
 
+use indicator_api::EVWMAConfig;
 use indicator_spi::{IndicatorError, IndicatorOutput, OHLCVSeries, Result, TechnicalIndicator};
 
 /// Elastic Volume Weighted Moving Average (EVWMA).
@@ -48,6 +49,11 @@ impl EVWMA {
         Self {
             period: period.max(1),
         }
+    }
+
+    /// Create from configuration.
+    pub fn from_config(config: EVWMAConfig) -> Self {
+        Self::new(config.period)
     }
 
     /// Calculate EVWMA values for the given price and volume data.

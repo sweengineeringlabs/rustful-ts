@@ -31,7 +31,7 @@ pub mod simd;
 // ============================================================================
 pub use moving_averages::{
     SMA, EMA, WMA, DEMA, TEMA, HMA, KAMA, ZLEMA, SMMA, ALMA,
-    FRAMA, VIDYA, T3, TRIMA, GMMA, SineWMA,
+    FRAMA, VIDYA, T3, TRIMA, GMMA, SineWMA, JurikMA, EVWMA,
 };
 
 // ============================================================================
@@ -73,6 +73,7 @@ pub use volatility::{
     ATR, HistoricalVolatility, ChaikinVolatility, MassIndex, ParkinsonVolatility,
     GarmanKlassVolatility, RogersSatchellVolatility, YangZhangVolatility,
     RealizedVolatility, NormalizedATR, ChoppinessIndex, UlcerIndex,
+    VolatilityCone, VolatilityConeOutput, CloseToCloseVolatility,
 };
 
 // ============================================================================
@@ -156,9 +157,11 @@ pub use breadth::{
     HighLowData, HighLowIndex, HighLowMethod, HighLowSeries,
     McClellanOscillator, McClellanSummationIndex,
     MarketCondition, PercentAboveMA, PercentAboveMASeries,
+    NewHighsLows, NewHighsLowsMode,
     ContrarianSignal, PutCallRatio, PutCallSeries, PutCallSignal,
     TickBias, TickIndex, TickSeries, TickSignal, TickStats,
     TRINSignal, TRIN, BreadthData, BreadthSeries, BreadthIndicator,
+    BullishPercent, BPISeries, BPISignal, BPIStatus,
 };
 
 // ============================================================================
@@ -197,6 +200,7 @@ pub use intermarket::{
     DualSeries, MultiSeries,
     Cointegration, CointegrationOutput, CointegrationSignal,
     CurrencyStrength, CurrencyPair, CurrencyStrengthOutput,
+    RelativeStrength, RelativeStrengthOutput, RelativeStrengthSignal,
     SectorRotation, SectorRank, SectorRotationOutput,
 };
 
@@ -217,7 +221,7 @@ pub use indicator_api::{
     SMAConfig, EMAConfig, WMAConfig, DEMAConfig, TEMAConfig,
     HMAConfig, KAMAConfig, ZLEMAConfig,
     SMMAConfig, ALMAConfig, FRAMAConfig, VIDYAConfig,
-    T3Config, TRIMAConfig, GMMAConfig, SineWMAConfig,
+    T3Config, TRIMAConfig, GMMAConfig, SineWMAConfig, JurikMAConfig, EVWMAConfig,
     // Filters
     KalmanConfig, MedianConfig, GaussianConfig,
     SVHMAConfig, SVHMAThresholdMode, SVHMAUpdateMode,
@@ -229,9 +233,14 @@ pub use indicator_api::{
     MACDConfig, ADXConfig, IchimokuConfig, SuperTrendConfig, ParabolicSARConfig,
     // Volatility
     BollingerConfig, ATRConfig, DonchianConfig, KeltnerConfig,
+    VolatilityConeConfig, CloseToCloseVolatilityConfig,
     // Volume
     VWAPConfig, OBVConfig, MFIConfig, CMFConfig,
     VolumeProfileConfig, MarketProfileConfig,
+    // Breadth
+    BullishPercentConfig, NewHighsLowsConfig, NewHighsLowsOutputMode,
+    // Intermarket
+    RelativeStrengthConfig,
     // Other
     ElderRayConfig, PivotType,
 };

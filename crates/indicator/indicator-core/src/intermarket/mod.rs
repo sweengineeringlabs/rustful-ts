@@ -5,11 +5,13 @@
 
 pub mod cointegration;
 pub mod currency_strength;
+pub mod relative_strength;
 pub mod sector_rotation;
 
 // Re-exports
 pub use cointegration::{Cointegration, CointegrationOutput, CointegrationSignal};
 pub use currency_strength::{CurrencyPair, CurrencyStrength, CurrencyStrengthOutput};
+pub use relative_strength::{RelativeStrength, RelativeStrengthOutput, RelativeStrengthSignal};
 pub use sector_rotation::{SectorRank, SectorRotation, SectorRotationOutput};
 
 // ============================================================================

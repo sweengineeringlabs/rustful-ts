@@ -198,6 +198,100 @@ impl Default for ATRConfig {
     }
 }
 
+/// Volatility Cone configuration.
+///
+/// Shows percentile bands of historical volatility over different lookback periods.
+/// Used to compare current volatility to historical ranges.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolatilityConeConfig {
+    /// Lookback periods for volatility calculation (e.g., [20, 40, 60, 120, 252]).
+    pub periods: Vec<usize>,
+    /// Percentile levels to compute (e.g., [0.1, 0.25, 0.5, 0.75, 0.9]).
+    pub percentiles: Vec<f64>,
+}
+
+impl VolatilityConeConfig {
+    /// Create a new Volatility Cone configuration.
+    pub fn new(periods: Vec<usize>, percentiles: Vec<f64>) -> Self {
+        Self { periods, percentiles }
+    }
+
+    /// Create with standard periods and custom percentiles.
+    pub fn with_percentiles(percentiles: Vec<f64>) -> Self {
+        Self {
+            periods: vec![20, 40, 60, 120, 252],
+            percentiles,
+        }
+    }
+
+    /// Create with custom periods and standard percentiles.
+    pub fn with_periods(periods: Vec<usize>) -> Self {
+        Self {
+            periods,
+            percentiles: vec![0.1, 0.25, 0.5, 0.75, 0.9],
+        }
+    }
+}
+
+impl Default for VolatilityConeConfig {
+    fn default() -> Self {
+        Self {
+            periods: vec![20, 40, 60, 120, 252],
+            percentiles: vec![0.1, 0.25, 0.5, 0.75, 0.9],
+        }
+    }
+}
+
+/// Close-to-Close Volatility configuration.
+///
+/// Calculates volatility using the standard deviation of logarithmic returns
+/// from closing prices only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloseToCloseVolatilityConfig {
+    /// Lookback period for volatility calculation.
+    pub period: usize,
+    /// Whether to annualize the volatility.
+    pub annualize: bool,
+    /// Number of trading days per year for annualization (default: 252).
+    pub trading_days: usize,
+}
+
+impl CloseToCloseVolatilityConfig {
+    pub fn new(period: usize) -> Self {
+        Self {
+            period,
+            annualize: true,
+            trading_days: 252,
+        }
+    }
+
+    pub fn with_annualization(period: usize, annualize: bool, trading_days: usize) -> Self {
+        Self {
+            period,
+            annualize,
+            trading_days,
+        }
+    }
+
+    pub fn without_annualization(period: usize) -> Self {
+        Self {
+            period,
+            annualize: false,
+            trading_days: 252,
+        }
+    }
+}
+
+impl Default for CloseToCloseVolatilityConfig {
+    fn default() -> Self {
+        Self {
+            period: 20,
+            annualize: true,
+            trading_days: 252,
+        }
+    }
+}
+
 // ============================================================================
 // Other Indicators
 // ============================================================================
@@ -294,6 +388,33 @@ impl Default for SuperTrendConfig {
         Self {
             period: 10,
             multiplier: 3.0,
+        }
+    }
+}
+
+/// Elder's SafeZone Stop configuration.
+///
+/// A directional stop loss indicator based on recent price penetrations.
+/// Provides separate stops for long and short positions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SafeZoneStopConfig {
+    /// Lookback period for averaging penetrations.
+    pub period: usize,
+    /// Multiplier for average penetration distance.
+    pub coefficient: f64,
+}
+
+impl SafeZoneStopConfig {
+    pub fn new(period: usize, coefficient: f64) -> Self {
+        Self { period, coefficient }
+    }
+}
+
+impl Default for SafeZoneStopConfig {
+    fn default() -> Self {
+        Self {
+            period: 10,
+            coefficient: 2.5,
         }
     }
 }
@@ -1110,6 +1231,67 @@ impl Default for SineWMAConfig {
     }
 }
 
+/// Elastic Volume Weighted Moving Average configuration.
+///
+/// EVWMA uses volume to dynamically adjust its smoothing factor.
+/// Higher volume gives more weight to the current price.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EVWMAConfig {
+    pub period: usize,
+}
+
+impl EVWMAConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Default for EVWMAConfig {
+    fn default() -> Self {
+        Self { period: 20 }
+    }
+}
+
+/// Jurik Moving Average (JMA) approximation configuration.
+///
+/// A low-lag, smooth adaptive moving average. Since the original JMA
+/// is proprietary, this implements an approximation using adaptive smoothing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JurikMAConfig {
+    /// Smoothing period (similar to EMA period).
+    pub period: usize,
+    /// Phase adjustment (-100 to +100).
+    /// Negative values increase smoothness, positive values reduce lag.
+    pub phase: f64,
+    /// Smoothing power factor (typically 1-3).
+    /// Higher values increase responsiveness to price changes.
+    pub power: f64,
+}
+
+impl JurikMAConfig {
+    pub fn new(period: usize, phase: f64, power: f64) -> Self {
+        Self { period, phase, power }
+    }
+
+    pub fn with_period(period: usize) -> Self {
+        Self {
+            period,
+            phase: 0.0,
+            power: 2.0,
+        }
+    }
+}
+
+impl Default for JurikMAConfig {
+    fn default() -> Self {
+        Self {
+            period: 14,
+            phase: 0.0,
+            power: 2.0,
+        }
+    }
+}
+
 // ============================================================================
 // Step-Based Filters (SVHMA Framework)
 // ============================================================================
@@ -1468,5 +1650,165 @@ impl Default for MarketProfileConfig {
             ib_periods: 2,
             session_bars: 0,
         }
+    }
+}
+
+// ============================================================================
+// Breadth Indicators
+// ============================================================================
+
+/// Bullish Percent Index configuration.
+///
+/// Measures the percentage of stocks in an index showing bullish technical conditions.
+/// Uses a proxy of percentage above MA since Point & Figure data is typically unavailable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BullishPercentConfig {
+    /// Moving average period for bullish condition check (default: 20).
+    pub ma_period: usize,
+    /// Overbought threshold (default: 70).
+    pub overbought: f64,
+    /// Oversold threshold (default: 30).
+    pub oversold: f64,
+}
+
+impl BullishPercentConfig {
+    pub fn new(ma_period: usize) -> Self {
+        Self {
+            ma_period,
+            overbought: 70.0,
+            oversold: 30.0,
+        }
+    }
+
+    pub fn with_thresholds(ma_period: usize, overbought: f64, oversold: f64) -> Self {
+        Self {
+            ma_period,
+            overbought,
+            oversold,
+        }
+    }
+}
+
+impl Default for BullishPercentConfig {
+    fn default() -> Self {
+        Self {
+            ma_period: 20,
+            overbought: 70.0,
+            oversold: 30.0,
+        }
+    }
+}
+
+/// Output mode for New Highs/New Lows indicator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NewHighsLowsOutputMode {
+    /// New Highs - New Lows (raw difference)
+    #[default]
+    Difference,
+    /// New Highs / New Lows ratio
+    Ratio,
+    /// (New Highs - New Lows) / (New Highs + New Lows) * 100
+    Percent,
+}
+
+/// New Highs/New Lows indicator configuration.
+///
+/// Tracks the difference between stocks making new highs versus new lows
+/// over a configurable lookback period.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewHighsLowsConfig {
+    /// Lookback period for determining new highs/lows (default: 252 for 52-week)
+    pub period: usize,
+    /// Output calculation mode
+    pub output_mode: NewHighsLowsOutputMode,
+}
+
+impl NewHighsLowsConfig {
+    pub fn new(period: usize) -> Self {
+        Self {
+            period,
+            output_mode: NewHighsLowsOutputMode::Difference,
+        }
+    }
+
+    pub fn with_mode(period: usize, output_mode: NewHighsLowsOutputMode) -> Self {
+        Self { period, output_mode }
+    }
+}
+
+impl Default for NewHighsLowsConfig {
+    fn default() -> Self {
+        Self {
+            period: 252,
+            output_mode: NewHighsLowsOutputMode::Difference,
+        }
+    }
+}
+
+// ============================================================================
+// Intermarket Indicators
+// ============================================================================
+
+/// Relative Strength (Comparative) configuration.
+///
+/// Compares asset performance versus a benchmark by calculating the ratio
+/// of their prices over time. Useful for identifying outperformance/underperformance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelativeStrengthConfig {
+    /// Whether to normalize the ratio to start at 100.
+    pub normalize: bool,
+    /// Period for rate of change calculation (None = no ROC).
+    pub roc_period: Option<usize>,
+}
+
+impl RelativeStrengthConfig {
+    /// Create a new config with default settings.
+    pub fn new() -> Self {
+        Self {
+            normalize: false,
+            roc_period: None,
+        }
+    }
+
+    /// Create a config with normalization enabled.
+    pub fn normalized() -> Self {
+        Self {
+            normalize: true,
+            roc_period: None,
+        }
+    }
+
+    /// Create a config with ROC momentum calculation.
+    pub fn with_momentum(roc_period: usize) -> Self {
+        Self {
+            normalize: false,
+            roc_period: Some(roc_period),
+        }
+    }
+
+    /// Create a full-featured config with normalization and momentum.
+    pub fn full(roc_period: usize) -> Self {
+        Self {
+            normalize: true,
+            roc_period: Some(roc_period),
+        }
+    }
+
+    /// Set whether to normalize the ratio.
+    pub fn set_normalize(mut self, normalize: bool) -> Self {
+        self.normalize = normalize;
+        self
+    }
+
+    /// Set the ROC period for momentum calculation.
+    pub fn set_roc_period(mut self, period: Option<usize>) -> Self {
+        self.roc_period = period;
+        self
+    }
+}
+
+impl Default for RelativeStrengthConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -33,6 +33,6 @@ pub use normalized_atr::NormalizedATR;
 pub use choppiness::ChoppinessIndex;
 pub use ulcer::UlcerIndex;
 pub use keltner_original::KeltnerOriginal;
-pub use volatility_cone::VolatilityCone;
+pub use volatility_cone::{VolatilityCone, VolatilityConeOutput};
 pub use close_to_close::CloseToCloseVolatility;
 pub use market_thermometer::MarketThermometer;

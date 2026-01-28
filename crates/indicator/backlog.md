@@ -1,6 +1,6 @@
 # Indicator Backlog
 
-> **Current:** 172 indicators | **Target:** 2148+ indicators
+> **Current:** 187 indicators | **Target:** 2148+ indicators
 >
 > **200 priority groups** covering technical analysis, quantitative finance, machine learning, alternative data, and industry-specific metrics.
 
@@ -159,14 +159,14 @@ These indicators are already implemented in indicator-core but were not listed i
 
 ## Priority 12: Crypto & Modern
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-085 | NVT Ratio | Crypto | Network Value to Transactions | Low |
-| IND-086 | MVRV Ratio | Crypto | Market Value to Realized Value | Medium |
-| IND-087 | SOPR | Crypto | Spent Output Profit Ratio | Medium |
-| IND-088 | Hash Ribbons | Crypto | Mining difficulty MA crossover | Medium |
-| IND-089 | Fear & Greed Components | Sentiment | Volatility + momentum + volume composite | High |
-| IND-090 | Squeeze Momentum | Composite | LazyBear's squeeze with momentum | Medium |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-085 | NVT Ratio | Crypto | Network Value to Transactions | Low | |
+| IND-086 | MVRV Ratio | Crypto | Market Value to Realized Value | Medium | |
+| IND-087 | SOPR | Crypto | Spent Output Profit Ratio | Medium | |
+| IND-088 | Hash Ribbons | Crypto | Mining difficulty MA crossover | Medium | |
+| IND-089 | Fear & Greed Components | Sentiment | Volatility + momentum + volume composite | High | |
+| IND-090 | Squeeze Momentum | Composite | LazyBear's squeeze with momentum | Medium | ✅ Done |
 
 ## Priority 13: DeMark Indicators
 
@@ -190,8 +190,8 @@ These indicators are already implemented in indicator-core but were not listed i
 | IND-101 | Rogers-Satchell Volatility | Volatility | Drift-independent estimator | Medium | ✅ Done |
 | IND-102 | Yang-Zhang Volatility | Volatility | Overnight + open-close + HL | Medium | ✅ Done |
 | IND-103 | Realized Volatility | Volatility | Sum of squared returns | Low | ✅ Done |
-| IND-104 | Close-to-Close Volatility | Volatility | Simple log return std dev | Low | |
-| IND-105 | Volatility Cone | Volatility | Percentile bands over time | Medium | |
+| IND-104 | Close-to-Close Volatility | Volatility | Simple log return std dev | Low | ✅ Done |
+| IND-105 | Volatility Cone | Volatility | Percentile bands over time | Medium | ✅ Done |
 | IND-106 | Normalized ATR | Volatility | ATR as percentage of price | Low | ✅ Done |
 
 ## Priority 15: Risk Metrics
@@ -213,7 +213,7 @@ These indicators are already implemented in indicator-core but were not listed i
 
 | ID | Indicator | Category | Description | Complexity | Status |
 |----|-----------|----------|-------------|------------|--------|
-| IND-117 | Relative Strength (Comparative) | Intermarket | Asset vs benchmark ratio | Low | |
+| IND-117 | Relative Strength (Comparative) | Intermarket | Asset vs benchmark ratio | Low | ✅ Done |
 | IND-118 | Correlation | Intermarket | Rolling correlation coefficient | Medium | ✅ Done |
 | IND-119 | Cointegration Score | Intermarket | Pair trading stationarity test | High | ✅ Done |
 | IND-120 | Spread | Intermarket | Price difference between assets | Low | ✅ Done |
@@ -231,9 +231,9 @@ These indicators are already implemented in indicator-core but were not listed i
 | IND-127 | Breadth Thrust | Breadth | 10-day A/D thrust | Medium | ✅ Done |
 | IND-128 | High-Low Index | Breadth | New highs vs new lows | Medium | ✅ Done |
 | IND-129 | Percent Above MA | Breadth | % of stocks above 200 SMA | Medium | ✅ Done |
-| IND-130 | Bullish Percent Index | Breadth | % of stocks with P&F buy signals | High | |
+| IND-130 | Bullish Percent Index | Breadth | % of stocks with P&F buy signals | High | ✅ Done |
 | IND-131 | Cumulative Volume Index | Breadth | Volume-weighted A/D | Medium | ✅ Done |
-| IND-132 | New Highs/New Lows | Breadth | Daily NH-NL difference | Low | |
+| IND-132 | New Highs/New Lows | Breadth | Daily NH-NL difference | Low | ✅ Done |
 
 ## Priority 18: Swing & Price Structure
 
@@ -295,23 +295,23 @@ These indicators are already implemented in indicator-core but were not listed i
 |----|-----------|----------|-------------|------------|--------|
 | IND-167 | GMMA | Moving Average | Guppy Multiple MA (12 MAs) | Medium | ✅ Done |
 | IND-168 | Rainbow MA | Moving Average | 10 recursive SMAs | Low | ✅ Done |
-| IND-169 | Jurik MA | Moving Average | JMA approximation (low lag) | High | |
+| IND-169 | Jurik MA | Moving Average | JMA approximation (low lag) | High | ✅ Done |
 | IND-170 | Ehlers Supersmoother | Moving Average | 2-pole Butterworth filter | Medium | ✅ Done |
 | IND-171 | Ehlers Decycler | Moving Average | High-pass complement | Medium | ✅ Done |
 | IND-172 | Triangular MA | Moving Average | Double-smoothed SMA | Low | ✅ Done |
 | IND-173 | LWMA | Moving Average | Linear Weighted MA (same as WMA) | Low | ✅ Done |
 | IND-174 | Sine Weighted MA | Moving Average | Sine wave weighted | Medium | ✅ Done |
-| IND-175 | Elastic Volume Weighted MA | Moving Average | Volume-elastic smoothing | High | |
+| IND-175 | Elastic Volume Weighted MA | Moving Average | Volume-elastic smoothing | High | ✅ Done |
 
 ## Priority 23: Elder Indicators
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-176 | Elder's SafeZone Stop | Stop | Directional stop loss | Medium |
-| IND-177 | Elder's AutoEnvelope | Volatility | Adaptive envelope | Medium |
-| IND-178 | Elder's Market Thermometer | Volatility | Intraday volatility | Medium |
-| IND-179 | Elder's Bull/Bear Power | Oscillator | Enhanced version | Medium |
-| IND-180 | Elder's Triple Screen | Composite | Multi-timeframe system | High |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-176 | Elder's SafeZone Stop | Stop | Directional stop loss | Medium | |
+| IND-177 | Elder's AutoEnvelope | Volatility | Adaptive envelope | Medium | |
+| IND-178 | Elder's Market Thermometer | Volatility | Intraday volatility | Medium | |
+| IND-179 | Elder's Bull/Bear Power | Oscillator | Enhanced version | Medium | |
+| IND-180 | Elder's Triple Screen | Composite | Multi-timeframe system | High | ✅ Done |
 
 ## Priority 24: Kase Indicators
 
@@ -325,18 +325,18 @@ These indicators are already implemented in indicator-core but were not listed i
 
 ## Priority 25: Miscellaneous Advanced
 
-| ID | Indicator | Category | Description | Complexity |
-|----|-----------|----------|-------------|------------|
-| IND-186 | Random Walk Index | Trend | Trend vs random walk | Medium |
-| IND-187 | Vertical Horizontal Filter | Trend | Trending vs ranging | Medium |
-| IND-188 | Kaufman Efficiency Ratio | Trend | Price efficiency measure | Low |
-| IND-189 | Fractal Dimension | Statistical | Market complexity measure | High |
-| IND-190 | Hurst Exponent | Statistical | Long-term memory measure | High |
-| IND-191 | Detrended Fluctuation Analysis | Statistical | DFA for trending behavior | High |
-| IND-192 | Entropy | Statistical | Market randomness measure | High |
-| IND-193 | Autocorrelation | Statistical | Serial correlation | Medium |
-| IND-194 | Tick Index | Breadth | NYSE tick reading | Low |
-| IND-195 | Put/Call Ratio | Sentiment | Options sentiment | Low |
+| ID | Indicator | Category | Description | Complexity | Status |
+|----|-----------|----------|-------------|------------|--------|
+| IND-186 | Random Walk Index | Trend | Trend vs random walk | Medium | ✅ Done |
+| IND-187 | Vertical Horizontal Filter | Trend | Trending vs ranging | Medium | ✅ Done |
+| IND-188 | Kaufman Efficiency Ratio | Trend | Price efficiency measure | Low | ✅ Done |
+| IND-189 | Fractal Dimension | Statistical | Market complexity measure | High | |
+| IND-190 | Hurst Exponent | Statistical | Long-term memory measure | High | |
+| IND-191 | Detrended Fluctuation Analysis | Statistical | DFA for trending behavior | High | |
+| IND-192 | Entropy | Statistical | Market randomness measure | High | |
+| IND-193 | Autocorrelation | Statistical | Serial correlation | Medium | ✅ Done |
+| IND-194 | Tick Index | Breadth | NYSE tick reading | Low | ✅ Done |
+| IND-195 | Put/Call Ratio | Sentiment | Options sentiment | Low | ✅ Done |
 
 ## Priority 26: Candlestick Patterns
 

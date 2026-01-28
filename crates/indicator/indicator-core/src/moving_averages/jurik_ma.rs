@@ -4,6 +4,7 @@
 //! provides adaptive smoothing with low lag characteristics.
 
 use indicator_spi::{IndicatorError, IndicatorOutput, OHLCVSeries, Result, TechnicalIndicator};
+use indicator_api::JurikMAConfig;
 
 /// Jurik Moving Average approximation.
 ///
@@ -50,6 +51,11 @@ impl JurikMA {
     /// Create JurikMA with default phase (0) and power (2).
     pub fn with_period(period: usize) -> Self {
         Self::new(period, 0.0, 2.0)
+    }
+
+    /// Create JurikMA from configuration.
+    pub fn from_config(config: JurikMAConfig) -> Self {
+        Self::new(config.period, config.phase, config.power)
     }
 
     /// Calculate JMA values for the given price data.
@@ -404,7 +410,7 @@ mod tests {
 
         // Step function: prices jump from 100 to 110
         let mut data = vec![100.0; 20];
-        for i in 20..40 {
+        for _ in 20..40 {
             data.push(110.0);
         }
 
@@ -419,5 +425,35 @@ mod tests {
             "JMA should respond quickly to price step: got {}",
             jma_value
         );
+    }
+
+    #[test]
+    fn test_jurik_ma_from_config() {
+        let config = JurikMAConfig::new(20, 50.0, 1.5);
+        let jma = JurikMA::from_config(config);
+
+        assert_eq!(jma.period, 20);
+        assert!((jma.phase - 50.0).abs() < f64::EPSILON);
+        assert!((jma.power - 1.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_jurik_ma_from_default_config() {
+        let config = JurikMAConfig::default();
+        let jma = JurikMA::from_config(config);
+
+        assert_eq!(jma.period, 14);
+        assert!((jma.phase - 0.0).abs() < f64::EPSILON);
+        assert!((jma.power - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_jurik_ma_config_with_period() {
+        let config = JurikMAConfig::with_period(25);
+        let jma = JurikMA::from_config(config);
+
+        assert_eq!(jma.period, 25);
+        assert!((jma.phase - 0.0).abs() < f64::EPSILON);
+        assert!((jma.power - 2.0).abs() < f64::EPSILON);
     }
 }
