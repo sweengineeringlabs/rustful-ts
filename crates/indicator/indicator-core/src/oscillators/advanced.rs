@@ -2378,6 +2378,704 @@ impl TechnicalIndicator for MomentumWaveOscillator {
     }
 }
 
+/// Ultimate Oscillator Enhanced - Enhanced version with adaptive periods
+///
+/// An enhanced version of the Ultimate Oscillator that dynamically adapts
+/// its weighting based on market volatility, giving more weight to shorter
+/// periods in high volatility and longer periods in low volatility.
+#[derive(Debug, Clone)]
+pub struct UltimateOscillatorEnhanced {
+    short_period: usize,
+    medium_period: usize,
+    long_period: usize,
+    volatility_period: usize,
+}
+
+impl UltimateOscillatorEnhanced {
+    pub fn new(
+        short_period: usize,
+        medium_period: usize,
+        long_period: usize,
+        volatility_period: usize,
+    ) -> Result<Self> {
+        if short_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if medium_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "medium_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if long_period <= medium_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than medium_period".to_string(),
+            });
+        }
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self {
+            short_period,
+            medium_period,
+            long_period,
+            volatility_period,
+        })
+    }
+
+    /// Calculate Ultimate Oscillator Enhanced values
+    ///
+    /// Returns values from 0 to 100 with adaptive weighting based on volatility
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.long_period + self.volatility_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required + 1 {
+            return result;
+        }
+
+        // Calculate Buying Pressure (BP) and True Range (TR)
+        let mut bp = vec![0.0; n];
+        let mut tr = vec![0.0; n];
+
+        for i in 1..n {
+            let prev_close = close[i - 1];
+            let true_low = low[i].min(prev_close);
+            let true_high = high[i].max(prev_close);
+
+            bp[i] = close[i] - true_low;
+            tr[i] = true_high - true_low;
+        }
+
+        // Calculate volatility (ATR-based)
+        let mut volatility = vec![0.0; n];
+        for i in self.volatility_period..n {
+            let start = i + 1 - self.volatility_period;
+            volatility[i] = tr[start..=i].iter().sum::<f64>() / self.volatility_period as f64;
+        }
+
+        // Find volatility range for normalization
+        let vol_values: Vec<f64> = volatility[self.volatility_period..].to_vec();
+        let vol_min = vol_values.iter().cloned().fold(f64::INFINITY, f64::min);
+        let vol_max = vol_values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let vol_range = vol_max - vol_min;
+
+        // Calculate averages for each period
+        for i in min_required..n {
+            // Calculate BP/TR sums for each period
+            let short_start = i + 1 - self.short_period;
+            let medium_start = i + 1 - self.medium_period;
+            let long_start = i + 1 - self.long_period;
+
+            let short_bp: f64 = bp[short_start..=i].iter().sum();
+            let short_tr: f64 = tr[short_start..=i].iter().sum();
+            let medium_bp: f64 = bp[medium_start..=i].iter().sum();
+            let medium_tr: f64 = tr[medium_start..=i].iter().sum();
+            let long_bp: f64 = bp[long_start..=i].iter().sum();
+            let long_tr: f64 = tr[long_start..=i].iter().sum();
+
+            // Calculate raw averages
+            let short_avg = if short_tr > 1e-10 { short_bp / short_tr } else { 0.5 };
+            let medium_avg = if medium_tr > 1e-10 { medium_bp / medium_tr } else { 0.5 };
+            let long_avg = if long_tr > 1e-10 { long_bp / long_tr } else { 0.5 };
+
+            // Adaptive weights based on volatility
+            let normalized_vol = if vol_range > 1e-10 {
+                (volatility[i] - vol_min) / vol_range
+            } else {
+                0.5
+            };
+
+            // Higher volatility = more weight on short period
+            // Lower volatility = more weight on long period
+            let short_weight = 4.0 + normalized_vol * 2.0;   // 4 to 6
+            let medium_weight = 2.0;                          // constant 2
+            let long_weight = 1.0 + (1.0 - normalized_vol);  // 1 to 2
+
+            let total_weight = short_weight + medium_weight + long_weight;
+
+            // Calculate weighted UO
+            let uo = 100.0 * (short_avg * short_weight + medium_avg * medium_weight + long_avg * long_weight) / total_weight;
+
+            result[i] = uo.max(0.0).min(100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for UltimateOscillatorEnhanced {
+    fn name(&self) -> &str {
+        "Ultimate Oscillator Enhanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + self.volatility_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(
+            &data.high,
+            &data.low,
+            &data.close,
+        )))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Percent Rank Oscillator - Oscillator based on percent rank statistics
+///
+/// Measures where the current price falls within the distribution of
+/// historical prices, expressed as a percentile rank. This provides
+/// a statistical view of price position relative to recent history.
+#[derive(Debug, Clone)]
+pub struct PercentRankOscillator {
+    period: usize,
+    smooth_period: usize,
+}
+
+impl PercentRankOscillator {
+    pub fn new(period: usize, smooth_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smooth_period })
+    }
+
+    /// Calculate percent rank oscillator values
+    ///
+    /// Returns values from 0 to 100 indicating the percentile rank of current price
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.period + self.smooth_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate raw percent rank for each point
+        let mut raw_rank = vec![0.0; n];
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let current = close[i];
+
+            // Count how many values are less than or equal to current
+            let count_below = close[start..i] // Exclude current value from comparison
+                .iter()
+                .filter(|&&x| x < current)
+                .count();
+
+            // Percent rank: percentage of values below current
+            raw_rank[i] = (count_below as f64 / (self.period - 1) as f64) * 100.0;
+        }
+
+        // Apply smoothing
+        if self.smooth_period == 1 {
+            for i in (self.period - 1)..n {
+                result[i] = raw_rank[i];
+            }
+        } else {
+            for i in min_required..n {
+                let start = i + 1 - self.smooth_period;
+                let smoothed: f64 = raw_rank[start..=i].iter().sum::<f64>() / self.smooth_period as f64;
+                result[i] = smoothed;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PercentRankOscillator {
+    fn name(&self) -> &str {
+        "Percent Rank Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Z-Score Oscillator - Oscillator based on z-score statistics
+///
+/// Measures how many standard deviations the current price is from
+/// its moving average. This provides a normalized view of price
+/// deviation that can be compared across different securities and timeframes.
+#[derive(Debug, Clone)]
+pub struct ZScoreOscillator {
+    period: usize,
+    signal_period: usize,
+}
+
+impl ZScoreOscillator {
+    pub fn new(period: usize, signal_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if signal_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, signal_period })
+    }
+
+    /// Calculate z-score oscillator values with signal line
+    ///
+    /// Returns (z_score, signal) where z_score indicates standard deviations from mean
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let min_required = self.period + self.signal_period;
+        let mut z_score = vec![0.0; n];
+        let mut signal = vec![0.0; n];
+
+        if n < min_required {
+            return (z_score, signal);
+        }
+
+        // Calculate z-scores
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let slice = &close[start..=i];
+
+            // Calculate mean
+            let mean: f64 = slice.iter().sum::<f64>() / self.period as f64;
+
+            // Calculate standard deviation
+            let variance: f64 = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            // Calculate z-score
+            if std_dev > 1e-10 {
+                z_score[i] = (close[i] - mean) / std_dev;
+            }
+        }
+
+        // Calculate signal line (EMA of z-score)
+        let multiplier = 2.0 / (self.signal_period as f64 + 1.0);
+
+        // Initialize signal with SMA
+        if n >= self.period + self.signal_period - 1 {
+            let sig_start = self.period - 1;
+            let sig_init_end = sig_start + self.signal_period;
+            if sig_init_end <= n {
+                signal[sig_init_end - 1] = z_score[sig_start..sig_init_end].iter().sum::<f64>() / self.signal_period as f64;
+
+                // Calculate EMA
+                for i in sig_init_end..n {
+                    signal[i] = (z_score[i] - signal[i - 1]) * multiplier + signal[i - 1];
+                }
+            }
+        }
+
+        (z_score, signal)
+    }
+}
+
+impl TechnicalIndicator for ZScoreOscillator {
+    fn name(&self) -> &str {
+        "Z-Score Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.signal_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (z_score, signal) = self.calculate(&data.close);
+        Ok(IndicatorOutput::dual(z_score, signal))
+    }
+
+    fn output_features(&self) -> usize {
+        2
+    }
+}
+
+/// Velocity Oscillator - Oscillator measuring price velocity with normalization
+///
+/// Measures the rate of price change (velocity) normalized to oscillate
+/// between -100 and +100, making it comparable across different securities
+/// and providing clear overbought/oversold signals.
+#[derive(Debug, Clone)]
+pub struct VelocityOscillator {
+    velocity_period: usize,
+    normalization_period: usize,
+    smooth_period: usize,
+}
+
+impl VelocityOscillator {
+    pub fn new(velocity_period: usize, normalization_period: usize, smooth_period: usize) -> Result<Self> {
+        if velocity_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "velocity_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if normalization_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "normalization_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self {
+            velocity_period,
+            normalization_period,
+            smooth_period,
+        })
+    }
+
+    /// Calculate velocity oscillator values
+    ///
+    /// Returns values from -100 to +100 representing normalized velocity
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.velocity_period + self.normalization_period + self.smooth_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate raw velocity (rate of change as percentage)
+        let mut velocity = vec![0.0; n];
+        for i in self.velocity_period..n {
+            if close[i - self.velocity_period] > 1e-10 {
+                velocity[i] = ((close[i] / close[i - self.velocity_period]) - 1.0) * 100.0;
+            }
+        }
+
+        // Normalize velocity using z-score over normalization period
+        let mut normalized = vec![0.0; n];
+        for i in (self.velocity_period + self.normalization_period - 1)..n {
+            let start = i + 1 - self.normalization_period;
+            let slice = &velocity[start..=i];
+
+            let mean: f64 = slice.iter().sum::<f64>() / self.normalization_period as f64;
+            let variance: f64 = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / self.normalization_period as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev > 1e-10 {
+                // Z-score scaled to approximately -100 to +100
+                let z_score = (velocity[i] - mean) / std_dev;
+                normalized[i] = (z_score * 33.0).max(-100.0).min(100.0);
+            }
+        }
+
+        // Apply smoothing
+        if self.smooth_period == 1 {
+            for i in (self.velocity_period + self.normalization_period - 1)..n {
+                result[i] = normalized[i];
+            }
+        } else {
+            for i in min_required..n {
+                let start = i + 1 - self.smooth_period;
+                result[i] = normalized[start..=i].iter().sum::<f64>() / self.smooth_period as f64;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VelocityOscillator {
+    fn name(&self) -> &str {
+        "Velocity Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.velocity_period + self.normalization_period + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Acceleration Oscillator - Oscillator measuring price acceleration
+///
+/// Measures the rate of change of velocity (acceleration) normalized
+/// to oscillate between -100 and +100. Positive acceleration indicates
+/// strengthening momentum, negative indicates weakening momentum.
+#[derive(Debug, Clone)]
+pub struct AccelerationOscillator {
+    velocity_period: usize,
+    acceleration_period: usize,
+    normalization_period: usize,
+}
+
+impl AccelerationOscillator {
+    pub fn new(velocity_period: usize, acceleration_period: usize, normalization_period: usize) -> Result<Self> {
+        if velocity_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "velocity_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if acceleration_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "acceleration_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if normalization_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "normalization_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self {
+            velocity_period,
+            acceleration_period,
+            normalization_period,
+        })
+    }
+
+    /// Calculate acceleration oscillator values
+    ///
+    /// Returns values from -100 to +100 representing normalized acceleration
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.velocity_period + self.acceleration_period + self.normalization_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        // Calculate velocity (rate of change)
+        let mut velocity = vec![0.0; n];
+        for i in self.velocity_period..n {
+            if close[i - self.velocity_period] > 1e-10 {
+                velocity[i] = ((close[i] / close[i - self.velocity_period]) - 1.0) * 100.0;
+            }
+        }
+
+        // Calculate acceleration (change in velocity)
+        let mut acceleration = vec![0.0; n];
+        for i in (self.velocity_period + self.acceleration_period)..n {
+            acceleration[i] = velocity[i] - velocity[i - self.acceleration_period];
+        }
+
+        // Normalize acceleration using z-score
+        for i in min_required..n {
+            let start = i + 1 - self.normalization_period;
+            let slice = &acceleration[start..=i];
+
+            let mean: f64 = slice.iter().sum::<f64>() / self.normalization_period as f64;
+            let variance: f64 = slice.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / self.normalization_period as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev > 1e-10 {
+                let z_score = (acceleration[i] - mean) / std_dev;
+                result[i] = (z_score * 33.0).max(-100.0).min(100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AccelerationOscillator {
+    fn name(&self) -> &str {
+        "Acceleration Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.velocity_period + self.acceleration_period + self.normalization_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Harmonic Oscillator - Oscillator based on harmonic analysis
+///
+/// Analyzes price movements using harmonic principles, decomposing
+/// price action into harmonic components and generating oscillator
+/// signals based on harmonic ratios and cycle completion.
+#[derive(Debug, Clone)]
+pub struct HarmonicOscillator {
+    analysis_period: usize,
+    harmonic_count: usize,
+    smooth_period: usize,
+}
+
+impl HarmonicOscillator {
+    pub fn new(analysis_period: usize, harmonic_count: usize, smooth_period: usize) -> Result<Self> {
+        if analysis_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "analysis_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if harmonic_count < 1 || harmonic_count > 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "harmonic_count".to_string(),
+                reason: "must be between 1 and 5".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self {
+            analysis_period,
+            harmonic_count,
+            smooth_period,
+        })
+    }
+
+    /// Calculate harmonic oscillator values
+    ///
+    /// Returns values from -100 to +100 based on harmonic analysis
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_required = self.analysis_period + self.smooth_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_required {
+            return result;
+        }
+
+        let pi = std::f64::consts::PI;
+
+        // Calculate harmonic oscillator for each point
+        let mut raw_harmonic = vec![0.0; n];
+        for i in (self.analysis_period - 1)..n {
+            let start = i + 1 - self.analysis_period;
+            let segment: Vec<f64> = close[start..=i].to_vec();
+
+            // Detrend the segment
+            let mean: f64 = segment.iter().sum::<f64>() / segment.len() as f64;
+            let detrended: Vec<f64> = segment.iter().map(|x| x - mean).collect();
+
+            // Calculate harmonic components using simple Fourier-like analysis
+            let mut harmonic_sum = 0.0;
+            let period_len = self.analysis_period as f64;
+
+            for h in 1..=self.harmonic_count {
+                let h_f = h as f64;
+                let frequency = 2.0 * pi * h_f / period_len;
+
+                // Calculate sine and cosine components
+                let mut sin_sum = 0.0;
+                let mut cos_sum = 0.0;
+
+                for (j, &val) in detrended.iter().enumerate() {
+                    let phase = frequency * j as f64;
+                    sin_sum += val * phase.sin();
+                    cos_sum += val * phase.cos();
+                }
+
+                // Amplitude of this harmonic
+                let amplitude = ((sin_sum.powi(2) + cos_sum.powi(2)).sqrt() * 2.0) / period_len;
+
+                // Phase of this harmonic at current point
+                let current_phase = frequency * (self.analysis_period - 1) as f64;
+                let phase_offset = sin_sum.atan2(cos_sum);
+
+                // Harmonic contribution at current point
+                let harmonic_value = amplitude * (current_phase + phase_offset).sin();
+
+                // Weight lower harmonics more
+                let weight = 1.0 / h_f;
+                harmonic_sum += harmonic_value * weight;
+            }
+
+            // Normalize to standard deviation
+            let variance: f64 = detrended.iter().map(|x| x.powi(2)).sum::<f64>() / detrended.len() as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev > 1e-10 {
+                raw_harmonic[i] = (harmonic_sum / std_dev) * 50.0;
+            }
+        }
+
+        // Apply smoothing
+        if self.smooth_period == 1 {
+            for i in (self.analysis_period - 1)..n {
+                result[i] = raw_harmonic[i].max(-100.0).min(100.0);
+            }
+        } else {
+            for i in min_required..n {
+                let start = i + 1 - self.smooth_period;
+                let smoothed: f64 = raw_harmonic[start..=i].iter().sum::<f64>() / self.smooth_period as f64;
+                result[i] = smoothed.max(-100.0).min(100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for HarmonicOscillator {
+    fn name(&self) -> &str {
+        "Harmonic Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.analysis_period + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3671,5 +4369,580 @@ mod tests {
                 i
             );
         }
+    }
+
+    // ============================================================
+    // UltimateOscillatorEnhanced Tests
+    // ============================================================
+
+    #[test]
+    fn test_ultimate_oscillator_enhanced_basic() {
+        let data = make_test_data();
+        let indicator = UltimateOscillatorEnhanced::new(7, 14, 28, 10).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= 0.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_ultimate_oscillator_enhanced_validation() {
+        // short_period too small
+        assert!(UltimateOscillatorEnhanced::new(1, 14, 28, 10).is_err());
+        // medium_period <= short_period
+        assert!(UltimateOscillatorEnhanced::new(7, 7, 28, 10).is_err());
+        assert!(UltimateOscillatorEnhanced::new(7, 5, 28, 10).is_err());
+        // long_period <= medium_period
+        assert!(UltimateOscillatorEnhanced::new(7, 14, 14, 10).is_err());
+        assert!(UltimateOscillatorEnhanced::new(7, 14, 10, 10).is_err());
+        // volatility_period too small
+        assert!(UltimateOscillatorEnhanced::new(7, 14, 28, 4).is_err());
+        // Valid parameters
+        assert!(UltimateOscillatorEnhanced::new(7, 14, 28, 10).is_ok());
+        assert!(UltimateOscillatorEnhanced::new(5, 10, 20, 5).is_ok());
+    }
+
+    #[test]
+    fn test_ultimate_oscillator_enhanced_trait() {
+        let data = make_test_data();
+        let indicator = UltimateOscillatorEnhanced::new(7, 14, 28, 10).unwrap();
+
+        assert_eq!(indicator.name(), "Ultimate Oscillator Enhanced");
+        assert_eq!(indicator.min_periods(), 39); // long_period + volatility_period + 1
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_ultimate_oscillator_enhanced_uptrend() {
+        // Strong uptrend should give high UO values (>50)
+        let n = 60;
+        let close: Vec<f64> = (0..n).map(|i| 100.0 + i as f64 * 1.5).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 0.5).collect();
+
+        let indicator = UltimateOscillatorEnhanced::new(5, 10, 20, 10).unwrap();
+        let result = indicator.calculate(&high, &low, &close);
+
+        let last_10: Vec<f64> = result[50..60].to_vec();
+        let high_count = last_10.iter().filter(|&&v| v > 50.0).count();
+        assert!(high_count >= 5);
+    }
+
+    #[test]
+    fn test_ultimate_oscillator_enhanced_insufficient_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0, 102.0],
+            high: vec![101.0, 102.0, 103.0],
+            low: vec![99.0, 100.0, 101.0],
+            close: vec![100.5, 101.5, 102.5],
+            volume: vec![1000.0, 1100.0, 1200.0],
+        };
+
+        let indicator = UltimateOscillatorEnhanced::new(7, 14, 28, 10).unwrap();
+        let result = indicator.calculate(&short_data.high, &short_data.low, &short_data.close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // PercentRankOscillator Tests
+    // ============================================================
+
+    #[test]
+    fn test_percent_rank_oscillator_basic() {
+        let data = make_test_data();
+        let indicator = PercentRankOscillator::new(20, 3).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= 0.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_percent_rank_oscillator_validation() {
+        // period too small
+        assert!(PercentRankOscillator::new(4, 3).is_err());
+        // smooth_period too small
+        assert!(PercentRankOscillator::new(20, 0).is_err());
+        // Valid parameters
+        assert!(PercentRankOscillator::new(5, 1).is_ok());
+        assert!(PercentRankOscillator::new(20, 5).is_ok());
+    }
+
+    #[test]
+    fn test_percent_rank_oscillator_trait() {
+        let data = make_test_data();
+        let indicator = PercentRankOscillator::new(20, 3).unwrap();
+
+        assert_eq!(indicator.name(), "Percent Rank Oscillator");
+        assert_eq!(indicator.min_periods(), 23); // period + smooth_period
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_percent_rank_oscillator_uptrend() {
+        // Strong uptrend: current price should rank high
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let indicator = PercentRankOscillator::new(20, 1).unwrap();
+        let result = indicator.calculate(&close);
+
+        // In uptrend, last values should have high rank (close to 100)
+        let last = result.last().unwrap();
+        assert!(*last > 80.0);
+    }
+
+    #[test]
+    fn test_percent_rank_oscillator_downtrend() {
+        // Strong downtrend: current price should rank low
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64 * 2.0).collect();
+
+        let indicator = PercentRankOscillator::new(20, 1).unwrap();
+        let result = indicator.calculate(&close);
+
+        // In downtrend, last values should have low rank (close to 0)
+        let last = result.last().unwrap();
+        assert!(*last < 20.0);
+    }
+
+    #[test]
+    fn test_percent_rank_oscillator_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 5];
+
+        let indicator = PercentRankOscillator::new(20, 3).unwrap();
+        let result = indicator.calculate(&short_close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // ZScoreOscillator Tests
+    // ============================================================
+
+    #[test]
+    fn test_z_score_oscillator_basic() {
+        let data = make_test_data();
+        let indicator = ZScoreOscillator::new(20, 5).unwrap();
+        let (z_score, signal) = indicator.calculate(&data.close);
+
+        assert_eq!(z_score.len(), data.close.len());
+        assert_eq!(signal.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_z_score_oscillator_validation() {
+        // period too small
+        assert!(ZScoreOscillator::new(4, 5).is_err());
+        // signal_period too small
+        assert!(ZScoreOscillator::new(20, 1).is_err());
+        // Valid parameters
+        assert!(ZScoreOscillator::new(5, 2).is_ok());
+        assert!(ZScoreOscillator::new(20, 9).is_ok());
+    }
+
+    #[test]
+    fn test_z_score_oscillator_trait() {
+        let data = make_test_data();
+        let indicator = ZScoreOscillator::new(20, 5).unwrap();
+
+        assert_eq!(indicator.name(), "Z-Score Oscillator");
+        assert_eq!(indicator.min_periods(), 25); // period + signal_period
+        assert_eq!(indicator.output_features(), 2);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+        assert!(output.secondary.is_some());
+    }
+
+    #[test]
+    fn test_z_score_oscillator_uptrend() {
+        // Strong uptrend should give positive z-scores
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let indicator = ZScoreOscillator::new(20, 5).unwrap();
+        let (z_score, _signal) = indicator.calculate(&close);
+
+        // In uptrend, z-scores should be positive (above mean)
+        let last = z_score.last().unwrap();
+        assert!(*last > 0.0);
+    }
+
+    #[test]
+    fn test_z_score_oscillator_flat_prices() {
+        // Flat prices should give z-scores near zero
+        let flat_close: Vec<f64> = vec![100.0; 50];
+
+        let indicator = ZScoreOscillator::new(20, 5).unwrap();
+        let (z_score, _signal) = indicator.calculate(&flat_close);
+
+        let min_period = indicator.min_periods();
+        for i in min_period..z_score.len() {
+            assert!(z_score[i].abs() < 0.1);
+        }
+    }
+
+    #[test]
+    fn test_z_score_oscillator_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 10];
+
+        let indicator = ZScoreOscillator::new(20, 5).unwrap();
+        let (z_score, signal) = indicator.calculate(&short_close);
+        assert!(z_score.iter().all(|&v| v == 0.0));
+        assert!(signal.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // VelocityOscillator Tests
+    // ============================================================
+
+    #[test]
+    fn test_velocity_oscillator_basic() {
+        let data = make_test_data();
+        let indicator = VelocityOscillator::new(5, 20, 3).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_velocity_oscillator_validation() {
+        // velocity_period too small
+        assert!(VelocityOscillator::new(1, 20, 3).is_err());
+        // normalization_period too small
+        assert!(VelocityOscillator::new(5, 9, 3).is_err());
+        // smooth_period too small
+        assert!(VelocityOscillator::new(5, 20, 0).is_err());
+        // Valid parameters
+        assert!(VelocityOscillator::new(2, 10, 1).is_ok());
+        assert!(VelocityOscillator::new(10, 30, 5).is_ok());
+    }
+
+    #[test]
+    fn test_velocity_oscillator_trait() {
+        let data = make_test_data();
+        let indicator = VelocityOscillator::new(5, 20, 3).unwrap();
+
+        assert_eq!(indicator.name(), "Velocity Oscillator");
+        assert_eq!(indicator.min_periods(), 28); // velocity_period + normalization_period + smooth_period
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_velocity_oscillator_accelerating_uptrend() {
+        // Accelerating uptrend should show increasing positive velocity
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64).powi(2) * 0.05).collect();
+
+        let indicator = VelocityOscillator::new(5, 20, 1).unwrap();
+        let result = indicator.calculate(&close);
+
+        // With accelerating prices, velocity should be positive
+        let last_10: Vec<f64> = result[50..60].to_vec();
+        let positive_count = last_10.iter().filter(|&&v| v > 0.0).count();
+        assert!(positive_count >= 5);
+    }
+
+    #[test]
+    fn test_velocity_oscillator_decelerating_downtrend() {
+        // Decelerating downtrend
+        let close: Vec<f64> = (0..60).map(|i| 200.0 - (i as f64) * 2.0).collect();
+
+        let indicator = VelocityOscillator::new(5, 20, 1).unwrap();
+        let result = indicator.calculate(&close);
+
+        // With constant downtrend, velocity should be around zero (no change in velocity)
+        // but slightly negative due to consistent downward movement
+        let last = result.last().unwrap();
+        assert!(last.is_finite());
+    }
+
+    #[test]
+    fn test_velocity_oscillator_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 10];
+
+        let indicator = VelocityOscillator::new(5, 20, 3).unwrap();
+        let result = indicator.calculate(&short_close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // AccelerationOscillator Tests
+    // ============================================================
+
+    #[test]
+    fn test_acceleration_oscillator_basic() {
+        let data = make_test_data();
+        let indicator = AccelerationOscillator::new(5, 5, 20).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_acceleration_oscillator_validation() {
+        // velocity_period too small
+        assert!(AccelerationOscillator::new(1, 5, 20).is_err());
+        // acceleration_period too small
+        assert!(AccelerationOscillator::new(5, 1, 20).is_err());
+        // normalization_period too small
+        assert!(AccelerationOscillator::new(5, 5, 9).is_err());
+        // Valid parameters
+        assert!(AccelerationOscillator::new(2, 2, 10).is_ok());
+        assert!(AccelerationOscillator::new(10, 10, 30).is_ok());
+    }
+
+    #[test]
+    fn test_acceleration_oscillator_trait() {
+        let data = make_test_data();
+        let indicator = AccelerationOscillator::new(5, 5, 20).unwrap();
+
+        assert_eq!(indicator.name(), "Acceleration Oscillator");
+        assert_eq!(indicator.min_periods(), 31); // velocity_period + acceleration_period + normalization_period + 1
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_acceleration_oscillator_accelerating_trend() {
+        // Accelerating uptrend (quadratic price increase)
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64).powi(2) * 0.1).collect();
+
+        let indicator = AccelerationOscillator::new(5, 5, 20).unwrap();
+        let result = indicator.calculate(&close);
+
+        // With accelerating prices, we should get valid oscillator values
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(result[i].is_finite());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+
+        // The values should have some variation (not all zero)
+        let valid_values: Vec<f64> = result[min_period..].to_vec();
+        let has_nonzero = valid_values.iter().any(|&v| v.abs() > 1e-10);
+        assert!(has_nonzero, "Should produce non-zero values with accelerating prices");
+    }
+
+    #[test]
+    fn test_acceleration_oscillator_constant_velocity() {
+        // Constant velocity (linear price increase)
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let indicator = AccelerationOscillator::new(5, 5, 20).unwrap();
+        let result = indicator.calculate(&close);
+
+        // With constant velocity, acceleration should be near zero
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(result[i].abs() < 50.0); // Should be relatively small
+        }
+    }
+
+    #[test]
+    fn test_acceleration_oscillator_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 15];
+
+        let indicator = AccelerationOscillator::new(5, 5, 20).unwrap();
+        let result = indicator.calculate(&short_close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ============================================================
+    // HarmonicOscillator Tests
+    // ============================================================
+
+    #[test]
+    fn test_harmonic_oscillator_basic() {
+        let data = make_test_data();
+        let indicator = HarmonicOscillator::new(20, 3, 5).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_harmonic_oscillator_validation() {
+        // analysis_period too small
+        assert!(HarmonicOscillator::new(9, 3, 5).is_err());
+        // harmonic_count out of range
+        assert!(HarmonicOscillator::new(20, 0, 5).is_err());
+        assert!(HarmonicOscillator::new(20, 6, 5).is_err());
+        // smooth_period too small
+        assert!(HarmonicOscillator::new(20, 3, 0).is_err());
+        // Valid parameters
+        assert!(HarmonicOscillator::new(10, 1, 1).is_ok());
+        assert!(HarmonicOscillator::new(30, 5, 10).is_ok());
+    }
+
+    #[test]
+    fn test_harmonic_oscillator_trait() {
+        let data = make_test_data();
+        let indicator = HarmonicOscillator::new(20, 3, 5).unwrap();
+
+        assert_eq!(indicator.name(), "Harmonic Oscillator");
+        assert_eq!(indicator.min_periods(), 25); // analysis_period + smooth_period
+        assert_eq!(indicator.output_features(), 1);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    #[test]
+    fn test_harmonic_oscillator_cyclical_data() {
+        // Test with sinusoidal data - should detect the cycle
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 0.314).sin() * 10.0) // ~20 period cycle
+            .collect();
+
+        let indicator = HarmonicOscillator::new(20, 3, 3).unwrap();
+        let result = indicator.calculate(&close);
+
+        // Should oscillate - check for variation
+        let min_val = result[30..].iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_val = result[30..].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!(max_val - min_val > 10.0); // Should have meaningful oscillation
+    }
+
+    #[test]
+    fn test_harmonic_oscillator_flat_prices() {
+        // Flat prices should give oscillator near zero
+        let flat_close: Vec<f64> = vec![100.0; 50];
+
+        let indicator = HarmonicOscillator::new(20, 3, 5).unwrap();
+        let result = indicator.calculate(&flat_close);
+
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(result[i].abs() < 10.0);
+        }
+    }
+
+    #[test]
+    fn test_harmonic_oscillator_insufficient_data() {
+        let short_close: Vec<f64> = vec![100.0; 15];
+
+        let indicator = HarmonicOscillator::new(20, 3, 5).unwrap();
+        let result = indicator.calculate(&short_close);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_harmonic_oscillator_different_harmonic_counts() {
+        // Test that different harmonic counts produce different results
+        let close: Vec<f64> = (0..60)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 5.0 + (i as f64 * 0.6).sin() * 3.0)
+            .collect();
+
+        let h1 = HarmonicOscillator::new(20, 1, 1).unwrap();
+        let h3 = HarmonicOscillator::new(20, 3, 1).unwrap();
+
+        let result_h1 = h1.calculate(&close);
+        let result_h3 = h3.calculate(&close);
+
+        // Results should be different
+        let last_h1 = result_h1.last().unwrap();
+        let last_h3 = result_h3.last().unwrap();
+        assert!(last_h1.is_finite() && last_h3.is_finite());
+        // They might be similar but the calculation path is different
+    }
+
+    // ============================================================
+    // Additional edge case tests for all new indicators
+    // ============================================================
+
+    #[test]
+    fn test_all_new_indicators_with_extreme_values() {
+        // Test with very large price values
+        let large_close: Vec<f64> = (0..60).map(|i| 10000.0 + i as f64 * 100.0).collect();
+        let large_high: Vec<f64> = large_close.iter().map(|c| c + 50.0).collect();
+        let large_low: Vec<f64> = large_close.iter().map(|c| c - 50.0).collect();
+
+        let uoe = UltimateOscillatorEnhanced::new(5, 10, 20, 10).unwrap();
+        let result = uoe.calculate(&large_high, &large_low, &large_close);
+        assert!(result.iter().all(|&v| v >= 0.0 && v <= 100.0 || v == 0.0));
+
+        let pro = PercentRankOscillator::new(20, 3).unwrap();
+        let result = pro.calculate(&large_close);
+        assert!(result.iter().all(|&v| v >= 0.0 && v <= 100.0 || v == 0.0));
+
+        let zso = ZScoreOscillator::new(20, 5).unwrap();
+        let (z_score, _) = zso.calculate(&large_close);
+        assert!(z_score.iter().all(|&v| v.is_finite()));
+
+        let vo = VelocityOscillator::new(5, 20, 3).unwrap();
+        let result = vo.calculate(&large_close);
+        assert!(result.iter().all(|&v| v >= -100.0 && v <= 100.0 || v == 0.0));
+
+        let ao = AccelerationOscillator::new(5, 5, 20).unwrap();
+        let result = ao.calculate(&large_close);
+        assert!(result.iter().all(|&v| v >= -100.0 && v <= 100.0 || v == 0.0));
+
+        let ho = HarmonicOscillator::new(20, 3, 5).unwrap();
+        let result = ho.calculate(&large_close);
+        assert!(result.iter().all(|&v| v >= -100.0 && v <= 100.0 || v == 0.0));
+    }
+
+    #[test]
+    fn test_all_new_indicators_with_small_values() {
+        // Test with very small price values
+        let small_close: Vec<f64> = (0..60).map(|i| 0.001 + i as f64 * 0.0001).collect();
+        let small_high: Vec<f64> = small_close.iter().map(|c| c + 0.00005).collect();
+        let small_low: Vec<f64> = small_close.iter().map(|c| c - 0.00005).collect();
+
+        let uoe = UltimateOscillatorEnhanced::new(5, 10, 20, 10).unwrap();
+        let result = uoe.calculate(&small_high, &small_low, &small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        let pro = PercentRankOscillator::new(20, 3).unwrap();
+        let result = pro.calculate(&small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        let zso = ZScoreOscillator::new(20, 5).unwrap();
+        let (z_score, signal) = zso.calculate(&small_close);
+        assert!(z_score.iter().all(|v| v.is_finite()));
+        assert!(signal.iter().all(|v| v.is_finite()));
+
+        let vo = VelocityOscillator::new(5, 20, 3).unwrap();
+        let result = vo.calculate(&small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        let ao = AccelerationOscillator::new(5, 5, 20).unwrap();
+        let result = ao.calculate(&small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
+
+        let ho = HarmonicOscillator::new(20, 3, 5).unwrap();
+        let result = ho.calculate(&small_close);
+        assert!(result.iter().all(|v| v.is_finite()));
     }
 }

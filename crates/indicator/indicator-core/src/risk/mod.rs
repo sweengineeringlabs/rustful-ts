@@ -43,4 +43,7 @@ pub use advanced::{
     LiquidityAdjustedVaR, CorrelationVaR, RegimeAwareRisk,
     ConditionalDrawdownAtRisk, UpsideDownsideRatio, RiskAdjustedReturnMetric,
     MaxDrawdownDuration, DrawdownRecoveryFactor, RiskRegimeIndicator,
+    // New risk indicators
+    SortinoRatioAdvanced, CalmarRatioAdvanced, OmegaRatioAdvanced,
+    PainRatio, UlcerIndex, KellyFraction,
 };

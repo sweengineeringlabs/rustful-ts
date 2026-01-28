@@ -12,4 +12,10 @@ pub use advanced::{
     RelativeMomentumIndex,
     MomentumAccelerator,
     AdaptiveMomentumFilter,
+    MomentumStrengthIndex,
+    NormalizedMomentum,
+    MomentumOscillator,
+    WeightedMomentum,
+    MomentumSmoothed,
+    MomentumTrend,
 };

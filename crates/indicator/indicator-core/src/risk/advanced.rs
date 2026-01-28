@@ -1871,6 +1871,804 @@ impl TechnicalIndicator for RiskRegimeIndicator {
     }
 }
 
+// ============================================================
+// NEW RISK INDICATORS (6 total)
+// ============================================================
+
+/// Sortino Ratio (Advanced) - Downside risk-adjusted return ratio
+///
+/// Measures the risk-adjusted return of an investment, penalizing only
+/// downside volatility (returns below a target threshold). Unlike the
+/// standard Sharpe ratio which penalizes all volatility equally, the
+/// Sortino ratio recognizes that upside volatility is beneficial.
+///
+/// # Formula
+/// Sortino = (R_p - R_f) / Downside_Deviation
+///
+/// where:
+/// - R_p = Average portfolio return
+/// - R_f = Target return (often risk-free rate)
+/// - Downside_Deviation = sqrt(mean(min(0, R - R_f)^2))
+///
+/// # Interpretation
+/// - Higher values indicate better risk-adjusted performance
+/// - Positive values suggest returns exceed the target on a risk-adjusted basis
+/// - More appropriate than Sharpe for asymmetric return distributions
+///
+/// # Example
+/// ```ignore
+/// let sortino = SortinoRatioAdvanced::new(50, 0.0, 252.0).unwrap();
+/// let result = sortino.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct SortinoRatioAdvanced {
+    /// Rolling window period for calculation
+    period: usize,
+    /// Target return (Minimum Acceptable Return), often risk-free rate (annualized)
+    target_return: f64,
+    /// Annualization factor (252 for daily, 52 for weekly, 12 for monthly)
+    annualization_factor: f64,
+}
+
+impl SortinoRatioAdvanced {
+    /// Create a new Sortino Ratio (Advanced) indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    /// * `target_return` - Annualized target return (e.g., 0.02 for 2%)
+    /// * `annualization_factor` - Trading periods per year (252 for daily)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, target_return: f64, annualization_factor: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for robust downside deviation calculation".to_string(),
+            });
+        }
+        if annualization_factor <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "annualization_factor".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            target_return,
+            annualization_factor,
+        })
+    }
+
+    /// Calculate Sortino Ratio values
+    ///
+    /// Returns the annualized Sortino ratio for each point in the series.
+    /// Higher values indicate better downside risk-adjusted performance.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Convert annualized target to per-period target
+        let per_period_target = self.target_return / self.annualization_factor;
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() < 10 {
+                continue;
+            }
+
+            // Calculate mean return
+            let mean_return: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+
+            // Calculate downside deviation (only returns below target)
+            let downside_squared_sum: f64 = returns
+                .iter()
+                .map(|&r| {
+                    let excess = r - per_period_target;
+                    if excess < 0.0 {
+                        excess * excess
+                    } else {
+                        0.0
+                    }
+                })
+                .sum();
+
+            let downside_deviation = (downside_squared_sum / returns.len() as f64).sqrt();
+
+            // Calculate annualized Sortino ratio
+            if downside_deviation > 1e-10 {
+                let annualized_excess_return = (mean_return - per_period_target) * self.annualization_factor;
+                let annualized_downside_dev = downside_deviation * self.annualization_factor.sqrt();
+                result[i] = annualized_excess_return / annualized_downside_dev;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SortinoRatioAdvanced {
+    fn name(&self) -> &str {
+        "Sortino Ratio Advanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Calmar Ratio (Advanced) - Return to maximum drawdown ratio
+///
+/// Measures the risk-adjusted return by comparing annualized return to
+/// the maximum drawdown. Originally designed for hedge fund evaluation,
+/// it provides insight into whether returns are worth the drawdown risk.
+///
+/// # Formula
+/// Calmar = Annualized_Return / |Maximum_Drawdown|
+///
+/// # Interpretation
+/// - Higher values indicate better risk-adjusted performance
+/// - Values > 1 suggest annualized return exceeds the worst drawdown
+/// - Typically calculated over 3-year periods for hedge funds
+/// - More conservative than Sharpe as it uses worst-case drawdown
+///
+/// # Example
+/// ```ignore
+/// let calmar = CalmarRatioAdvanced::new(50, 252.0).unwrap();
+/// let result = calmar.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CalmarRatioAdvanced {
+    /// Rolling window period for calculation
+    period: usize,
+    /// Annualization factor (252 for daily, 52 for weekly, 12 for monthly)
+    annualization_factor: f64,
+}
+
+impl CalmarRatioAdvanced {
+    /// Create a new Calmar Ratio (Advanced) indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    /// * `annualization_factor` - Trading periods per year (252 for daily)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, annualization_factor: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for meaningful drawdown measurement".to_string(),
+            });
+        }
+        if annualization_factor <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "annualization_factor".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            annualization_factor,
+        })
+    }
+
+    /// Calculate Calmar Ratio values
+    ///
+    /// Returns the Calmar ratio (annualized return / max drawdown) for each point.
+    /// Higher values indicate better return relative to worst drawdown.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            if close[start] < 1e-10 {
+                continue;
+            }
+
+            // Calculate total return over the period
+            let total_return = close[i] / close[start] - 1.0;
+
+            // Annualize the return
+            let periods = (i - start) as f64;
+            let annualized_return = (1.0 + total_return).powf(self.annualization_factor / periods) - 1.0;
+
+            // Calculate maximum drawdown
+            let mut peak = close[start];
+            let mut max_dd = 0.0;
+
+            for j in start..=i {
+                if close[j] > peak {
+                    peak = close[j];
+                }
+                let dd = (peak - close[j]) / peak;
+                if dd > max_dd {
+                    max_dd = dd;
+                }
+            }
+
+            // Calculate Calmar ratio
+            if max_dd > 1e-10 {
+                result[i] = annualized_return / max_dd;
+            } else if annualized_return > 0.0 {
+                // No drawdown but positive return - cap at high value
+                result[i] = 10.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CalmarRatioAdvanced {
+    fn name(&self) -> &str {
+        "Calmar Ratio Advanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Omega Ratio (Advanced) - Probability weighted ratio of gains vs losses
+///
+/// A comprehensive performance measure that considers the entire return
+/// distribution, not just mean and variance. It calculates the probability-
+/// weighted ratio of gains (above threshold) to losses (below threshold).
+///
+/// # Formula
+/// Omega = Sum(max(R - threshold, 0)) / Sum(max(threshold - R, 0))
+///
+/// This is equivalent to:
+/// Omega = (1 + (mean - threshold) / LPM_1) where LPM_1 is the first lower partial moment
+///
+/// # Interpretation
+/// - Omega > 1: More probability-weighted gains than losses
+/// - Omega = 1: Equal probability-weighted gains and losses
+/// - Omega < 1: More probability-weighted losses than gains
+/// - No arbitrary assumptions about return distribution shape
+///
+/// # Example
+/// ```ignore
+/// let omega = OmegaRatioAdvanced::new(50, 0.0).unwrap();
+/// let result = omega.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct OmegaRatioAdvanced {
+    /// Rolling window period for calculation
+    period: usize,
+    /// Threshold return (minimum acceptable return per period)
+    threshold: f64,
+}
+
+impl OmegaRatioAdvanced {
+    /// Create a new Omega Ratio (Advanced) indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    /// * `threshold` - Per-period threshold return (e.g., 0.0 for zero, or risk-free rate/252)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, threshold: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for meaningful probability weighting".to_string(),
+            });
+        }
+        Ok(Self { period, threshold })
+    }
+
+    /// Calculate Omega Ratio values
+    ///
+    /// Returns the Omega ratio for each point in the series.
+    /// Values > 1 indicate more gains than losses relative to threshold.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() < 10 {
+                continue;
+            }
+
+            // Calculate gains (returns above threshold)
+            let gains_sum: f64 = returns
+                .iter()
+                .map(|&r| (r - self.threshold).max(0.0))
+                .sum();
+
+            // Calculate losses (returns below threshold)
+            let losses_sum: f64 = returns
+                .iter()
+                .map(|&r| (self.threshold - r).max(0.0))
+                .sum();
+
+            // Calculate Omega ratio
+            if losses_sum > 1e-10 {
+                result[i] = gains_sum / losses_sum;
+            } else if gains_sum > 0.0 {
+                // All gains, no losses - cap at high value
+                result[i] = 10.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for OmegaRatioAdvanced {
+    fn name(&self) -> &str {
+        "Omega Ratio Advanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Pain Ratio - Average drawdown-adjusted return measure
+///
+/// Measures the return per unit of average drawdown (pain). Unlike the
+/// Calmar ratio which uses maximum drawdown, the Pain ratio considers
+/// the average depth and duration of drawdowns, providing a more
+/// comprehensive view of the typical pain experienced.
+///
+/// # Formula
+/// Pain_Ratio = (Annualized_Return - Risk_Free_Rate) / Pain_Index
+///
+/// where Pain_Index = Average(Drawdown percentages over the period)
+///
+/// # Interpretation
+/// - Higher values indicate better return per unit of average pain
+/// - More stable than Calmar as it's not dominated by a single worst drawdown
+/// - Better for comparing strategies with different drawdown patterns
+///
+/// # Example
+/// ```ignore
+/// let pain_ratio = PainRatio::new(50, 0.02).unwrap();
+/// let result = pain_ratio.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct PainRatio {
+    /// Rolling window period for calculation
+    period: usize,
+    /// Annualized risk-free rate
+    risk_free_rate: f64,
+}
+
+impl PainRatio {
+    /// Create a new Pain Ratio indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    /// * `risk_free_rate` - Annualized risk-free rate (e.g., 0.02 for 2%)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, risk_free_rate: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for meaningful pain calculation".to_string(),
+            });
+        }
+        if risk_free_rate < 0.0 || risk_free_rate > 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "risk_free_rate".to_string(),
+                reason: "must be between 0.0 and 0.5 (50%)".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            risk_free_rate,
+        })
+    }
+
+    /// Calculate Pain Ratio values
+    ///
+    /// Returns the excess return per unit of average drawdown for each point.
+    /// Higher values indicate better risk-adjusted performance.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            if close[start] < 1e-10 {
+                continue;
+            }
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.is_empty() {
+                continue;
+            }
+
+            // Calculate annualized return
+            let avg_return: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+            let annualized_return = avg_return * 252.0;
+            let excess_return = annualized_return - self.risk_free_rate;
+
+            // Calculate Pain Index (average drawdown)
+            let mut peak = close[start];
+            let mut dd_sum = 0.0;
+            let mut dd_count = 0;
+
+            for j in start..=i {
+                if close[j] > peak {
+                    peak = close[j];
+                }
+                let dd = (peak - close[j]) / peak;
+                dd_sum += dd;
+                dd_count += 1;
+            }
+
+            let pain_index = if dd_count > 0 {
+                dd_sum / dd_count as f64
+            } else {
+                0.0
+            };
+
+            // Calculate Pain Ratio
+            if pain_index > 1e-10 {
+                result[i] = excess_return / pain_index;
+            } else if excess_return > 0.0 {
+                // No pain but positive return - cap at high value
+                result[i] = 10.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PainRatio {
+    fn name(&self) -> &str {
+        "Pain Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Ulcer Index - Quadratic mean of percentage drawdowns
+///
+/// Developed by Peter Martin in 1987, the Ulcer Index measures downside
+/// volatility using the quadratic mean (root mean square) of percentage
+/// drawdowns from recent peaks. It focuses on the depth and duration of
+/// drawdowns rather than standard deviation, making it particularly
+/// relevant for risk-averse investors.
+///
+/// # Formula
+/// UI = sqrt(mean(Drawdown_Pct^2))
+///
+/// where Drawdown_Pct = 100 * (Peak - Price) / Peak
+///
+/// # Interpretation
+/// - Lower values indicate less severe drawdowns (lower risk)
+/// - Zero means no drawdowns (price always at or above previous peak)
+/// - Expressed as a percentage
+/// - Can be used to calculate Ulcer Performance Index (return / UI)
+///
+/// # Example
+/// ```ignore
+/// let ulcer = UlcerIndex::new(14).unwrap();
+/// let result = ulcer.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct UlcerIndex {
+    /// Rolling window period for calculation
+    period: usize,
+}
+
+impl UlcerIndex {
+    /// Create a new Ulcer Index indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 10)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10 for meaningful ulcer calculation".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Ulcer Index values
+    ///
+    /// Returns the quadratic mean of percentage drawdowns for each point.
+    /// Lower values indicate less severe drawdowns.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Find the peak in the lookback period
+            let mut peak = close[start];
+            let mut squared_dd_sum = 0.0;
+            let mut count = 0;
+
+            for j in start..=i {
+                if close[j] > peak {
+                    peak = close[j];
+                }
+                // Calculate percentage drawdown
+                let pct_dd = 100.0 * (peak - close[j]) / peak;
+                squared_dd_sum += pct_dd * pct_dd;
+                count += 1;
+            }
+
+            // Calculate Ulcer Index as quadratic mean (RMS) of drawdowns
+            if count > 0 {
+                result[i] = (squared_dd_sum / count as f64).sqrt();
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for UlcerIndex {
+    fn name(&self) -> &str {
+        "Ulcer Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Kelly Fraction - Optimal betting/position sizing fraction
+///
+/// Based on the Kelly Criterion, this indicator calculates the optimal
+/// fraction of capital to risk on each trade/position to maximize long-term
+/// growth. It balances the trade-off between risk and reward based on
+/// historical win rates and payoff ratios.
+///
+/// # Formula
+/// Kelly = W - (1-W)/R
+///
+/// where:
+/// - W = Win rate (probability of winning)
+/// - R = Win/Loss ratio (average win size / average loss size)
+///
+/// Alternative form: Kelly = (p*b - q) / b
+/// where p = win probability, q = loss probability (1-p), b = odds (win/loss ratio)
+///
+/// # Interpretation
+/// - Positive values: Should take a long position
+/// - Negative values: Should take a short position or stay out
+/// - Value represents optimal fraction of capital to risk
+/// - In practice, traders often use "half-Kelly" or "quarter-Kelly" for safety
+/// - Values > 1 are theoretically possible but suggest extreme risk
+///
+/// # Example
+/// ```ignore
+/// let kelly = KellyFraction::new(50).unwrap();
+/// let result = kelly.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct KellyFraction {
+    /// Rolling window period for calculation
+    period: usize,
+}
+
+impl KellyFraction {
+    /// Create a new Kelly Fraction indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for statistically meaningful Kelly calculation".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Kelly Fraction values
+    ///
+    /// Returns the optimal fraction of capital to risk based on historical
+    /// win rate and payoff ratio. Positive values suggest long positions.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns and classify as wins/losses
+            let mut wins: Vec<f64> = Vec::new();
+            let mut losses: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    let ret = close[j] / close[j - 1] - 1.0;
+                    if ret > 0.0 {
+                        wins.push(ret);
+                    } else if ret < 0.0 {
+                        losses.push(ret.abs());
+                    }
+                }
+            }
+
+            let total_trades = wins.len() + losses.len();
+            if total_trades < 10 || losses.is_empty() {
+                continue;
+            }
+
+            // Calculate win rate
+            let win_rate = wins.len() as f64 / total_trades as f64;
+
+            // Calculate average win and average loss
+            let avg_win: f64 = if !wins.is_empty() {
+                wins.iter().sum::<f64>() / wins.len() as f64
+            } else {
+                0.0
+            };
+
+            let avg_loss: f64 = losses.iter().sum::<f64>() / losses.len() as f64;
+
+            // Calculate win/loss ratio
+            if avg_loss < 1e-10 {
+                continue;
+            }
+            let win_loss_ratio = avg_win / avg_loss;
+
+            // Calculate Kelly fraction: W - (1-W)/R
+            let kelly = win_rate - (1.0 - win_rate) / win_loss_ratio;
+
+            // Clamp to reasonable range (-1 to 1 for practical purposes)
+            result[i] = kelly.clamp(-1.0, 1.0);
+        }
+
+        result
+    }
+
+    /// Calculate Kelly Fraction with custom edge calculation
+    ///
+    /// Uses a more sophisticated edge calculation that considers
+    /// the magnitude of wins and losses, not just the count.
+    pub fn calculate_weighted(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() < 10 {
+                continue;
+            }
+
+            // Calculate expected value and variance
+            let mean_return: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+            let variance: f64 = returns
+                .iter()
+                .map(|r| (r - mean_return).powi(2))
+                .sum::<f64>() / returns.len() as f64;
+
+            // Kelly formula for continuous returns: f = mu / sigma^2
+            // This is the optimal fraction when returns are normally distributed
+            if variance > 1e-10 {
+                let kelly = mean_return / variance;
+                // Clamp to reasonable range
+                result[i] = kelly.clamp(-2.0, 2.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for KellyFraction {
+    fn name(&self) -> &str {
+        "Kelly Fraction"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2541,5 +3339,522 @@ mod tests {
         let rri = RiskRegimeIndicator::new(35, 10).unwrap();
         let result = rri.calculate(&short_data);
         assert!(result.iter().all(|&x| x == 0.0), "RRI should be zero for insufficient data");
+    }
+
+    // ============================================================
+    // Tests for the 6 ADDITIONAL NEW risk indicators
+    // SortinoRatioAdvanced, CalmarRatioAdvanced, OmegaRatioAdvanced,
+    // PainRatio, UlcerIndex, KellyFraction
+    // ============================================================
+
+    // ============================================================
+    // 1. SortinoRatioAdvanced Tests
+    // ============================================================
+
+    #[test]
+    fn test_sortino_ratio_advanced_basic() {
+        let close = make_volatile_test_data();
+        let sortino = SortinoRatioAdvanced::new(30, 0.0, 252.0).unwrap();
+        let result = sortino.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_sortino_ratio_advanced_uptrend() {
+        // Uptrend with some volatility (for downside deviation calculation)
+        let close = make_volatile_test_data();
+        let sortino = SortinoRatioAdvanced::new(25, 0.0, 252.0).unwrap();
+        let result = sortino.calculate(&close);
+
+        // Should produce valid non-zero values
+        assert_eq!(result.len(), close.len());
+        // Check that some values are computed
+        let nonzero_count = result[30..].iter().filter(|&&x| x != 0.0).count();
+        assert!(nonzero_count > 0, "Should compute Sortino values for volatile data");
+    }
+
+    #[test]
+    fn test_sortino_ratio_advanced_with_target() {
+        let close = make_volatile_test_data();
+        let sortino = SortinoRatioAdvanced::new(30, 0.02, 252.0).unwrap();
+        let result = sortino.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Should still compute valid values
+        for i in 35..result.len() {
+            assert!(!result[i].is_nan(), "Sortino should not be NaN at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_sortino_ratio_advanced_validation() {
+        // Period too small
+        assert!(SortinoRatioAdvanced::new(10, 0.0, 252.0).is_err());
+
+        // Invalid annualization factor
+        assert!(SortinoRatioAdvanced::new(30, 0.0, 0.0).is_err());
+        assert!(SortinoRatioAdvanced::new(30, 0.0, -1.0).is_err());
+
+        // Valid parameters
+        assert!(SortinoRatioAdvanced::new(20, 0.0, 252.0).is_ok());
+        assert!(SortinoRatioAdvanced::new(30, 0.02, 252.0).is_ok());
+        assert!(SortinoRatioAdvanced::new(50, 0.05, 52.0).is_ok()); // Weekly
+    }
+
+    #[test]
+    fn test_sortino_ratio_advanced_indicator_trait() {
+        let data = make_test_data();
+        let sortino = SortinoRatioAdvanced::new(25, 0.0, 252.0).unwrap();
+
+        assert_eq!(sortino.name(), "Sortino Ratio Advanced");
+        assert_eq!(sortino.min_periods(), 26);
+        assert_eq!(sortino.output_features(), 1);
+
+        let output = sortino.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 2. CalmarRatioAdvanced Tests
+    // ============================================================
+
+    #[test]
+    fn test_calmar_ratio_advanced_basic() {
+        let close = make_drawdown_test_data();
+        let calmar = CalmarRatioAdvanced::new(30, 252.0).unwrap();
+        let result = calmar.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_calmar_ratio_advanced_uptrend() {
+        // Pure uptrend should give positive Calmar
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let calmar = CalmarRatioAdvanced::new(25, 252.0).unwrap();
+        let result = calmar.calculate(&close);
+
+        // Should have positive values in uptrend (after warmup)
+        let positive_count = result[30..].iter().filter(|&&x| x > 0.0).count();
+        assert!(positive_count > 0, "Should have positive Calmar in uptrend");
+    }
+
+    #[test]
+    fn test_calmar_ratio_advanced_with_drawdown() {
+        let close = make_drawdown_test_data();
+        let calmar = CalmarRatioAdvanced::new(25, 252.0).unwrap();
+        let result = calmar.calculate(&close);
+
+        // Should have meaningful values during and after drawdowns
+        let nonzero_count = result[30..].iter().filter(|&&x| x != 0.0).count();
+        assert!(nonzero_count > 0, "Should have non-zero Calmar values");
+    }
+
+    #[test]
+    fn test_calmar_ratio_advanced_validation() {
+        // Period too small
+        assert!(CalmarRatioAdvanced::new(10, 252.0).is_err());
+
+        // Invalid annualization factor
+        assert!(CalmarRatioAdvanced::new(30, 0.0).is_err());
+        assert!(CalmarRatioAdvanced::new(30, -1.0).is_err());
+
+        // Valid parameters
+        assert!(CalmarRatioAdvanced::new(20, 252.0).is_ok());
+        assert!(CalmarRatioAdvanced::new(30, 52.0).is_ok()); // Weekly
+        assert!(CalmarRatioAdvanced::new(50, 12.0).is_ok()); // Monthly
+    }
+
+    #[test]
+    fn test_calmar_ratio_advanced_indicator_trait() {
+        let data = make_test_data();
+        let calmar = CalmarRatioAdvanced::new(25, 252.0).unwrap();
+
+        assert_eq!(calmar.name(), "Calmar Ratio Advanced");
+        assert_eq!(calmar.min_periods(), 26);
+        assert_eq!(calmar.output_features(), 1);
+
+        let output = calmar.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 3. OmegaRatioAdvanced Tests
+    // ============================================================
+
+    #[test]
+    fn test_omega_ratio_advanced_basic() {
+        let close = make_volatile_test_data();
+        let omega = OmegaRatioAdvanced::new(30, 0.0).unwrap();
+        let result = omega.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_omega_ratio_advanced_uptrend() {
+        // Pure uptrend should give Omega > 1
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let omega = OmegaRatioAdvanced::new(25, 0.0).unwrap();
+        let result = omega.calculate(&close);
+
+        // Should have values >= 1 in uptrend
+        let high_omega_count = result[30..].iter().filter(|&&x| x >= 1.0).count();
+        assert!(high_omega_count > 0, "Should have Omega >= 1 in uptrend");
+    }
+
+    #[test]
+    fn test_omega_ratio_advanced_with_threshold() {
+        let close = make_volatile_test_data();
+        let omega = OmegaRatioAdvanced::new(30, 0.001).unwrap();
+        let result = omega.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Non-zero threshold should still produce valid results
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0, "Omega should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_omega_ratio_advanced_validation() {
+        // Period too small
+        assert!(OmegaRatioAdvanced::new(10, 0.0).is_err());
+
+        // Valid parameters (threshold can be any value)
+        assert!(OmegaRatioAdvanced::new(20, 0.0).is_ok());
+        assert!(OmegaRatioAdvanced::new(30, 0.001).is_ok());
+        assert!(OmegaRatioAdvanced::new(50, -0.001).is_ok()); // Negative threshold is valid
+    }
+
+    #[test]
+    fn test_omega_ratio_advanced_indicator_trait() {
+        let data = make_test_data();
+        let omega = OmegaRatioAdvanced::new(25, 0.0).unwrap();
+
+        assert_eq!(omega.name(), "Omega Ratio Advanced");
+        assert_eq!(omega.min_periods(), 26);
+        assert_eq!(omega.output_features(), 1);
+
+        let output = omega.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 4. PainRatio Tests
+    // ============================================================
+
+    #[test]
+    fn test_pain_ratio_basic() {
+        let close = make_drawdown_test_data();
+        let pain_ratio = PainRatio::new(30, 0.02).unwrap();
+        let result = pain_ratio.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_pain_ratio_uptrend() {
+        // Pure uptrend should give positive Pain Ratio
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let pain_ratio = PainRatio::new(25, 0.02).unwrap();
+        let result = pain_ratio.calculate(&close);
+
+        // Should have positive values in uptrend
+        let positive_count = result[30..].iter().filter(|&&x| x > 0.0).count();
+        assert!(positive_count > 0, "Should have positive Pain Ratio in uptrend");
+    }
+
+    #[test]
+    fn test_pain_ratio_with_drawdown() {
+        let close = make_drawdown_test_data();
+        let pain_ratio = PainRatio::new(25, 0.0).unwrap();
+        let result = pain_ratio.calculate(&close);
+
+        // Should have meaningful values
+        let nonzero_count = result[30..].iter().filter(|&&x| x != 0.0).count();
+        assert!(nonzero_count > 0, "Should have non-zero Pain Ratio values");
+    }
+
+    #[test]
+    fn test_pain_ratio_validation() {
+        // Period too small
+        assert!(PainRatio::new(10, 0.02).is_err());
+
+        // Invalid risk-free rate
+        assert!(PainRatio::new(30, -0.01).is_err());
+        assert!(PainRatio::new(30, 0.6).is_err());
+
+        // Valid parameters
+        assert!(PainRatio::new(20, 0.0).is_ok());
+        assert!(PainRatio::new(30, 0.02).is_ok());
+        assert!(PainRatio::new(50, 0.05).is_ok());
+    }
+
+    #[test]
+    fn test_pain_ratio_indicator_trait() {
+        let data = make_test_data();
+        let pain_ratio = PainRatio::new(25, 0.02).unwrap();
+
+        assert_eq!(pain_ratio.name(), "Pain Ratio");
+        assert_eq!(pain_ratio.min_periods(), 26);
+        assert_eq!(pain_ratio.output_features(), 1);
+
+        let output = pain_ratio.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 5. UlcerIndex Tests
+    // ============================================================
+
+    #[test]
+    fn test_ulcer_index_basic() {
+        let close = make_drawdown_test_data();
+        let ulcer = UlcerIndex::new(14).unwrap();
+        let result = ulcer.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Ulcer Index should be non-negative
+        for i in 20..result.len() {
+            assert!(result[i] >= 0.0, "Ulcer Index should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_ulcer_index_uptrend() {
+        // Pure uptrend with minimal drawdowns should have low Ulcer Index
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let ulcer = UlcerIndex::new(14).unwrap();
+        let result = ulcer.calculate(&close);
+
+        // Should have low values in smooth uptrend
+        for i in 20..result.len() {
+            assert!(result[i] < 5.0, "Ulcer Index should be low in smooth uptrend at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_ulcer_index_with_drawdown() {
+        let close = make_drawdown_test_data();
+        let ulcer = UlcerIndex::new(14).unwrap();
+        let result = ulcer.calculate(&close);
+
+        // During drawdown, Ulcer Index should increase
+        let max_ulcer = result.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(max_ulcer > 0.0, "Ulcer Index should detect drawdowns");
+    }
+
+    #[test]
+    fn test_ulcer_index_validation() {
+        // Period too small
+        assert!(UlcerIndex::new(5).is_err());
+
+        // Valid parameters
+        assert!(UlcerIndex::new(10).is_ok());
+        assert!(UlcerIndex::new(14).is_ok());
+        assert!(UlcerIndex::new(50).is_ok());
+    }
+
+    #[test]
+    fn test_ulcer_index_indicator_trait() {
+        let data = make_test_data();
+        let ulcer = UlcerIndex::new(14).unwrap();
+
+        assert_eq!(ulcer.name(), "Ulcer Index");
+        assert_eq!(ulcer.min_periods(), 15);
+        assert_eq!(ulcer.output_features(), 1);
+
+        let output = ulcer.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 6. KellyFraction Tests
+    // ============================================================
+
+    #[test]
+    fn test_kelly_fraction_basic() {
+        let close = make_volatile_test_data();
+        let kelly = KellyFraction::new(30).unwrap();
+        let result = kelly.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_kelly_fraction_uptrend() {
+        // Use volatile data which has both ups and downs for Kelly calculation
+        let close = make_volatile_test_data();
+        let kelly = KellyFraction::new(25).unwrap();
+        let result = kelly.calculate(&close);
+
+        // Should produce valid values - volatile data has wins and losses
+        assert_eq!(result.len(), close.len());
+        // Check that some values are computed (Kelly requires both wins and losses)
+        let nonzero_count = result[30..].iter().filter(|&&x| x != 0.0).count();
+        assert!(nonzero_count > 0, "Should compute Kelly values for volatile data");
+    }
+
+    #[test]
+    fn test_kelly_fraction_bounded() {
+        let close = make_volatile_test_data();
+        let kelly = KellyFraction::new(30).unwrap();
+        let result = kelly.calculate(&close);
+
+        // Kelly should be bounded between -1 and 1
+        for i in 35..result.len() {
+            assert!(
+                result[i] >= -1.0 && result[i] <= 1.0,
+                "Kelly should be bounded at index {}: {}", i, result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_kelly_fraction_weighted() {
+        let close = make_volatile_test_data();
+        let kelly = KellyFraction::new(30).unwrap();
+        let result = kelly.calculate_weighted(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Weighted Kelly should be bounded between -2 and 2
+        for i in 35..result.len() {
+            assert!(
+                result[i] >= -2.0 && result[i] <= 2.0,
+                "Weighted Kelly should be bounded at index {}: {}", i, result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_kelly_fraction_validation() {
+        // Period too small
+        assert!(KellyFraction::new(10).is_err());
+
+        // Valid parameters
+        assert!(KellyFraction::new(20).is_ok());
+        assert!(KellyFraction::new(30).is_ok());
+        assert!(KellyFraction::new(50).is_ok());
+    }
+
+    #[test]
+    fn test_kelly_fraction_indicator_trait() {
+        let data = make_test_data();
+        let kelly = KellyFraction::new(25).unwrap();
+
+        assert_eq!(kelly.name(), "Kelly Fraction");
+        assert_eq!(kelly.min_periods(), 26);
+        assert_eq!(kelly.output_features(), 1);
+
+        let output = kelly.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // Integration Tests for the 6 additional new indicators
+    // ============================================================
+
+    #[test]
+    fn test_additional_new_indicators_names() {
+        let sortino = SortinoRatioAdvanced::new(25, 0.0, 252.0).unwrap();
+        assert_eq!(sortino.name(), "Sortino Ratio Advanced");
+
+        let calmar = CalmarRatioAdvanced::new(25, 252.0).unwrap();
+        assert_eq!(calmar.name(), "Calmar Ratio Advanced");
+
+        let omega = OmegaRatioAdvanced::new(25, 0.0).unwrap();
+        assert_eq!(omega.name(), "Omega Ratio Advanced");
+
+        let pain_ratio = PainRatio::new(25, 0.02).unwrap();
+        assert_eq!(pain_ratio.name(), "Pain Ratio");
+
+        let ulcer = UlcerIndex::new(14).unwrap();
+        assert_eq!(ulcer.name(), "Ulcer Index");
+
+        let kelly = KellyFraction::new(25).unwrap();
+        assert_eq!(kelly.name(), "Kelly Fraction");
+    }
+
+    #[test]
+    fn test_additional_new_indicators_empty_data() {
+        let empty: Vec<f64> = Vec::new();
+
+        let sortino = SortinoRatioAdvanced::new(25, 0.0, 252.0).unwrap();
+        assert_eq!(sortino.calculate(&empty).len(), 0);
+
+        let calmar = CalmarRatioAdvanced::new(25, 252.0).unwrap();
+        assert_eq!(calmar.calculate(&empty).len(), 0);
+
+        let omega = OmegaRatioAdvanced::new(25, 0.0).unwrap();
+        assert_eq!(omega.calculate(&empty).len(), 0);
+
+        let pain_ratio = PainRatio::new(25, 0.02).unwrap();
+        assert_eq!(pain_ratio.calculate(&empty).len(), 0);
+
+        let ulcer = UlcerIndex::new(14).unwrap();
+        assert_eq!(ulcer.calculate(&empty).len(), 0);
+
+        let kelly = KellyFraction::new(25).unwrap();
+        assert_eq!(kelly.calculate(&empty).len(), 0);
+    }
+
+    #[test]
+    fn test_additional_new_indicators_insufficient_data() {
+        // Data shorter than period
+        let short_data: Vec<f64> = (0..15).map(|i| 100.0 + i as f64).collect();
+
+        let sortino = SortinoRatioAdvanced::new(25, 0.0, 252.0).unwrap();
+        let result = sortino.calculate(&short_data);
+        assert!(result.iter().all(|&x| x == 0.0), "Sortino should be zero for insufficient data");
+
+        let calmar = CalmarRatioAdvanced::new(25, 252.0).unwrap();
+        let result = calmar.calculate(&short_data);
+        assert!(result.iter().all(|&x| x == 0.0), "Calmar should be zero for insufficient data");
+
+        let omega = OmegaRatioAdvanced::new(25, 0.0).unwrap();
+        let result = omega.calculate(&short_data);
+        assert!(result.iter().all(|&x| x == 0.0), "Omega should be zero for insufficient data");
+
+        let pain_ratio = PainRatio::new(25, 0.02).unwrap();
+        let result = pain_ratio.calculate(&short_data);
+        assert!(result.iter().all(|&x| x == 0.0), "Pain Ratio should be zero for insufficient data");
+
+        let ulcer = UlcerIndex::new(20).unwrap();
+        let result = ulcer.calculate(&short_data);
+        assert!(result.iter().all(|&x| x == 0.0), "Ulcer Index should be zero for insufficient data");
+
+        let kelly = KellyFraction::new(25).unwrap();
+        let result = kelly.calculate(&short_data);
+        assert!(result.iter().all(|&x| x == 0.0), "Kelly should be zero for insufficient data");
+    }
+
+    #[test]
+    fn test_all_six_new_indicators_compute_together() {
+        // Test that all six indicators can be computed on the same dataset
+        let data = make_test_data();
+
+        let sortino = SortinoRatioAdvanced::new(25, 0.0, 252.0).unwrap();
+        let calmar = CalmarRatioAdvanced::new(25, 252.0).unwrap();
+        let omega = OmegaRatioAdvanced::new(25, 0.0).unwrap();
+        let pain_ratio = PainRatio::new(25, 0.02).unwrap();
+        let ulcer = UlcerIndex::new(14).unwrap();
+        let kelly = KellyFraction::new(25).unwrap();
+
+        let sortino_result = sortino.compute(&data).unwrap();
+        let calmar_result = calmar.compute(&data).unwrap();
+        let omega_result = omega.compute(&data).unwrap();
+        let pain_ratio_result = pain_ratio.compute(&data).unwrap();
+        let ulcer_result = ulcer.compute(&data).unwrap();
+        let kelly_result = kelly.compute(&data).unwrap();
+
+        // All should have the same length
+        assert_eq!(sortino_result.primary.len(), data.close.len());
+        assert_eq!(calmar_result.primary.len(), data.close.len());
+        assert_eq!(omega_result.primary.len(), data.close.len());
+        assert_eq!(pain_ratio_result.primary.len(), data.close.len());
+        assert_eq!(ulcer_result.primary.len(), data.close.len());
+        assert_eq!(kelly_result.primary.len(), data.close.len());
     }
 }

@@ -89,4 +89,7 @@ pub use advanced::{
     // New volume indicators
     VolumeWeightedTrend, VolumeMomentumOscillator, VolumeAccumulationTrend,
     AdaptiveVolumeMA, VolumeFlowIndex, VolumePressureIndex,
+    // Additional volume indicators
+    VolumeStrengthIndex, NormalizedVolume, VolumeSurge,
+    VolumeDivergenceIndex, InstitutionalFlowIndicator, VolumeZScore,
 };

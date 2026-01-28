@@ -61,4 +61,7 @@ pub use advanced::{
     // New band indicators (Jan 2026)
     VolatilityBandwidth, BandBreakoutStrength, DynamicPriceBands,
     TrendAlignedBands, MomentumDrivenBands, AdaptiveEnvelopeBands,
+    // New band indicators (Jan 2026 - Phase 2)
+    PricePercentileBands, VolumeBands, ATRBands,
+    AdaptiveChannelBands, RegressionBands, QuantileBands,
 };

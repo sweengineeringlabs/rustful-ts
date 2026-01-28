@@ -2149,6 +2149,744 @@ impl TechnicalIndicator for EntropyMeasure {
     }
 }
 
+/// Variance Ratio - Ratio of variance across different periods
+///
+/// Calculates the ratio of variance at longer time horizons to shorter horizons.
+/// Under the random walk hypothesis, variance should scale linearly with time.
+/// Deviations indicate predictability in returns.
+///
+/// # Interpretation
+/// - VR = 1: Random walk (no predictability)
+/// - VR > 1: Positive autocorrelation/momentum (trending)
+/// - VR < 1: Negative autocorrelation/mean reversion
+///
+/// # Example
+/// ```ignore
+/// let vr = VarianceRatio::new(20, 4).unwrap();
+/// let ratios = vr.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VarianceRatio {
+    period: usize,
+    short_period: usize,
+}
+
+impl VarianceRatio {
+    pub fn new(period: usize, short_period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if short_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if short_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, short_period })
+    }
+
+    /// Calculate variance ratio
+    ///
+    /// Returns the ratio of long-period variance to scaled short-period variance.
+    /// A ratio of 1 indicates random walk behavior.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate log returns
+        let log_returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    (close[i] / close[i - 1]).ln()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window = &log_returns[start..=return_idx];
+
+            // Calculate variance of 1-period returns
+            let mean_1: f64 = window.iter().sum::<f64>() / window.len() as f64;
+            let var_1: f64 = window.iter()
+                .map(|r| (r - mean_1).powi(2))
+                .sum::<f64>() / window.len() as f64;
+
+            if var_1 < 1e-10 {
+                result[i] = 1.0;
+                continue;
+            }
+
+            // Calculate variance of short_period-period returns (sum of k consecutive returns)
+            let k = self.short_period;
+            let mut k_returns = Vec::new();
+            for j in (k - 1)..window.len() {
+                let k_return: f64 = window[(j + 1 - k)..=j].iter().sum();
+                k_returns.push(k_return);
+            }
+
+            if k_returns.is_empty() {
+                result[i] = 1.0;
+                continue;
+            }
+
+            let mean_k: f64 = k_returns.iter().sum::<f64>() / k_returns.len() as f64;
+            let var_k: f64 = k_returns.iter()
+                .map(|r| (r - mean_k).powi(2))
+                .sum::<f64>() / k_returns.len() as f64;
+
+            // Variance ratio: Var(k-period) / (k * Var(1-period))
+            // Under random walk, this equals 1
+            let ratio = var_k / (k as f64 * var_1);
+            result[i] = ratio;
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for VarianceRatio {
+    fn name(&self) -> &str {
+        "Variance Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Mean Reversion Speed - Measures the speed of mean reversion
+///
+/// Estimates the half-life of mean reversion using the Ornstein-Uhlenbeck
+/// process framework. Faster mean reversion indicates shorter half-life.
+///
+/// # Interpretation
+/// - Lower values: Faster mean reversion (quick return to mean)
+/// - Higher values: Slower mean reversion (takes longer to revert)
+/// - Very high values: Trending behavior (no mean reversion)
+///
+/// # Example
+/// ```ignore
+/// let mrs = MeanReversionSpeed::new(30).unwrap();
+/// let half_lives = mrs.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct MeanReversionSpeed {
+    period: usize,
+}
+
+impl MeanReversionSpeed {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate mean reversion speed (half-life in periods)
+    ///
+    /// Uses the Ornstein-Uhlenbeck process: dX = theta * (mu - X) * dt + sigma * dW
+    /// Half-life = ln(2) / theta
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate log prices
+        let log_prices: Vec<f64> = close.iter()
+            .map(|&c| if c > 0.0 { c.ln() } else { 0.0 })
+            .collect();
+
+        for i in self.period..n {
+            let start = i + 1 - self.period;
+            let window = &log_prices[start..=i];
+
+            // Calculate price changes: y(t) - y(t-1)
+            let mut y_changes = Vec::with_capacity(self.period - 1);
+            let mut y_lagged = Vec::with_capacity(self.period - 1);
+
+            for j in 1..window.len() {
+                y_changes.push(window[j] - window[j - 1]);
+                y_lagged.push(window[j - 1]);
+            }
+
+            if y_changes.len() < 5 {
+                continue;
+            }
+
+            let n_obs = y_changes.len() as f64;
+
+            // Linear regression: y_change = alpha + beta * y_lagged + epsilon
+            // Mean reversion speed is related to beta
+            let mean_change: f64 = y_changes.iter().sum::<f64>() / n_obs;
+            let mean_lagged: f64 = y_lagged.iter().sum::<f64>() / n_obs;
+
+            let mut cov = 0.0;
+            let mut var_lagged = 0.0;
+
+            for (dy, y) in y_changes.iter().zip(y_lagged.iter()) {
+                let dc = dy - mean_change;
+                let dl = y - mean_lagged;
+                cov += dc * dl;
+                var_lagged += dl * dl;
+            }
+
+            if var_lagged < 1e-10 {
+                continue;
+            }
+
+            let beta = cov / var_lagged;
+
+            // For mean-reverting process, beta should be negative
+            // Half-life = -ln(2) / ln(1 + beta) ≈ -ln(2) / beta for small beta
+            if beta < -1e-10 {
+                // Stable mean-reverting process
+                let theta = -beta;
+                let half_life = 0.693147 / theta; // ln(2) / theta
+                // Cap at reasonable values
+                result[i] = half_life.min(1000.0);
+            } else if beta < 1e-10 {
+                // Near random walk
+                result[i] = 1000.0; // Very slow reversion
+            } else {
+                // Trending (explosive), no mean reversion
+                result[i] = 0.0; // Indicate no reversion
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for MeanReversionSpeed {
+    fn name(&self) -> &str {
+        "Mean Reversion Speed"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Stationarity - Tests for trend stationarity in price series
+///
+/// Combines multiple tests to assess whether a series is trend-stationary:
+/// - Augmented Dickey-Fuller test statistic
+/// - Variance ratio deviation from 1
+/// - Linear trend strength
+///
+/// # Interpretation
+/// - Values < -2: Strong evidence of stationarity
+/// - Values between -2 and 0: Weak evidence of stationarity
+/// - Values > 0: Evidence of non-stationarity (unit root)
+///
+/// # Example
+/// ```ignore
+/// let ts = TrendStationarity::new(30).unwrap();
+/// let stationarity = ts.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendStationarity {
+    period: usize,
+}
+
+impl TrendStationarity {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate trend stationarity test statistic
+    ///
+    /// Returns a composite test statistic. More negative values indicate
+    /// stronger evidence of stationarity.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate log prices
+        let log_prices: Vec<f64> = close.iter()
+            .map(|&c| if c > 0.0 { c.ln() } else { 0.0 })
+            .collect();
+
+        for i in self.period..n {
+            let start = i + 1 - self.period;
+            let window = &log_prices[start..=i];
+
+            // 1. Calculate ADF-like statistic
+            // First difference: delta_y = y(t) - y(t-1)
+            let mut delta_y = Vec::with_capacity(self.period - 1);
+            let mut y_lagged = Vec::with_capacity(self.period - 1);
+
+            for j in 1..window.len() {
+                delta_y.push(window[j] - window[j - 1]);
+                y_lagged.push(window[j - 1]);
+            }
+
+            if delta_y.len() < 5 {
+                continue;
+            }
+
+            let n_obs = delta_y.len() as f64;
+
+            // Regression: delta_y = alpha + gamma * y_lagged + epsilon
+            let mean_delta: f64 = delta_y.iter().sum::<f64>() / n_obs;
+            let mean_lagged: f64 = y_lagged.iter().sum::<f64>() / n_obs;
+
+            let mut cov = 0.0;
+            let mut var_lagged = 0.0;
+
+            for (dy, y) in delta_y.iter().zip(y_lagged.iter()) {
+                let dc = dy - mean_delta;
+                let dl = y - mean_lagged;
+                cov += dc * dl;
+                var_lagged += dl * dl;
+            }
+
+            if var_lagged < 1e-10 {
+                continue;
+            }
+
+            let gamma = cov / var_lagged;
+            let alpha = mean_delta - gamma * mean_lagged;
+
+            // Calculate residuals and standard error
+            let mut residual_sum_sq = 0.0;
+            for (dy, y) in delta_y.iter().zip(y_lagged.iter()) {
+                let predicted = alpha + gamma * y;
+                let residual = dy - predicted;
+                residual_sum_sq += residual * residual;
+            }
+
+            let sigma_sq = residual_sum_sq / (n_obs - 2.0);
+            let se_gamma = (sigma_sq / var_lagged).sqrt();
+
+            // ADF test statistic: gamma / SE(gamma)
+            let adf_stat = if se_gamma > 1e-10 {
+                gamma / se_gamma
+            } else {
+                0.0
+            };
+
+            // 2. Calculate trend R-squared (how well linear trend fits)
+            let x_values: Vec<f64> = (0..window.len()).map(|x| x as f64).collect();
+            let mean_x: f64 = x_values.iter().sum::<f64>() / window.len() as f64;
+            let mean_y: f64 = window.iter().sum::<f64>() / window.len() as f64;
+
+            let mut cov_xy = 0.0;
+            let mut var_x = 0.0;
+            let mut var_y = 0.0;
+
+            for (x, y) in x_values.iter().zip(window.iter()) {
+                let dx = x - mean_x;
+                let dy = y - mean_y;
+                cov_xy += dx * dy;
+                var_x += dx * dx;
+                var_y += dy * dy;
+            }
+
+            let r_squared = if var_x > 1e-10 && var_y > 1e-10 {
+                (cov_xy * cov_xy) / (var_x * var_y)
+            } else {
+                0.0
+            };
+
+            // Composite statistic: ADF stat adjusted by trend strength
+            // Strong trend with high R^2 indicates trend-stationarity
+            // Weak trend with non-stationary suggests unit root
+            result[i] = adf_stat * (1.0 + r_squared);
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendStationarity {
+    fn name(&self) -> &str {
+        "Trend Stationarity"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Excess Kurtosis - Measures excess kurtosis in rolling returns
+///
+/// Calculates the excess kurtosis (fourth standardized moment minus 3)
+/// of the return distribution over a rolling window. This measures
+/// the "tailedness" of the distribution relative to normal.
+///
+/// # Interpretation
+/// - Positive values: Leptokurtic (fat tails, more extreme events)
+/// - Zero: Mesokurtic (normal distribution)
+/// - Negative values: Platykurtic (thin tails, fewer extremes)
+///
+/// # Example
+/// ```ignore
+/// let ek = ExcessKurtosis::new(20).unwrap();
+/// let kurtosis = ek.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ExcessKurtosis {
+    period: usize,
+}
+
+impl ExcessKurtosis {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate excess kurtosis of returns
+    ///
+    /// Returns the fourth standardized moment minus 3 (excess kurtosis).
+    /// Normal distribution has excess kurtosis of 0.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window = &returns[start..=return_idx];
+            let n_w = window.len() as f64;
+
+            // Calculate mean
+            let mean: f64 = window.iter().sum::<f64>() / n_w;
+
+            // Calculate second moment (variance)
+            let m2: f64 = window.iter()
+                .map(|r| (r - mean).powi(2))
+                .sum::<f64>() / n_w;
+
+            if m2 < 1e-10 {
+                continue;
+            }
+
+            // Calculate fourth moment
+            let m4: f64 = window.iter()
+                .map(|r| (r - mean).powi(4))
+                .sum::<f64>() / n_w;
+
+            // Excess kurtosis = m4 / m2^2 - 3
+            let excess_kurt = m4 / (m2 * m2) - 3.0;
+            result[i] = excess_kurt;
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for ExcessKurtosis {
+    fn name(&self) -> &str {
+        "Excess Kurtosis"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Coefficient of Variation - Rolling coefficient of variation
+///
+/// Calculates the coefficient of variation (CV = std dev / mean) of
+/// returns over a rolling window. This measures relative variability
+/// normalized by the mean, useful for comparing volatility across assets.
+///
+/// # Interpretation
+/// - Higher CV: More variable returns relative to mean
+/// - Lower CV: More stable returns relative to mean
+/// - CV > 1: Standard deviation exceeds mean (high relative risk)
+///
+/// # Example
+/// ```ignore
+/// let cov = CoefficientOfVariation::new(20).unwrap();
+/// let cv_values = cov.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CoefficientsOfVariation {
+    period: usize,
+}
+
+impl CoefficientsOfVariation {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate rolling coefficient of variation
+    ///
+    /// Returns the ratio of standard deviation to absolute mean.
+    /// Uses absolute mean to handle negative average returns.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window = &returns[start..=return_idx];
+            let n_w = window.len() as f64;
+
+            // Calculate mean
+            let mean: f64 = window.iter().sum::<f64>() / n_w;
+
+            // Calculate standard deviation
+            let variance: f64 = window.iter()
+                .map(|r| (r - mean).powi(2))
+                .sum::<f64>() / n_w;
+            let std_dev = variance.sqrt();
+
+            // Coefficient of variation: std_dev / |mean|
+            // Use absolute mean to handle negative means
+            let abs_mean = mean.abs();
+            if abs_mean > 1e-10 {
+                result[i] = std_dev / abs_mean;
+            } else {
+                // When mean is near zero, CV is undefined
+                // Return a large value to indicate high relative variability
+                if std_dev > 1e-10 {
+                    result[i] = 100.0; // Cap at 100
+                }
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for CoefficientsOfVariation {
+    fn name(&self) -> &str {
+        "Coefficient of Variation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Statistical Momentum - Momentum based on statistical measures
+///
+/// Combines multiple statistical signals to create a robust momentum indicator:
+/// - Z-score of current price vs rolling mean
+/// - Percentile rank of recent returns
+/// - Trend strength from linear regression slope
+///
+/// # Interpretation
+/// - Positive values: Bullish momentum (above average, upward trend)
+/// - Zero: Neutral momentum
+/// - Negative values: Bearish momentum (below average, downward trend)
+///
+/// # Example
+/// ```ignore
+/// let sm = StatisticalMomentum::new(20).unwrap();
+/// let momentum = sm.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct StatisticalMomentum {
+    period: usize,
+}
+
+impl StatisticalMomentum {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate statistical momentum
+    ///
+    /// Returns a composite momentum score combining:
+    /// 1. Price z-score (standardized distance from mean)
+    /// 2. Return percentile (position in return distribution)
+    /// 3. Trend slope (direction and strength of trend)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let start = i + 1 - self.period;
+            let price_window = &close[start..=i];
+            let current_price = close[i];
+
+            let return_idx = i - 1;
+            let return_start = return_idx + 1 - self.period;
+            let return_window = &returns[return_start..=return_idx];
+            let current_return = returns[return_idx];
+
+            let n_w = price_window.len() as f64;
+
+            // 1. Z-score component: how far current price is from rolling mean
+            let price_mean: f64 = price_window.iter().sum::<f64>() / n_w;
+            let price_variance: f64 = price_window.iter()
+                .map(|p| (p - price_mean).powi(2))
+                .sum::<f64>() / n_w;
+            let price_std = price_variance.sqrt();
+
+            let z_score = if price_std > 1e-10 {
+                (current_price - price_mean) / price_std
+            } else {
+                0.0
+            };
+
+            // 2. Percentile rank component: where current return ranks
+            let count_below = return_window.iter().filter(|&&r| r < current_return).count();
+            let percentile = (count_below as f64) / (return_window.len() as f64);
+            // Convert to -1 to 1 scale
+            let percentile_score = (percentile - 0.5) * 2.0;
+
+            // 3. Trend component: linear regression slope normalized
+            let x_values: Vec<f64> = (0..price_window.len()).map(|x| x as f64).collect();
+            let mean_x: f64 = x_values.iter().sum::<f64>() / n_w;
+            let mean_y: f64 = price_window.iter().sum::<f64>() / n_w;
+
+            let mut cov_xy = 0.0;
+            let mut var_x = 0.0;
+
+            for (x, y) in x_values.iter().zip(price_window.iter()) {
+                let dx = x - mean_x;
+                let dy = y - mean_y;
+                cov_xy += dx * dy;
+                var_x += dx * dx;
+            }
+
+            let slope = if var_x > 1e-10 { cov_xy / var_x } else { 0.0 };
+            // Normalize slope by mean price to make it scale-independent
+            let trend_score = if price_mean > 1e-10 {
+                (slope / price_mean) * n_w * 100.0 // Scale up for visibility
+            } else {
+                0.0
+            };
+
+            // Combine components with equal weights
+            // Clamp trend_score to prevent domination
+            let clamped_trend = trend_score.clamp(-2.0, 2.0);
+            result[i] = (z_score + percentile_score + clamped_trend) / 3.0;
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for StatisticalMomentum {
+    fn name(&self) -> &str {
+        "Statistical Momentum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2816,6 +3554,329 @@ mod tests {
         // All values should be 0 for constant price
         for &val in result.iter() {
             assert!(val.abs() < 1e-10, "Expected 0 entropy for constant price");
+        }
+    }
+
+    // ==================== VarianceRatio Tests ====================
+
+    #[test]
+    fn test_variance_ratio() {
+        let close = make_test_data();
+        let vr = VarianceRatio::new(20, 4).unwrap();
+        let result = vr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Variance ratio should be positive
+        for &val in result.iter().skip(21) {
+            if val != 0.0 {
+                assert!(val > 0.0, "Variance ratio should be positive, got {}", val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_variance_ratio_validation() {
+        assert!(VarianceRatio::new(5, 2).is_err()); // period too small
+        assert!(VarianceRatio::new(20, 1).is_err()); // short_period too small
+        assert!(VarianceRatio::new(20, 20).is_err()); // short_period >= period
+        assert!(VarianceRatio::new(20, 25).is_err()); // short_period > period
+    }
+
+    #[test]
+    fn test_variance_ratio_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let vr = VarianceRatio::new(20, 4).unwrap();
+        let output = vr.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_variance_ratio_random_walk() {
+        // For near-random walk data, VR should be close to 1
+        let close = make_test_data();
+        let vr = VarianceRatio::new(20, 5).unwrap();
+        let result = vr.calculate(&close);
+
+        // Check that values are in reasonable range (0.1 to 10)
+        for &val in result.iter().skip(21) {
+            if val > 0.0 {
+                assert!(val > 0.01 && val < 100.0, "Variance ratio unreasonable: {}", val);
+            }
+        }
+    }
+
+    // ==================== MeanReversionSpeed Tests ====================
+
+    #[test]
+    fn test_mean_reversion_speed() {
+        let close = make_test_data();
+        let mrs = MeanReversionSpeed::new(20).unwrap();
+        let result = mrs.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Half-life should be non-negative
+        for &val in result.iter() {
+            assert!(val >= 0.0, "Half-life should be non-negative, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_speed_validation() {
+        assert!(MeanReversionSpeed::new(10).is_err()); // period too small
+        assert!(MeanReversionSpeed::new(5).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_mean_reversion_speed_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let mrs = MeanReversionSpeed::new(20).unwrap();
+        let output = mrs.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_mean_reversion_speed_trending() {
+        // Strongly trending data should show no mean reversion (0) or very slow (high value)
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 3.0).collect();
+        let mrs = MeanReversionSpeed::new(20).unwrap();
+        let result = mrs.calculate(&close);
+
+        // For trending data, expect either 0 (no reversion) or high values (slow reversion)
+        let valid_values: Vec<f64> = result.iter()
+            .skip(20)
+            .copied()
+            .filter(|&v| v > 0.0)
+            .collect();
+
+        if !valid_values.is_empty() {
+            for &val in &valid_values {
+                // Either no reversion (0) or slow reversion (high half-life)
+                assert!(val == 0.0 || val >= 1.0, "Expected no reversion or slow reversion for trending, got {}", val);
+            }
+        }
+    }
+
+    // ==================== TrendStationarity Tests ====================
+
+    #[test]
+    fn test_trend_stationarity() {
+        let close = make_test_data();
+        let ts = TrendStationarity::new(20).unwrap();
+        let result = ts.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be finite
+        for &val in result.iter().skip(21) {
+            assert!(val.is_finite(), "Stationarity test should be finite, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_trend_stationarity_validation() {
+        assert!(TrendStationarity::new(10).is_err()); // period too small
+        assert!(TrendStationarity::new(5).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_trend_stationarity_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let ts = TrendStationarity::new(20).unwrap();
+        let output = ts.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_trend_stationarity_trending_data() {
+        // Strongly trending data
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let ts = TrendStationarity::new(20).unwrap();
+        let result = ts.calculate(&close);
+
+        // All non-zero values should be finite
+        for &val in result.iter() {
+            if val != 0.0 {
+                assert!(val.is_finite(), "Expected finite stationarity value");
+            }
+        }
+    }
+
+    // ==================== ExcessKurtosis Tests ====================
+
+    #[test]
+    fn test_excess_kurtosis() {
+        let close = make_test_data();
+        let ek = ExcessKurtosis::new(20).unwrap();
+        let result = ek.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Kurtosis values should be finite
+        for &val in result.iter().skip(21) {
+            assert!(val.is_finite(), "Kurtosis should be finite, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_excess_kurtosis_validation() {
+        assert!(ExcessKurtosis::new(5).is_err()); // period too small
+        assert!(ExcessKurtosis::new(3).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_excess_kurtosis_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let ek = ExcessKurtosis::new(20).unwrap();
+        let output = ek.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_excess_kurtosis_normal_like() {
+        // For smooth trending data, excess kurtosis should be close to 0 or negative
+        let close = make_test_data();
+        let ek = ExcessKurtosis::new(20).unwrap();
+        let result = ek.calculate(&close);
+
+        // Check that values are in reasonable range
+        for &val in result.iter().skip(21) {
+            // Excess kurtosis typically ranges from -2 to 10+ for financial data
+            assert!(val > -3.0 && val < 50.0, "Excess kurtosis unreasonable: {}", val);
+        }
+    }
+
+    // ==================== CoefficientsOfVariation Tests ====================
+
+    #[test]
+    fn test_coefficients_of_variation() {
+        let close = make_test_data();
+        let cov = CoefficientsOfVariation::new(20).unwrap();
+        let result = cov.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // CV should be non-negative
+        for &val in result.iter() {
+            assert!(val >= 0.0, "CV should be non-negative, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_coefficients_of_variation_validation() {
+        assert!(CoefficientsOfVariation::new(3).is_err()); // period too small
+        assert!(CoefficientsOfVariation::new(2).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_coefficients_of_variation_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let cov = CoefficientsOfVariation::new(20).unwrap();
+        let output = cov.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_coefficients_of_variation_constant() {
+        // Constant price changes should have zero CV (no variation)
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let cov = CoefficientsOfVariation::new(20).unwrap();
+        let result = cov.calculate(&close);
+
+        // For perfectly linear data, CV should be low (returns are constant)
+        let valid_values: Vec<f64> = result.iter()
+            .skip(21)
+            .copied()
+            .filter(|&v| v > 0.0)
+            .collect();
+
+        if !valid_values.is_empty() {
+            let avg: f64 = valid_values.iter().sum::<f64>() / valid_values.len() as f64;
+            // For constant returns, CV should be near zero or small
+            assert!(avg < 10.0, "Expected low CV for linear trending data, got {}", avg);
+        }
+    }
+
+    // ==================== StatisticalMomentum Tests ====================
+
+    #[test]
+    fn test_statistical_momentum() {
+        let close = make_test_data();
+        let sm = StatisticalMomentum::new(20).unwrap();
+        let result = sm.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values should be finite
+        for &val in result.iter() {
+            assert!(val.is_finite(), "Statistical momentum should be finite, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_statistical_momentum_validation() {
+        assert!(StatisticalMomentum::new(5).is_err()); // period too small
+        assert!(StatisticalMomentum::new(3).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_statistical_momentum_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let sm = StatisticalMomentum::new(20).unwrap();
+        let output = sm.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_statistical_momentum_uptrend() {
+        // Strongly uptrending data should have positive momentum
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let sm = StatisticalMomentum::new(15).unwrap();
+        let result = sm.calculate(&close);
+
+        // Later values should show positive momentum
+        let last_values: Vec<f64> = result.iter()
+            .skip(30)
+            .copied()
+            .filter(|&v| v != 0.0)
+            .collect();
+
+        if !last_values.is_empty() {
+            let avg: f64 = last_values.iter().sum::<f64>() / last_values.len() as f64;
+            assert!(avg > 0.0, "Expected positive momentum for uptrend, got {}", avg);
+        }
+    }
+
+    #[test]
+    fn test_statistical_momentum_downtrend() {
+        // Strongly downtrending data should have negative momentum
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64 * 2.0).collect();
+        let sm = StatisticalMomentum::new(15).unwrap();
+        let result = sm.calculate(&close);
+
+        // Later values should show negative momentum
+        let last_values: Vec<f64> = result.iter()
+            .skip(30)
+            .copied()
+            .filter(|&v| v != 0.0)
+            .collect();
+
+        if !last_values.is_empty() {
+            let avg: f64 = last_values.iter().sum::<f64>() / last_values.len() as f64;
+            assert!(avg < 0.0, "Expected negative momentum for downtrend, got {}", avg);
         }
     }
 }

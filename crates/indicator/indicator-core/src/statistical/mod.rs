@@ -74,4 +74,6 @@ pub use advanced::{
     RankCorrelation, TailDependence, TailDependenceOutput, CopulaCorrelation,
     ZScoreExtreme, PercentileRank, StatisticalRegime, StatisticalRegimeOutput,
     AutocorrelationIndex, HurstExponentMA, EntropyMeasure,
+    VarianceRatio, MeanReversionSpeed, TrendStationarity,
+    ExcessKurtosis, CoefficientsOfVariation, StatisticalMomentum,
 };

@@ -2402,6 +2402,840 @@ impl TechnicalIndicator for VolumePressureIndex {
     }
 }
 
+/// Volume Strength Index - Composite volume strength measure
+///
+/// Combines multiple volume metrics to create a comprehensive strength indicator.
+/// The index considers relative volume, volume momentum, and volume-price correlation
+/// to produce a single strength score ranging from 0 to 100.
+#[derive(Debug, Clone)]
+pub struct VolumeStrengthIndex {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeStrengthIndex {
+    /// Create a new VolumeStrengthIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for calculations (minimum 5)
+    /// * `smoothing` - EMA smoothing period for the final output (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate volume strength index
+    ///
+    /// Returns (strength_index, strength_signal):
+    /// - strength_index: Composite strength score (0-100)
+    /// - strength_signal: +1 for strong volume, -1 for weak volume, 0 for neutral
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut strength_index = vec![50.0; n];
+        let mut strength_signal = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (strength_index, strength_signal);
+        }
+
+        // Calculate raw strength components
+        let mut raw_strength = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+            let window_vol = &volume[start..i];
+            let window_close = &close[start..i];
+
+            // Component 1: Relative Volume (0-33 points)
+            let avg_volume: f64 = window_vol.iter().sum::<f64>() / self.period as f64;
+            let relative_vol = if avg_volume > 1e-10 {
+                (volume[i] / avg_volume).min(3.0) / 3.0 * 33.0
+            } else {
+                16.5
+            };
+
+            // Component 2: Volume Momentum (0-33 points)
+            // Compare recent average to older average
+            let half = self.period / 2;
+            let recent_avg: f64 = window_vol[half..].iter().sum::<f64>() / (self.period - half) as f64;
+            let older_avg: f64 = window_vol[..half].iter().sum::<f64>() / half as f64;
+            let vol_momentum = if older_avg > 1e-10 {
+                let ratio = recent_avg / older_avg;
+                ((ratio - 0.5) / 1.5).clamp(0.0, 1.0) * 33.0
+            } else {
+                16.5
+            };
+
+            // Component 3: Volume-Price Correlation (0-34 points)
+            // Calculate correlation between volume and absolute price changes
+            let mut price_changes = Vec::with_capacity(self.period - 1);
+            for j in 1..self.period {
+                price_changes.push((window_close[j] - window_close[j - 1]).abs());
+            }
+            let vol_changes: Vec<f64> = window_vol[1..].to_vec();
+
+            // Calculate correlation
+            let mean_price: f64 = price_changes.iter().sum::<f64>() / price_changes.len() as f64;
+            let mean_vol: f64 = vol_changes.iter().sum::<f64>() / vol_changes.len() as f64;
+
+            let mut cov = 0.0;
+            let mut var_price = 0.0;
+            let mut var_vol = 0.0;
+
+            for j in 0..price_changes.len() {
+                let dp = price_changes[j] - mean_price;
+                let dv = vol_changes[j] - mean_vol;
+                cov += dp * dv;
+                var_price += dp * dp;
+                var_vol += dv * dv;
+            }
+
+            let correlation = if var_price > 1e-10 && var_vol > 1e-10 {
+                cov / (var_price.sqrt() * var_vol.sqrt())
+            } else {
+                0.0
+            };
+
+            // Convert correlation (-1 to 1) to points (0 to 34)
+            let vol_price_score = ((correlation + 1.0) / 2.0) * 34.0;
+
+            // Combine components
+            raw_strength[i] = relative_vol + vol_momentum + vol_price_score;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                strength_index[i] = raw_strength[i];
+            } else {
+                strength_index[i] = alpha * raw_strength[i] + (1.0 - alpha) * strength_index[i - 1];
+            }
+
+            // Clamp to 0-100
+            strength_index[i] = strength_index[i].clamp(0.0, 100.0);
+
+            // Determine signal
+            if strength_index[i] > 65.0 {
+                strength_signal[i] = 1.0; // Strong volume
+            } else if strength_index[i] < 35.0 {
+                strength_signal[i] = -1.0; // Weak volume
+            }
+        }
+
+        (strength_index, strength_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeStrengthIndex {
+    fn name(&self) -> &str {
+        "Volume Strength Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (strength_index, strength_signal) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::dual(strength_index, strength_signal))
+    }
+}
+
+/// Normalized Volume - Volume normalized by its moving average
+///
+/// Expresses current volume as a ratio of its moving average, making it easier
+/// to compare volume levels across different time periods and securities.
+/// A value of 1.0 indicates average volume, >1 is above average, <1 is below.
+#[derive(Debug, Clone)]
+pub struct NormalizedVolume {
+    period: usize,
+    use_ema: bool,
+}
+
+impl NormalizedVolume {
+    /// Create a new NormalizedVolume indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for the moving average (minimum 2)
+    /// * `use_ema` - If true, use EMA for normalization; if false, use SMA
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, use_ema: bool) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, use_ema })
+    }
+
+    /// Create with SMA normalization (default)
+    pub fn with_sma(period: usize) -> Result<Self> {
+        Self::new(period, false)
+    }
+
+    /// Create with EMA normalization
+    pub fn with_ema(period: usize) -> Result<Self> {
+        Self::new(period, true)
+    }
+
+    /// Calculate normalized volume
+    ///
+    /// Returns (normalized_volume, volume_state):
+    /// - normalized_volume: Volume as ratio of moving average
+    /// - volume_state: +1 for high volume (>1.5x), -1 for low volume (<0.5x), 0 for normal
+    pub fn calculate(&self, volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = volume.len();
+        let mut normalized = vec![1.0; n];
+        let mut state = vec![0.0; n];
+
+        if n < self.period {
+            return (normalized, state);
+        }
+
+        if self.use_ema {
+            // Calculate EMA
+            let alpha = 2.0 / (self.period as f64 + 1.0);
+            let mut ema = vec![0.0; n];
+            ema[0] = volume[0];
+
+            for i in 1..n {
+                ema[i] = alpha * volume[i] + (1.0 - alpha) * ema[i - 1];
+            }
+
+            // Calculate normalized volume
+            for i in self.period..n {
+                if ema[i - 1] > 1e-10 {
+                    normalized[i] = volume[i] / ema[i - 1];
+                }
+
+                // Determine state
+                if normalized[i] > 1.5 {
+                    state[i] = 1.0; // High volume
+                } else if normalized[i] < 0.5 {
+                    state[i] = -1.0; // Low volume
+                }
+            }
+        } else {
+            // Calculate SMA
+            for i in self.period..n {
+                let start = i - self.period;
+                let sma: f64 = volume[start..i].iter().sum::<f64>() / self.period as f64;
+
+                if sma > 1e-10 {
+                    normalized[i] = volume[i] / sma;
+                }
+
+                // Determine state
+                if normalized[i] > 1.5 {
+                    state[i] = 1.0; // High volume
+                } else if normalized[i] < 0.5 {
+                    state[i] = -1.0; // Low volume
+                }
+            }
+        }
+
+        (normalized, state)
+    }
+}
+
+impl TechnicalIndicator for NormalizedVolume {
+    fn name(&self) -> &str {
+        "Normalized Volume"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.volume.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.volume.len(),
+            });
+        }
+        let (normalized, state) = self.calculate(&data.volume);
+        Ok(IndicatorOutput::dual(normalized, state))
+    }
+}
+
+/// Volume Surge - Detects sudden volume surges
+///
+/// Identifies rapid increases in volume that may indicate significant market events,
+/// breakouts, or institutional activity. Uses rate of change and statistical
+/// thresholds to detect meaningful surges while filtering noise.
+#[derive(Debug, Clone)]
+pub struct VolumeSurge {
+    period: usize,
+    surge_threshold: f64,
+    lookback: usize,
+}
+
+impl VolumeSurge {
+    /// Create a new VolumeSurge indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for baseline calculation (minimum 5)
+    /// * `surge_threshold` - Multiple of average required to signal surge (minimum 1.5)
+    /// * `lookback` - Number of bars to compare for surge detection (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, surge_threshold: f64, lookback: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if surge_threshold < 1.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "surge_threshold".to_string(),
+                reason: "must be at least 1.5".to_string(),
+            });
+        }
+        if lookback < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, surge_threshold, lookback })
+    }
+
+    /// Create with default threshold (2.0) and lookback (3)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 2.0, 3)
+    }
+
+    /// Calculate volume surge detection
+    ///
+    /// Returns (surge_magnitude, surge_signal, consecutive_surges):
+    /// - surge_magnitude: How many times average the current volume is
+    /// - surge_signal: 1.0 if surge detected, 0.0 otherwise
+    /// - consecutive_surges: Count of consecutive surge bars
+    pub fn calculate(&self, volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = volume.len();
+        let mut magnitude = vec![1.0; n];
+        let mut signal = vec![0.0; n];
+        let mut consecutive = vec![0.0; n];
+
+        if n < self.period + self.lookback {
+            return (magnitude, signal, consecutive);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+            let window = &volume[start..i];
+
+            // Calculate baseline (average volume)
+            let avg_volume: f64 = window.iter().sum::<f64>() / self.period as f64;
+
+            if avg_volume > 1e-10 {
+                magnitude[i] = volume[i] / avg_volume;
+
+                // Check for surge
+                if magnitude[i] >= self.surge_threshold {
+                    signal[i] = 1.0;
+
+                    // Count consecutive surges
+                    if i > 0 && signal[i - 1] == 1.0 {
+                        consecutive[i] = consecutive[i - 1] + 1.0;
+                    } else {
+                        consecutive[i] = 1.0;
+                    }
+                }
+
+                // Additional check: rapid increase over lookback period
+                if self.lookback > 0 && i >= self.lookback {
+                    let lookback_avg: f64 = volume[i - self.lookback..i].iter().sum::<f64>() / self.lookback as f64;
+                    if lookback_avg > 1e-10 && volume[i] / lookback_avg >= self.surge_threshold {
+                        signal[i] = 1.0;
+                        if i > 0 && signal[i - 1] == 1.0 && consecutive[i] == 0.0 {
+                            consecutive[i] = consecutive[i - 1] + 1.0;
+                        } else if consecutive[i] == 0.0 {
+                            consecutive[i] = 1.0;
+                        }
+                    }
+                }
+            }
+        }
+
+        (magnitude, signal, consecutive)
+    }
+}
+
+impl TechnicalIndicator for VolumeSurge {
+    fn name(&self) -> &str {
+        "Volume Surge"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.lookback
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.volume.len() < self.period + self.lookback {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + self.lookback,
+                got: data.volume.len(),
+            });
+        }
+        let (magnitude, signal, consecutive) = self.calculate(&data.volume);
+        Ok(IndicatorOutput::triple(magnitude, signal, consecutive))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // magnitude, signal, consecutive
+    }
+}
+
+/// Volume Divergence Index - Measures divergence between volume and price
+///
+/// Calculates the divergence between price movement direction and volume trends.
+/// Positive divergence (price down, volume down) may indicate selling exhaustion.
+/// Negative divergence (price up, volume down) may indicate buying exhaustion.
+#[derive(Debug, Clone)]
+pub struct VolumeDivergenceIndex {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeDivergenceIndex {
+    /// Create a new VolumeDivergenceIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for divergence calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate volume divergence index
+    ///
+    /// Returns (divergence_index, divergence_type):
+    /// - divergence_index: Strength of divergence (-100 to 100)
+    /// - divergence_type: +1 for bullish divergence, -1 for bearish divergence, 0 for confirmation
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut divergence_index = vec![0.0; n];
+        let mut divergence_type = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (divergence_index, divergence_type);
+        }
+
+        let mut raw_divergence = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Calculate price change over period (normalized)
+            let price_start = close[start];
+            let price_end = close[i];
+            let avg_price = (price_start + price_end) / 2.0;
+
+            let price_change = if avg_price > 1e-10 {
+                (price_end - price_start) / avg_price * 100.0
+            } else {
+                0.0
+            };
+
+            // Calculate volume change over period (normalized)
+            let vol_start: f64 = volume[start..start + self.period / 2].iter().sum::<f64>() / (self.period / 2) as f64;
+            let vol_end: f64 = volume[i - self.period / 2..=i].iter().sum::<f64>() / (self.period / 2 + 1) as f64;
+            let avg_vol = (vol_start + vol_end) / 2.0;
+
+            let volume_change = if avg_vol > 1e-10 {
+                (vol_end - vol_start) / avg_vol * 100.0
+            } else {
+                0.0
+            };
+
+            // Calculate divergence
+            // Positive price change with negative volume change = bearish divergence
+            // Negative price change with negative volume change = bullish divergence
+            // Same sign = confirmation (no divergence)
+
+            let price_up = price_change > 1.0;
+            let price_down = price_change < -1.0;
+            let vol_up = volume_change > 5.0;
+            let vol_down = volume_change < -5.0;
+
+            if price_up && vol_down {
+                // Bearish divergence: price rising on declining volume
+                raw_divergence[i] = -((price_change.abs() + volume_change.abs()) / 2.0);
+                raw_divergence[i] = raw_divergence[i].clamp(-100.0, 0.0);
+            } else if price_down && vol_down {
+                // Bullish divergence: price falling on declining volume
+                raw_divergence[i] = (price_change.abs() + volume_change.abs()) / 2.0;
+                raw_divergence[i] = raw_divergence[i].clamp(0.0, 100.0);
+            } else if (price_up && vol_up) || (price_down && vol_up) {
+                // Confirmation: price move supported by volume
+                raw_divergence[i] = 0.0;
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                divergence_index[i] = raw_divergence[i];
+            } else {
+                divergence_index[i] = alpha * raw_divergence[i] + (1.0 - alpha) * divergence_index[i - 1];
+            }
+
+            // Clamp to -100 to 100
+            divergence_index[i] = divergence_index[i].clamp(-100.0, 100.0);
+
+            // Determine divergence type
+            if divergence_index[i] > 10.0 {
+                divergence_type[i] = 1.0; // Bullish divergence
+            } else if divergence_index[i] < -10.0 {
+                divergence_type[i] = -1.0; // Bearish divergence
+            }
+        }
+
+        (divergence_index, divergence_type)
+    }
+}
+
+impl TechnicalIndicator for VolumeDivergenceIndex {
+    fn name(&self) -> &str {
+        "Volume Divergence Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (divergence_index, divergence_type) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::dual(divergence_index, divergence_type))
+    }
+}
+
+/// Institutional Flow Indicator - Estimates institutional vs retail volume
+///
+/// Analyzes volume patterns to estimate the proportion of institutional (smart money)
+/// versus retail trading activity. Uses price efficiency and volume clustering
+/// as proxies for institutional activity.
+#[derive(Debug, Clone)]
+pub struct InstitutionalFlowIndicator {
+    period: usize,
+    efficiency_threshold: f64,
+}
+
+impl InstitutionalFlowIndicator {
+    /// Create a new InstitutionalFlowIndicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    /// * `efficiency_threshold` - Threshold for efficient price movement (0.0 to 1.0)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, efficiency_threshold: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if efficiency_threshold <= 0.0 || efficiency_threshold >= 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "efficiency_threshold".to_string(),
+                reason: "must be between 0 and 1 (exclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, efficiency_threshold })
+    }
+
+    /// Create with default efficiency threshold (0.5)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 0.5)
+    }
+
+    /// Calculate institutional flow indicator
+    ///
+    /// Returns (institutional_ratio, flow_signal, accumulation_score):
+    /// - institutional_ratio: Estimated ratio of institutional volume (0-100)
+    /// - flow_signal: +1 for institutional buying, -1 for institutional selling, 0 for neutral
+    /// - accumulation_score: Cumulative institutional accumulation/distribution
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut institutional_ratio = vec![50.0; n];
+        let mut flow_signal = vec![0.0; n];
+        let mut accumulation_score = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (institutional_ratio, flow_signal, accumulation_score);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Calculate price efficiency (net move / total path)
+            let net_move = (close[i] - close[start]).abs();
+            let total_path: f64 = (start + 1..=i)
+                .map(|j| (close[j] - close[j - 1]).abs())
+                .sum();
+
+            let efficiency = if total_path > 1e-10 {
+                net_move / total_path
+            } else {
+                0.0
+            };
+
+            // Calculate volume concentration (high volume on efficient moves)
+            let avg_volume: f64 = volume[start..i].iter().sum::<f64>() / self.period as f64;
+
+            // Identify high-volume bars with efficient price movement
+            let mut institutional_volume = 0.0;
+            let mut total_volume = 0.0;
+
+            for j in (start + 1)..=i {
+                let bar_move = (close[j] - close[j - 1]).abs();
+                let bar_range = high[j] - low[j];
+                let bar_efficiency = if bar_range > 1e-10 {
+                    bar_move / bar_range
+                } else {
+                    0.0
+                };
+
+                total_volume += volume[j];
+
+                // High volume with efficient movement suggests institutional activity
+                if volume[j] > avg_volume && bar_efficiency > self.efficiency_threshold {
+                    institutional_volume += volume[j];
+                }
+                // Also: low volume with inefficient movement is retail noise
+                else if volume[j] <= avg_volume && bar_efficiency <= self.efficiency_threshold {
+                    // Don't add to institutional volume
+                }
+                // Mixed cases: partial attribution
+                else if volume[j] > avg_volume {
+                    institutional_volume += volume[j] * 0.5;
+                }
+            }
+
+            // Calculate institutional ratio
+            if total_volume > 1e-10 {
+                institutional_ratio[i] = (institutional_volume / total_volume) * 100.0;
+                institutional_ratio[i] = institutional_ratio[i].clamp(0.0, 100.0);
+            }
+
+            // Determine flow direction
+            let price_direction = if close[i] > close[start] { 1.0 } else if close[i] < close[start] { -1.0 } else { 0.0 };
+
+            if institutional_ratio[i] > 60.0 {
+                flow_signal[i] = price_direction; // Institutional buying or selling
+            }
+
+            // Calculate cumulative accumulation score
+            let close_position = if high[i] - low[i] > 1e-10 {
+                ((close[i] - low[i]) - (high[i] - close[i])) / (high[i] - low[i])
+            } else {
+                0.0
+            };
+
+            let institutional_contribution = close_position * (institutional_ratio[i] / 100.0) * volume[i];
+
+            if i == self.period {
+                accumulation_score[i] = institutional_contribution;
+            } else {
+                accumulation_score[i] = accumulation_score[i - 1] + institutional_contribution;
+            }
+        }
+
+        (institutional_ratio, flow_signal, accumulation_score)
+    }
+}
+
+impl TechnicalIndicator for InstitutionalFlowIndicator {
+    fn name(&self) -> &str {
+        "Institutional Flow Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (ratio, signal, accumulation) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::triple(ratio, signal, accumulation))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // institutional_ratio, flow_signal, accumulation_score
+    }
+}
+
+/// Volume Z-Score - Statistical z-score of volume
+///
+/// Calculates the statistical z-score of current volume relative to a historical
+/// distribution. This standardized measure indicates how many standard deviations
+/// the current volume is from the mean, useful for identifying statistically
+/// significant volume events.
+#[derive(Debug, Clone)]
+pub struct VolumeZScore {
+    period: usize,
+}
+
+impl VolumeZScore {
+    /// Create a new VolumeZScore indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for statistical calculation (minimum 10)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10 for meaningful statistical analysis".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate volume z-score
+    ///
+    /// Returns (z_score, significance_level, extreme_signal):
+    /// - z_score: Standard deviations from mean (can be negative or positive)
+    /// - significance_level: Statistical significance (0-100, where 95+ is significant)
+    /// - extreme_signal: +1 for extremely high volume, -1 for extremely low, 0 for normal
+    pub fn calculate(&self, volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = volume.len();
+        let mut z_score = vec![0.0; n];
+        let mut significance = vec![0.0; n];
+        let mut extreme_signal = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (z_score, significance, extreme_signal);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+            let window = &volume[start..i];
+
+            // Calculate mean
+            let mean: f64 = window.iter().sum::<f64>() / self.period as f64;
+
+            // Calculate standard deviation
+            let variance: f64 = window.iter()
+                .map(|v| (v - mean).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev > 1e-10 {
+                // Calculate z-score
+                z_score[i] = (volume[i] - mean) / std_dev;
+
+                // Calculate significance level using cumulative normal distribution approximation
+                // Using error function approximation for CDF
+                let abs_z = z_score[i].abs();
+                let t = 1.0 / (1.0 + 0.2316419 * abs_z);
+                let d = 0.3989423 * (-abs_z * abs_z / 2.0).exp();
+                let p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+
+                // Two-tailed significance
+                let two_tailed_p = 2.0 * p;
+                significance[i] = (1.0 - two_tailed_p) * 100.0;
+                significance[i] = significance[i].clamp(0.0, 99.9);
+
+                // Determine extreme signal
+                // z > 2 is ~95% significance (high volume)
+                // z < -2 is ~95% significance (low volume)
+                if z_score[i] > 2.0 {
+                    extreme_signal[i] = 1.0; // Extremely high volume
+                } else if z_score[i] < -2.0 {
+                    extreme_signal[i] = -1.0; // Extremely low volume
+                }
+            }
+        }
+
+        (z_score, significance, extreme_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeZScore {
+    fn name(&self) -> &str {
+        "Volume Z-Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.volume.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.volume.len(),
+            });
+        }
+        let (z_score, significance, extreme) = self.calculate(&data.volume);
+        Ok(IndicatorOutput::triple(z_score, significance, extreme))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // z_score, significance_level, extreme_signal
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3597,5 +4431,455 @@ mod tests {
 
         let vpi = VolumePressureIndex::new(10).unwrap();
         assert!(vpi.compute(&short_data).is_err());
+    }
+
+    // =========================================================================
+    // Tests for 6 NEW volume indicators (VolumeStrengthIndex, NormalizedVolume,
+    // VolumeSurge, VolumeDivergenceIndex, InstitutionalFlowIndicator, VolumeZScore)
+    // =========================================================================
+
+    #[test]
+    fn test_volume_strength_index() {
+        let (_, _, close, volume) = make_test_data();
+        let vsi = VolumeStrengthIndex::new(10, 3).unwrap();
+        let (strength_index, strength_signal) = vsi.calculate(&close, &volume);
+
+        assert_eq!(strength_index.len(), close.len());
+        assert_eq!(strength_signal.len(), close.len());
+        // Strength should be between 0 and 100
+        assert!(strength_index.iter().all(|&v| v >= 0.0 && v <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(strength_signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_strength_index_high_strength() {
+        // High volume with strong price correlation
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 1000.0 + i as f64 * 300.0).collect();
+
+        let vsi = VolumeStrengthIndex::new(5, 3).unwrap();
+        let (strength_index, _) = vsi.calculate(&close, &volume);
+
+        // Should show reasonable strength in volume trend (above baseline 33 which is minimum)
+        // The strength index combines relative volume, momentum, and correlation
+        assert!(strength_index[20] > 35.0,
+            "strength_index[20] = {} should be > 35 for increasing volume", strength_index[20]);
+    }
+
+    #[test]
+    fn test_volume_strength_index_validation() {
+        assert!(VolumeStrengthIndex::new(4, 3).is_err());
+        assert!(VolumeStrengthIndex::new(5, 0).is_err());
+        assert!(VolumeStrengthIndex::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_normalized_volume_sma() {
+        let (_, _, _, volume) = make_test_data();
+        let nv = NormalizedVolume::with_sma(10).unwrap();
+        let (normalized, state) = nv.calculate(&volume);
+
+        assert_eq!(normalized.len(), volume.len());
+        assert_eq!(state.len(), volume.len());
+        // Normalized volume should be positive
+        assert!(normalized.iter().skip(10).all(|&v| v > 0.0));
+        // State should be -1, 0, or 1
+        assert!(state.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_normalized_volume_ema() {
+        let (_, _, _, volume) = make_test_data();
+        let nv = NormalizedVolume::with_ema(10).unwrap();
+        let (normalized, _) = nv.calculate(&volume);
+
+        assert_eq!(normalized.len(), volume.len());
+        // Normalized volume should be positive
+        assert!(normalized.iter().skip(10).all(|&v| v > 0.0));
+    }
+
+    #[test]
+    fn test_normalized_volume_spike() {
+        // Normal volume with a spike
+        let mut volume = vec![1000.0; 20];
+        volume[15] = 5000.0; // Spike
+
+        let nv = NormalizedVolume::with_sma(10).unwrap();
+        let (normalized, state) = nv.calculate(&volume);
+
+        // Spike should show high normalized volume (> 1.5)
+        assert!(normalized[15] > 1.5,
+            "normalized[15] = {} should be > 1.5 for spike", normalized[15]);
+        assert_eq!(state[15], 1.0); // High volume state
+    }
+
+    #[test]
+    fn test_normalized_volume_low() {
+        // Normal volume with a dip
+        let mut volume = vec![1000.0; 20];
+        volume[15] = 300.0; // Low volume
+
+        let nv = NormalizedVolume::with_sma(10).unwrap();
+        let (normalized, state) = nv.calculate(&volume);
+
+        // Low should show low normalized volume (< 0.5)
+        assert!(normalized[15] < 0.5,
+            "normalized[15] = {} should be < 0.5 for low volume", normalized[15]);
+        assert_eq!(state[15], -1.0); // Low volume state
+    }
+
+    #[test]
+    fn test_normalized_volume_validation() {
+        assert!(NormalizedVolume::new(1, false).is_err());
+        assert!(NormalizedVolume::new(2, false).is_ok());
+        assert!(NormalizedVolume::new(2, true).is_ok());
+    }
+
+    #[test]
+    fn test_volume_surge() {
+        let (_, _, _, volume) = make_test_data();
+        let vs = VolumeSurge::new(10, 2.0, 3).unwrap();
+        let (magnitude, signal, consecutive) = vs.calculate(&volume);
+
+        assert_eq!(magnitude.len(), volume.len());
+        assert_eq!(signal.len(), volume.len());
+        assert_eq!(consecutive.len(), volume.len());
+        // Signal should be 0 or 1
+        assert!(signal.iter().all(|&s| s == 0.0 || s == 1.0));
+        // Consecutive should be >= 0
+        assert!(consecutive.iter().all(|&c| c >= 0.0));
+    }
+
+    #[test]
+    fn test_volume_surge_detection() {
+        // Create volume data with a sudden surge
+        let mut volume = vec![1000.0; 20];
+        volume[15] = 5000.0; // Surge
+
+        let vs = VolumeSurge::new(10, 2.0, 3).unwrap();
+        let (magnitude, signal, _) = vs.calculate(&volume);
+
+        // Should detect surge at spike
+        assert!(magnitude[15] > 2.0,
+            "magnitude[15] = {} should be > 2.0 for surge", magnitude[15]);
+        assert_eq!(signal[15], 1.0);
+    }
+
+    #[test]
+    fn test_volume_surge_consecutive() {
+        // Multiple consecutive surges
+        let mut volume = vec![1000.0; 20];
+        volume[12] = 4000.0;
+        volume[13] = 4500.0;
+        volume[14] = 5000.0;
+
+        let vs = VolumeSurge::new(8, 2.0, 3).unwrap();
+        let (_, signal, consecutive) = vs.calculate(&volume);
+
+        // Should detect consecutive surges
+        assert_eq!(signal[12], 1.0);
+        assert_eq!(signal[13], 1.0);
+        assert_eq!(signal[14], 1.0);
+        // Consecutive count should increase
+        assert!(consecutive[14] >= 2.0,
+            "consecutive[14] = {} should be >= 2", consecutive[14]);
+    }
+
+    #[test]
+    fn test_volume_surge_with_period() {
+        let (_, _, _, volume) = make_test_data();
+        let vs = VolumeSurge::with_period(10).unwrap();
+        let (magnitude, _, _) = vs.calculate(&volume);
+
+        assert_eq!(magnitude.len(), volume.len());
+    }
+
+    #[test]
+    fn test_volume_surge_validation() {
+        assert!(VolumeSurge::new(4, 2.0, 3).is_err()); // period < 5
+        assert!(VolumeSurge::new(5, 1.0, 3).is_err()); // threshold < 1.5
+        assert!(VolumeSurge::new(5, 2.0, 0).is_err()); // lookback < 1
+        assert!(VolumeSurge::new(5, 2.0, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_divergence_index() {
+        let (_, _, close, volume) = make_test_data();
+        let vdi = VolumeDivergenceIndex::new(10, 3).unwrap();
+        let (divergence_index, divergence_type) = vdi.calculate(&close, &volume);
+
+        assert_eq!(divergence_index.len(), close.len());
+        assert_eq!(divergence_type.len(), close.len());
+        // Divergence index should be within bounds
+        assert!(divergence_index.iter().all(|&v| v >= -100.0 && v <= 100.0));
+        // Type should be -1, 0, or 1
+        assert!(divergence_type.iter().all(|&t| t == -1.0 || t == 0.0 || t == 1.0));
+    }
+
+    #[test]
+    fn test_volume_divergence_bearish() {
+        // Price up but volume down = bearish divergence
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 5000.0 - i as f64 * 150.0).collect();
+
+        let vdi = VolumeDivergenceIndex::new(5, 3).unwrap();
+        let (divergence_index, divergence_type) = vdi.calculate(&close, &volume);
+
+        // Should show bearish divergence (negative)
+        assert!(divergence_index[20] < 0.0,
+            "divergence_index[20] = {} should be < 0 for bearish divergence", divergence_index[20]);
+        assert_eq!(divergence_type[20], -1.0);
+    }
+
+    #[test]
+    fn test_volume_divergence_bullish() {
+        // Price down and volume down = bullish divergence
+        let close: Vec<f64> = (0..25).map(|i| 150.0 - i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 5000.0 - i as f64 * 150.0).collect();
+
+        let vdi = VolumeDivergenceIndex::new(5, 3).unwrap();
+        let (divergence_index, divergence_type) = vdi.calculate(&close, &volume);
+
+        // Should show bullish divergence (positive)
+        assert!(divergence_index[20] > 0.0,
+            "divergence_index[20] = {} should be > 0 for bullish divergence", divergence_index[20]);
+        assert_eq!(divergence_type[20], 1.0);
+    }
+
+    #[test]
+    fn test_volume_divergence_validation() {
+        assert!(VolumeDivergenceIndex::new(4, 3).is_err());
+        assert!(VolumeDivergenceIndex::new(5, 0).is_err());
+        assert!(VolumeDivergenceIndex::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_institutional_flow_indicator() {
+        let (high, low, close, volume) = make_test_data();
+        let ifi = InstitutionalFlowIndicator::new(10, 0.5).unwrap();
+        let (ratio, signal, accumulation) = ifi.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(ratio.len(), close.len());
+        assert_eq!(signal.len(), close.len());
+        assert_eq!(accumulation.len(), close.len());
+        // Ratio should be between 0 and 100
+        assert!(ratio.iter().all(|&r| r >= 0.0 && r <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_institutional_flow_with_period() {
+        let (high, low, close, volume) = make_test_data();
+        let ifi = InstitutionalFlowIndicator::with_period(10).unwrap();
+        let (ratio, _, _) = ifi.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(ratio.len(), close.len());
+    }
+
+    #[test]
+    fn test_institutional_flow_efficient_moves() {
+        // Efficient price movement with high volume = institutional
+        let high: Vec<f64> = (0..25).map(|i| 102.0 + i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..25).map(|i| 98.0 + i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..25).map(|i| 101.5 + i as f64 * 2.0).collect(); // Close near high (efficient)
+        let volume: Vec<f64> = (0..25).map(|i| 1000.0 + i as f64 * 200.0).collect();
+
+        let ifi = InstitutionalFlowIndicator::new(10, 0.3).unwrap();
+        let (ratio, _, _) = ifi.calculate(&high, &low, &close, &volume);
+
+        // Should show some institutional activity
+        assert!(ratio[20] > 30.0,
+            "ratio[20] = {} should indicate some institutional activity", ratio[20]);
+    }
+
+    #[test]
+    fn test_institutional_flow_validation() {
+        assert!(InstitutionalFlowIndicator::new(9, 0.5).is_err()); // period < 10
+        assert!(InstitutionalFlowIndicator::new(10, 0.0).is_err()); // threshold = 0
+        assert!(InstitutionalFlowIndicator::new(10, 1.0).is_err()); // threshold = 1
+        assert!(InstitutionalFlowIndicator::new(10, 0.5).is_ok());
+    }
+
+    #[test]
+    fn test_volume_z_score() {
+        let (_, _, _, volume) = make_test_data();
+        let vzs = VolumeZScore::new(10).unwrap();
+        let (z_score, significance, extreme) = vzs.calculate(&volume);
+
+        assert_eq!(z_score.len(), volume.len());
+        assert_eq!(significance.len(), volume.len());
+        assert_eq!(extreme.len(), volume.len());
+        // Significance should be between 0 and 100
+        assert!(significance.iter().all(|&s| s >= 0.0 && s <= 100.0));
+        // Extreme signal should be -1, 0, or 1
+        assert!(extreme.iter().all(|&e| e == -1.0 || e == 0.0 || e == 1.0));
+    }
+
+    #[test]
+    fn test_volume_z_score_spike() {
+        // Normal volume with a spike
+        let mut volume = vec![1000.0; 20];
+        // Add some variance
+        for i in 0..20 {
+            volume[i] += (i as f64 % 3.0) * 50.0;
+        }
+        volume[15] = 5000.0; // Spike
+
+        let vzs = VolumeZScore::new(10).unwrap();
+        let (z_score, significance, extreme) = vzs.calculate(&volume);
+
+        // Spike should show high z-score
+        assert!(z_score[15] > 2.0,
+            "z_score[15] = {} should be > 2.0 for spike", z_score[15]);
+        // Should be statistically significant
+        assert!(significance[15] > 90.0,
+            "significance[15] = {} should be > 90 for significant spike", significance[15]);
+        // Should signal extreme high
+        assert_eq!(extreme[15], 1.0);
+    }
+
+    #[test]
+    fn test_volume_z_score_low() {
+        // Normal volume with a dip
+        let mut volume = vec![1000.0; 20];
+        // Add some variance
+        for i in 0..20 {
+            volume[i] += (i as f64 % 3.0) * 50.0;
+        }
+        volume[15] = 100.0; // Very low
+
+        let vzs = VolumeZScore::new(10).unwrap();
+        let (z_score, _, extreme) = vzs.calculate(&volume);
+
+        // Low should show negative z-score
+        assert!(z_score[15] < -2.0,
+            "z_score[15] = {} should be < -2.0 for low volume", z_score[15]);
+        // Should signal extreme low
+        assert_eq!(extreme[15], -1.0);
+    }
+
+    #[test]
+    fn test_volume_z_score_validation() {
+        assert!(VolumeZScore::new(9).is_err()); // period < 10
+        assert!(VolumeZScore::new(10).is_ok());
+    }
+
+    #[test]
+    fn test_new_six_indicators_technical_indicator_trait() {
+        let (high, low, close, volume) = make_test_data();
+
+        // Create OHLCVSeries for compute tests
+        let data = OHLCVSeries {
+            open: close.clone(),
+            high: high.clone(),
+            low: low.clone(),
+            close: close.clone(),
+            volume: volume.clone(),
+        };
+
+        // Test VolumeStrengthIndex
+        let vsi = VolumeStrengthIndex::new(5, 3).unwrap();
+        assert_eq!(vsi.name(), "Volume Strength Index");
+        assert_eq!(vsi.min_periods(), 6);
+        assert!(vsi.compute(&data).is_ok());
+
+        // Test NormalizedVolume
+        let nv = NormalizedVolume::with_sma(5).unwrap();
+        assert_eq!(nv.name(), "Normalized Volume");
+        assert_eq!(nv.min_periods(), 6);
+        assert!(nv.compute(&data).is_ok());
+
+        // Test VolumeSurge
+        let vs = VolumeSurge::new(5, 2.0, 3).unwrap();
+        assert_eq!(vs.name(), "Volume Surge");
+        assert_eq!(vs.min_periods(), 8);
+        assert_eq!(vs.output_features(), 3);
+        assert!(vs.compute(&data).is_ok());
+
+        // Test VolumeDivergenceIndex
+        let vdi = VolumeDivergenceIndex::new(5, 3).unwrap();
+        assert_eq!(vdi.name(), "Volume Divergence Index");
+        assert_eq!(vdi.min_periods(), 6);
+        assert!(vdi.compute(&data).is_ok());
+
+        // Test InstitutionalFlowIndicator
+        let ifi = InstitutionalFlowIndicator::new(10, 0.5).unwrap();
+        assert_eq!(ifi.name(), "Institutional Flow Indicator");
+        assert_eq!(ifi.min_periods(), 11);
+        assert_eq!(ifi.output_features(), 3);
+        assert!(ifi.compute(&data).is_ok());
+
+        // Test VolumeZScore
+        let vzs = VolumeZScore::new(10).unwrap();
+        assert_eq!(vzs.name(), "Volume Z-Score");
+        assert_eq!(vzs.min_periods(), 11);
+        assert_eq!(vzs.output_features(), 3);
+        assert!(vzs.compute(&data).is_ok());
+    }
+
+    #[test]
+    fn test_new_six_indicators_insufficient_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0],
+            high: vec![102.0, 103.0],
+            low: vec![98.0, 99.0],
+            close: vec![100.0, 101.0],
+            volume: vec![1000.0, 1100.0],
+        };
+
+        // All should fail with insufficient data
+        let vsi = VolumeStrengthIndex::new(10, 3).unwrap();
+        assert!(vsi.compute(&short_data).is_err());
+
+        let nv = NormalizedVolume::with_sma(10).unwrap();
+        assert!(nv.compute(&short_data).is_err());
+
+        let vs = VolumeSurge::new(10, 2.0, 3).unwrap();
+        assert!(vs.compute(&short_data).is_err());
+
+        let vdi = VolumeDivergenceIndex::new(10, 3).unwrap();
+        assert!(vdi.compute(&short_data).is_err());
+
+        let ifi = InstitutionalFlowIndicator::new(10, 0.5).unwrap();
+        assert!(ifi.compute(&short_data).is_err());
+
+        let vzs = VolumeZScore::new(10).unwrap();
+        assert!(vzs.compute(&short_data).is_err());
+    }
+
+    #[test]
+    fn test_new_six_indicators_parameter_validation() {
+        // VolumeStrengthIndex
+        assert!(VolumeStrengthIndex::new(4, 3).is_err());
+        assert!(VolumeStrengthIndex::new(5, 0).is_err());
+        assert!(VolumeStrengthIndex::new(5, 3).is_ok());
+
+        // NormalizedVolume
+        assert!(NormalizedVolume::new(1, false).is_err());
+        assert!(NormalizedVolume::new(2, false).is_ok());
+        assert!(NormalizedVolume::new(2, true).is_ok());
+
+        // VolumeSurge
+        assert!(VolumeSurge::new(4, 2.0, 3).is_err());
+        assert!(VolumeSurge::new(5, 1.0, 3).is_err());
+        assert!(VolumeSurge::new(5, 2.0, 0).is_err());
+        assert!(VolumeSurge::new(5, 2.0, 3).is_ok());
+
+        // VolumeDivergenceIndex
+        assert!(VolumeDivergenceIndex::new(4, 3).is_err());
+        assert!(VolumeDivergenceIndex::new(5, 0).is_err());
+        assert!(VolumeDivergenceIndex::new(5, 3).is_ok());
+
+        // InstitutionalFlowIndicator
+        assert!(InstitutionalFlowIndicator::new(9, 0.5).is_err());
+        assert!(InstitutionalFlowIndicator::new(10, 0.0).is_err());
+        assert!(InstitutionalFlowIndicator::new(10, 1.0).is_err());
+        assert!(InstitutionalFlowIndicator::new(10, 0.5).is_ok());
+
+        // VolumeZScore
+        assert!(VolumeZScore::new(9).is_err());
+        assert!(VolumeZScore::new(10).is_ok());
     }
 }

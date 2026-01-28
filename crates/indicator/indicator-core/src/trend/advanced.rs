@@ -3033,6 +3033,931 @@ impl TechnicalIndicator for TrendMomentumDivergence {
     }
 }
 
+/// Trend Persistence Index - Measures how long trends persist before reversing
+///
+/// This indicator quantifies trend persistence by analyzing:
+/// - The average duration of directional moves
+/// - The ratio of continuing moves to reversing moves
+/// - The strength decay over time
+/// - The recovery speed after pullbacks
+///
+/// Unlike TrendPersistenceMetric which measures current persistence,
+/// this index provides a normalized score based on historical persistence patterns.
+///
+/// Output interpretation (0-100):
+/// - 80-100: Extremely persistent trends (rare)
+/// - 60-80: Highly persistent, trends continue well
+/// - 40-60: Moderate persistence, normal market behavior
+/// - 20-40: Low persistence, frequent reversals
+/// - 0-20: Very choppy, no sustained trends
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendPersistenceIndex;
+/// let tpi = TrendPersistenceIndex::new(20, 5).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendPersistenceIndex {
+    /// Analysis period for trend persistence measurement
+    period: usize,
+    /// Minimum streak length to consider as a trend
+    min_streak: usize,
+}
+
+impl TrendPersistenceIndex {
+    /// Creates a new TrendPersistenceIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Analysis period (minimum 10)
+    /// * `min_streak` - Minimum consecutive bars to consider as trend (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid
+    pub fn new(period: usize, min_streak: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if min_streak < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_streak".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if min_streak >= period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_streak".to_string(),
+                reason: "must be less than period / 2".to_string(),
+            });
+        }
+        Ok(Self { period, min_streak })
+    }
+
+    /// Calculate the trend persistence index (0-100)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n <= self.period {
+            return result;
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Analyze streaks within the period
+            let mut streaks: Vec<usize> = Vec::new();
+            let mut current_streak = 1;
+            let mut current_direction = 0i32; // 1 for up, -1 for down
+
+            for j in (start + 1)..=i {
+                let direction = if close[j] > close[j - 1] {
+                    1
+                } else if close[j] < close[j - 1] {
+                    -1
+                } else {
+                    current_direction // unchanged
+                };
+
+                if direction == current_direction {
+                    current_streak += 1;
+                } else {
+                    if current_streak >= self.min_streak {
+                        streaks.push(current_streak);
+                    }
+                    current_streak = 1;
+                    current_direction = direction;
+                }
+            }
+            // Don't forget the last streak
+            if current_streak >= self.min_streak {
+                streaks.push(current_streak);
+            }
+
+            // Factor 1: Average streak length (0-35 points)
+            let avg_streak = if !streaks.is_empty() {
+                streaks.iter().sum::<usize>() as f64 / streaks.len() as f64
+            } else {
+                0.0
+            };
+            let max_possible_streak = (self.period / 2) as f64;
+            let streak_score = (avg_streak / max_possible_streak * 35.0).min(35.0);
+
+            // Factor 2: Streak coverage ratio (0-35 points)
+            let total_streak_bars: usize = streaks.iter().sum();
+            let coverage_ratio = total_streak_bars as f64 / self.period as f64;
+            let coverage_score = coverage_ratio * 35.0;
+
+            // Factor 3: Price efficiency over period (0-30 points)
+            let direct_move = (close[i] - close[start]).abs();
+            let mut total_path = 0.0;
+            for j in (start + 1)..=i {
+                total_path += (close[j] - close[j - 1]).abs();
+            }
+            let efficiency = if total_path > 1e-10 {
+                direct_move / total_path
+            } else {
+                0.0
+            };
+            let efficiency_score = efficiency * 30.0;
+
+            result[i] = (streak_score + coverage_score + efficiency_score).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendPersistenceIndex {
+    fn name(&self) -> &str {
+        "Trend Persistence Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Strength Oscillator - Oscillator form of trend strength measurement
+///
+/// This indicator provides a bounded oscillator that measures trend strength,
+/// oscillating between -100 (strong downtrend) and +100 (strong uptrend).
+/// It combines multiple factors for a comprehensive trend strength reading:
+/// - Directional movement analysis
+/// - Price momentum relative to volatility
+/// - Trend consistency scoring
+/// - Moving average convergence/divergence
+///
+/// Key characteristics:
+/// - Zero line crossovers signal potential trend changes
+/// - Extreme readings (+/- 80) suggest overbought/oversold conditions
+/// - Divergences from price may signal reversals
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendStrengthOscillator;
+/// let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendStrengthOscillator {
+    /// Primary period for calculations
+    period: usize,
+    /// Smoothing period for output
+    smoothing: usize,
+}
+
+impl TrendStrengthOscillator {
+    /// Creates a new TrendStrengthOscillator indicator
+    ///
+    /// # Arguments
+    /// * `period` - Primary calculation period (minimum 7)
+    /// * `smoothing` - Output smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 7 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 7".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate the trend strength oscillator (-100 to +100)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut result = vec![0.0; n];
+
+        if n <= self.period + self.smoothing {
+            return result;
+        }
+
+        // First pass: calculate raw oscillator values
+        let mut raw_values = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Component 1: Directional Movement Index (0-25 base, scaled to +/- 25)
+            let mut plus_dm = 0.0;
+            let mut minus_dm = 0.0;
+            let mut tr_sum = 0.0;
+
+            for j in (start + 1)..=i {
+                let up_move = high[j] - high[j - 1];
+                let down_move = low[j - 1] - low[j];
+
+                if up_move > down_move && up_move > 0.0 {
+                    plus_dm += up_move;
+                }
+                if down_move > up_move && down_move > 0.0 {
+                    minus_dm += down_move;
+                }
+
+                let tr = (high[j] - low[j])
+                    .max((high[j] - close[j - 1]).abs())
+                    .max((low[j] - close[j - 1]).abs());
+                tr_sum += tr;
+            }
+
+            let dm_component = if tr_sum > 1e-10 {
+                let di_plus = plus_dm / tr_sum;
+                let di_minus = minus_dm / tr_sum;
+                (di_plus - di_minus) / (di_plus + di_minus + 1e-10) * 25.0
+            } else {
+                0.0
+            };
+
+            // Component 2: Normalized Momentum (-25 to +25)
+            let momentum = close[i] - close[start];
+            let mut volatility = 0.0;
+            for j in (start + 1)..=i {
+                volatility += (close[j] - close[j - 1]).abs();
+            }
+            volatility /= self.period as f64;
+
+            let momentum_component = if volatility > 1e-10 {
+                (momentum / (volatility * self.period as f64) * 25.0).clamp(-25.0, 25.0)
+            } else {
+                0.0
+            };
+
+            // Component 3: Consistency Score (-25 to +25)
+            let trend_direction = if momentum > 0.0 { 1.0 } else { -1.0 };
+            let mut aligned_moves = 0;
+            for j in (start + 1)..=i {
+                let move_dir = if close[j] > close[j - 1] { 1.0 } else { -1.0 };
+                if move_dir == trend_direction {
+                    aligned_moves += 1;
+                }
+            }
+            let consistency_ratio = aligned_moves as f64 / self.period as f64;
+            let consistency_component = (consistency_ratio - 0.5) * 50.0 * trend_direction;
+
+            // Component 4: Price Position (-25 to +25)
+            let ma: f64 = close[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let deviation = close[i] - ma;
+            let range = high[start..=i].iter().cloned().fold(f64::MIN, f64::max)
+                - low[start..=i].iter().cloned().fold(f64::MAX, f64::min);
+
+            let position_component = if range > 1e-10 {
+                (deviation / range * 50.0).clamp(-25.0, 25.0)
+            } else {
+                0.0
+            };
+
+            raw_values[i] = dm_component + momentum_component + consistency_component + position_component;
+        }
+
+        // Second pass: apply smoothing
+        for i in (self.period + self.smoothing - 1)..n {
+            let start = i - self.smoothing + 1;
+            let sum: f64 = raw_values[start..=i].iter().sum();
+            result[i] = (sum / self.smoothing as f64).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendStrengthOscillator {
+    fn name(&self) -> &str {
+        "Trend Strength Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+/// Multi-Scale Trend Index - Combines trend signals across multiple timeframes
+///
+/// This indicator aggregates trend information from multiple lookback periods
+/// to provide a robust, multi-timeframe trend reading. Unlike MultiScaleTrend
+/// which uses weighted averages, this index uses a voting system combined
+/// with strength weighting for more decisive signals.
+///
+/// Features:
+/// - Analyzes 5 different timeframes by default (derived from base period)
+/// - Uses both trend direction and strength for each scale
+/// - Provides alignment score bonus when all scales agree
+/// - Outputs normalized index from -100 to +100
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::MultiScaleTrendIndex;
+/// let msti = MultiScaleTrendIndex::new(5, 50).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct MultiScaleTrendIndex {
+    /// Shortest lookback period
+    min_period: usize,
+    /// Longest lookback period
+    max_period: usize,
+}
+
+impl MultiScaleTrendIndex {
+    /// Creates a new MultiScaleTrendIndex indicator
+    ///
+    /// # Arguments
+    /// * `min_period` - Minimum lookback period (minimum 3)
+    /// * `max_period` - Maximum lookback period (must be > min_period * 3)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid
+    pub fn new(min_period: usize, max_period: usize) -> Result<Self> {
+        if min_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if max_period <= min_period * 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_period".to_string(),
+                reason: "must be greater than min_period * 3".to_string(),
+            });
+        }
+        Ok(Self { min_period, max_period })
+    }
+
+    /// Calculate trend signal for a single scale
+    fn scale_signal(&self, close: &[f64], period: usize, idx: usize) -> (f64, f64) {
+        if idx < period {
+            return (0.0, 0.0);
+        }
+
+        let start = idx - period;
+
+        // Direction signal
+        let momentum = close[idx] - close[start];
+        let direction = if momentum > 0.0 { 1.0 } else if momentum < 0.0 { -1.0 } else { 0.0 };
+
+        // Strength calculation (efficiency ratio)
+        let mut total_path = 0.0;
+        for j in (start + 1)..=idx {
+            total_path += (close[j] - close[j - 1]).abs();
+        }
+
+        let strength = if total_path > 1e-10 {
+            momentum.abs() / total_path
+        } else {
+            0.0
+        };
+
+        (direction, strength)
+    }
+
+    /// Calculate the multi-scale trend index (-100 to +100)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n <= self.max_period {
+            return result;
+        }
+
+        // Generate 5 scales from min to max period
+        let scales: Vec<usize> = (0..5)
+            .map(|i| {
+                self.min_period + (self.max_period - self.min_period) * i / 4
+            })
+            .collect();
+
+        for i in self.max_period..n {
+            let mut bullish_strength = 0.0;
+            let mut bearish_strength = 0.0;
+            let mut bullish_count = 0;
+            let mut bearish_count = 0;
+
+            // Analyze each scale
+            for &scale in &scales {
+                let (direction, strength) = self.scale_signal(close, scale, i);
+
+                if direction > 0.0 {
+                    bullish_count += 1;
+                    bullish_strength += strength;
+                } else if direction < 0.0 {
+                    bearish_count += 1;
+                    bearish_strength += strength;
+                }
+            }
+
+            // Calculate base signal from strength differential
+            let total_scales = scales.len() as f64;
+            let bull_score = bullish_strength / total_scales * 100.0;
+            let bear_score = bearish_strength / total_scales * 100.0;
+
+            let mut signal = bull_score - bear_score;
+
+            // Alignment bonus: when all scales agree, amplify signal
+            if bullish_count == scales.len() {
+                signal = signal.abs().min(80.0) + 20.0; // Boost to max 100
+            } else if bearish_count == scales.len() {
+                signal = -(signal.abs().min(80.0) + 20.0); // Boost to min -100
+            } else {
+                // Partial alignment: scale by agreement ratio
+                let agreement_ratio = (bullish_count.max(bearish_count) as f64) / total_scales;
+                signal *= agreement_ratio;
+            }
+
+            result[i] = signal.clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MultiScaleTrendIndex {
+    fn name(&self) -> &str {
+        "Multi-Scale Trend Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.max_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Efficiency Ratio - Measures directional movement efficiency vs noise
+///
+/// This indicator quantifies how efficiently price moves in a directional
+/// manner compared to the total path traveled. It helps identify:
+/// - Strong trending conditions (high efficiency)
+/// - Ranging/choppy conditions (low efficiency)
+/// - Trend quality for position sizing
+///
+/// The ratio is calculated as: |Net Move| / Total Path Length
+/// Then normalized and smoothed for practical use.
+///
+/// Output interpretation (0-100):
+/// - 80-100: Extremely efficient, strong clean trend
+/// - 60-80: High efficiency, good trending
+/// - 40-60: Moderate efficiency, mixed conditions
+/// - 20-40: Low efficiency, choppy market
+/// - 0-20: Very low efficiency, ranging/noisy
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendEfficiencyRatio;
+/// let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendEfficiencyRatio {
+    /// Lookback period for efficiency calculation
+    period: usize,
+    /// Smoothing period for output
+    smoothing: usize,
+}
+
+impl TrendEfficiencyRatio {
+    /// Creates a new TrendEfficiencyRatio indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period (minimum 5)
+    /// * `smoothing` - Smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate the trend efficiency ratio (0-100)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n <= self.period + self.smoothing {
+            return result;
+        }
+
+        // First pass: calculate raw efficiency ratios
+        let mut raw_efficiency = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Net directional move
+            let net_move = (close[i] - close[start]).abs();
+
+            // Total path traveled
+            let mut total_path = 0.0;
+            for j in (start + 1)..=i {
+                total_path += (close[j] - close[j - 1]).abs();
+            }
+
+            // Calculate efficiency ratio (0 to 1)
+            let efficiency = if total_path > 1e-10 {
+                net_move / total_path
+            } else {
+                0.0
+            };
+
+            // Scale to 0-100
+            raw_efficiency[i] = efficiency * 100.0;
+        }
+
+        // Second pass: apply smoothing with EMA-style weighting
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+
+        for i in self.period..n {
+            if i == self.period {
+                result[i] = raw_efficiency[i];
+            } else {
+                result[i] = alpha * raw_efficiency[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendEfficiencyRatio {
+    fn name(&self) -> &str {
+        "Trend Efficiency Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Velocity Index - Measures the speed of trend development
+///
+/// This indicator quantifies how quickly a trend is developing by measuring
+/// the rate of price change normalized by volatility. Unlike momentum which
+/// just measures price change, velocity considers the "acceleration" aspect
+/// relative to normal market movement.
+///
+/// Features:
+/// - Volatility-normalized for cross-market comparison
+/// - Considers both price velocity and trend acceleration
+/// - Smoothed output to reduce noise
+/// - Directional output showing trend velocity direction
+///
+/// Output interpretation (-100 to +100):
+/// - Strong positive: Fast upward trend velocity
+/// - Moderate positive: Steady uptrend
+/// - Near zero: Slow or no trending
+/// - Moderate negative: Steady downtrend
+/// - Strong negative: Fast downward trend velocity
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendVelocityIndex;
+/// let tvi = TrendVelocityIndex::new(14, 5, 3).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendVelocityIndex {
+    /// Period for trend measurement
+    period: usize,
+    /// Period for volatility calculation
+    volatility_period: usize,
+    /// Smoothing period
+    smoothing: usize,
+}
+
+impl TrendVelocityIndex {
+    /// Creates a new TrendVelocityIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Trend measurement period (minimum 7)
+    /// * `volatility_period` - Volatility calculation period (minimum 5)
+    /// * `smoothing` - Output smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid
+    pub fn new(period: usize, volatility_period: usize, smoothing: usize) -> Result<Self> {
+        if period < 7 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 7".to_string(),
+            });
+        }
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, volatility_period, smoothing })
+    }
+
+    /// Calculate the trend velocity index (-100 to +100)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut result = vec![0.0; n];
+        let min_period = self.period.max(self.volatility_period);
+
+        if n <= min_period + self.smoothing {
+            return result;
+        }
+
+        // First pass: calculate raw velocity values
+        let mut raw_velocity = vec![0.0; n];
+
+        for i in min_period..n {
+            let trend_start = i - self.period;
+            let vol_start = i - self.volatility_period;
+
+            // Calculate ATR-based volatility
+            let mut atr_sum = 0.0;
+            for j in (vol_start + 1)..=i {
+                let tr = (high[j] - low[j])
+                    .max((high[j] - close[j - 1]).abs())
+                    .max((low[j] - close[j - 1]).abs());
+                atr_sum += tr;
+            }
+            let atr = atr_sum / self.volatility_period as f64;
+
+            if atr < 1e-10 {
+                continue;
+            }
+
+            // Calculate price velocity (change per period normalized by ATR)
+            let price_change = close[i] - close[trend_start];
+            let velocity = price_change / (atr * self.period as f64);
+
+            // Calculate acceleration (change in velocity)
+            let mid_point = (trend_start + i) / 2;
+            let first_half_change = close[mid_point] - close[trend_start];
+            let second_half_change = close[i] - close[mid_point];
+            let first_half_periods = (mid_point - trend_start) as f64;
+            let second_half_periods = (i - mid_point) as f64;
+
+            let first_velocity = if first_half_periods > 0.0 {
+                first_half_change / (atr * first_half_periods)
+            } else {
+                0.0
+            };
+            let second_velocity = if second_half_periods > 0.0 {
+                second_half_change / (atr * second_half_periods)
+            } else {
+                0.0
+            };
+
+            let acceleration = second_velocity - first_velocity;
+
+            // Combine velocity and acceleration
+            // Velocity contributes 70%, acceleration 30%
+            let combined = velocity * 0.7 + acceleration * 0.3;
+
+            // Scale to approximate -100 to +100 range
+            raw_velocity[i] = (combined * 50.0).clamp(-100.0, 100.0);
+        }
+
+        // Second pass: apply smoothing
+        for i in (min_period + self.smoothing - 1)..n {
+            let start = i - self.smoothing + 1;
+            let sum: f64 = raw_velocity[start..=i].iter().sum();
+            result[i] = (sum / self.smoothing as f64).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendVelocityIndex {
+    fn name(&self) -> &str {
+        "Trend Velocity Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.volatility_period) + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+/// Trend Regime Detector - Identifies distinct market trend regimes
+///
+/// This indicator classifies the market into distinct trend regimes:
+/// - Strong Uptrend (70-100)
+/// - Moderate Uptrend (40-70)
+/// - Ranging/Neutral (20-40 or 60-80 depending on bias)
+/// - Moderate Downtrend (30-60)
+/// - Strong Downtrend (0-30)
+///
+/// It uses multiple factors to determine the current regime:
+/// - Trend direction and strength
+/// - Volatility characteristics
+/// - Momentum confirmation
+/// - Price structure analysis
+///
+/// The output is a regime score that helps identify tradeable trends
+/// and avoid ranging markets.
+///
+/// # Example
+/// ```
+/// use indicator_core::trend::TrendRegimeDetector;
+/// let trd = TrendRegimeDetector::new(20, 10, 1.5).unwrap();
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendRegimeDetector {
+    /// Long period for trend regime analysis
+    long_period: usize,
+    /// Short period for momentum analysis
+    short_period: usize,
+    /// Sensitivity multiplier for regime transitions
+    sensitivity: f64,
+}
+
+impl TrendRegimeDetector {
+    /// Creates a new TrendRegimeDetector indicator
+    ///
+    /// # Arguments
+    /// * `long_period` - Long period for regime analysis (minimum 15)
+    /// * `short_period` - Short period for momentum (must be < long_period / 2)
+    /// * `sensitivity` - Regime transition sensitivity (0.5-3.0)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are invalid
+    pub fn new(long_period: usize, short_period: usize, sensitivity: f64) -> Result<Self> {
+        if long_period < 15 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be at least 15".to_string(),
+            });
+        }
+        if short_period >= long_period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be less than long_period / 2".to_string(),
+            });
+        }
+        if short_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if sensitivity < 0.5 || sensitivity > 3.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0.5 and 3.0".to_string(),
+            });
+        }
+        Ok(Self { long_period, short_period, sensitivity })
+    }
+
+    /// Calculate the trend regime score (0-100)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut result = vec![50.0; n]; // Default to neutral
+
+        if n <= self.long_period {
+            return result;
+        }
+
+        for i in self.long_period..n {
+            let long_start = i - self.long_period;
+            let short_start = i - self.short_period;
+
+            // Calculate long-term trend direction
+            let long_ma: f64 = close[long_start..=i].iter().sum::<f64>() / (self.long_period + 1) as f64;
+            let long_slope = (close[i] - close[long_start]) / self.long_period as f64;
+
+            // Calculate short-term momentum
+            let short_ma: f64 = close[short_start..=i].iter().sum::<f64>() / (self.short_period + 1) as f64;
+            let short_slope = (close[i] - close[short_start]) / self.short_period as f64;
+
+            // Calculate volatility for normalization
+            let mut volatility = 0.0;
+            for j in (long_start + 1)..=i {
+                let tr = (high[j] - low[j])
+                    .max((high[j] - close[j - 1]).abs())
+                    .max((low[j] - close[j - 1]).abs());
+                volatility += tr;
+            }
+            volatility /= self.long_period as f64;
+
+            if volatility < 1e-10 {
+                result[i] = 50.0;
+                continue;
+            }
+
+            // Normalize slopes
+            let norm_long_slope = long_slope / volatility;
+            let norm_short_slope = short_slope / volatility;
+
+            // Calculate price position
+            let price_above_long = close[i] > long_ma;
+            let price_above_short = close[i] > short_ma;
+            let short_above_long = short_ma > long_ma;
+
+            // Calculate trend consistency
+            let trend_dir = if norm_long_slope > 0.0 { 1.0 } else { -1.0 };
+            let mut aligned_bars = 0;
+            for j in (long_start + 1)..=i {
+                let bar_dir = if close[j] > close[j - 1] { 1.0 } else { -1.0 };
+                if bar_dir == trend_dir {
+                    aligned_bars += 1;
+                }
+            }
+            let consistency = aligned_bars as f64 / self.long_period as f64;
+
+            // Determine regime score
+            let mut regime_score = 50.0; // Start neutral
+
+            // Strong trend indicators
+            if price_above_long && price_above_short && short_above_long && norm_long_slope > 0.1 {
+                // Strong uptrend characteristics
+                let strength = (norm_long_slope * 100.0 * self.sensitivity).min(30.0);
+                let alignment_bonus = if norm_short_slope > norm_long_slope {
+                    10.0 * self.sensitivity
+                } else {
+                    0.0
+                };
+                regime_score = 70.0 + strength + alignment_bonus + (consistency - 0.5) * 20.0;
+            } else if !price_above_long && !price_above_short && !short_above_long && norm_long_slope < -0.1 {
+                // Strong downtrend characteristics
+                let strength = (norm_long_slope.abs() * 100.0 * self.sensitivity).min(30.0);
+                let alignment_bonus = if norm_short_slope < norm_long_slope {
+                    10.0 * self.sensitivity
+                } else {
+                    0.0
+                };
+                regime_score = 30.0 - strength - alignment_bonus - (consistency - 0.5) * 20.0;
+            } else if price_above_long && norm_long_slope > 0.0 {
+                // Moderate uptrend
+                let strength = (norm_long_slope * 50.0 * self.sensitivity).min(15.0);
+                regime_score = 55.0 + strength + (consistency - 0.5) * 10.0;
+            } else if !price_above_long && norm_long_slope < 0.0 {
+                // Moderate downtrend
+                let strength = (norm_long_slope.abs() * 50.0 * self.sensitivity).min(15.0);
+                regime_score = 45.0 - strength - (consistency - 0.5) * 10.0;
+            } else {
+                // Ranging/transitional
+                regime_score = 50.0 + (norm_long_slope * 25.0);
+            }
+
+            result[i] = regime_score.clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendRegimeDetector {
+    fn name(&self) -> &str {
+        "Trend Regime Detector"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4294,5 +5219,489 @@ mod tests {
         let result = tmd.calculate(&high, &low, &close);
         // Should detect divergences in downtrend
         assert!(result[45] >= -100.0 && result[45] <= 100.0);
+    }
+
+    // ============= Tests for the 6 NEWEST indicators =============
+    // TrendPersistenceIndex, TrendStrengthOscillator, MultiScaleTrendIndex,
+    // TrendEfficiencyRatio, TrendVelocityIndex, TrendRegimeDetector
+
+    #[test]
+    fn test_trend_persistence_index() {
+        let (_, _, close, _) = make_test_data();
+        let tpi = TrendPersistenceIndex::new(20, 5).unwrap();
+        let result = tpi.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Consistent uptrend should show high persistence
+        assert!(result[30] > 30.0);
+        // Values should be in 0-100 range
+        for val in &result[20..] {
+            assert!(*val >= 0.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_persistence_index_invalid_params() {
+        // period must be at least 10
+        assert!(TrendPersistenceIndex::new(5, 3).is_err());
+        // min_streak must be at least 2
+        assert!(TrendPersistenceIndex::new(20, 1).is_err());
+        // min_streak must be < period / 2
+        assert!(TrendPersistenceIndex::new(20, 12).is_err());
+    }
+
+    #[test]
+    fn test_trend_persistence_index_trait() {
+        let tpi = TrendPersistenceIndex::new(20, 5).unwrap();
+        assert_eq!(tpi.name(), "Trend Persistence Index");
+        assert_eq!(tpi.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_trend_persistence_index_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let tpi = TrendPersistenceIndex::new(20, 5).unwrap();
+        let result = tpi.calculate(&short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_persistence_index_choppy_market() {
+        // Choppy data with frequent direction changes
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+
+        let tpi = TrendPersistenceIndex::new(20, 3).unwrap();
+        let result = tpi.calculate(&close);
+        // Choppy market should show low persistence
+        assert!(result[40] < 40.0);
+    }
+
+    #[test]
+    fn test_trend_strength_oscillator() {
+        let (high, low, close, _) = make_test_data();
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        let result = tso.calculate(&high, &low, &close);
+
+        assert_eq!(result.len(), close.len());
+        // Uptrend should show positive values
+        assert!(result[30] > 0.0);
+        // Values should be in -100 to +100 range
+        for val in &result[17..] {
+            assert!(*val >= -100.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_strength_oscillator_invalid_params() {
+        // period must be at least 7
+        assert!(TrendStrengthOscillator::new(5, 3).is_err());
+        // smoothing must be at least 2
+        assert!(TrendStrengthOscillator::new(14, 1).is_err());
+    }
+
+    #[test]
+    fn test_trend_strength_oscillator_trait() {
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        assert_eq!(tso.name(), "Trend Strength Oscillator");
+        assert_eq!(tso.min_periods(), 17);
+    }
+
+    #[test]
+    fn test_trend_strength_oscillator_downtrend() {
+        let close: Vec<f64> = (0..50).map(|i| 150.0 - i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 2.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 2.0).collect();
+
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        let result = tso.calculate(&high, &low, &close);
+        // Downtrend should show negative values
+        assert!(result[30] < 0.0);
+    }
+
+    #[test]
+    fn test_trend_strength_oscillator_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        let result = tso.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_multi_scale_trend_index() {
+        let (_, _, close, _) = make_test_data();
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        let result = msti.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Consistent uptrend should show positive values
+        assert!(result[35] > 0.0);
+        // Values should be in -100 to +100 range
+        for val in &result[30..] {
+            assert!(*val >= -100.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_multi_scale_trend_index_invalid_params() {
+        // min_period must be at least 3
+        assert!(MultiScaleTrendIndex::new(2, 30).is_err());
+        // max_period must be > min_period * 3
+        assert!(MultiScaleTrendIndex::new(10, 25).is_err());
+    }
+
+    #[test]
+    fn test_multi_scale_trend_index_trait() {
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        assert_eq!(msti.name(), "Multi-Scale Trend Index");
+        assert_eq!(msti.min_periods(), 31);
+    }
+
+    #[test]
+    fn test_multi_scale_trend_index_downtrend() {
+        let close: Vec<f64> = (0..50).map(|i| 150.0 - i as f64).collect();
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        let result = msti.calculate(&close);
+        // All scales aligned bearish should show strong negative values
+        assert!(result[40] < 0.0);
+    }
+
+    #[test]
+    fn test_multi_scale_trend_index_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        let result = msti.calculate(&short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_efficiency_ratio() {
+        let (_, _, close, _) = make_test_data();
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        let result = ter.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Consistent uptrend should show high efficiency
+        assert!(result[30] > 50.0);
+        // Values should be in 0-100 range
+        for val in &result[13..] {
+            assert!(*val >= 0.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_efficiency_ratio_invalid_params() {
+        // period must be at least 5
+        assert!(TrendEfficiencyRatio::new(3, 3).is_err());
+        // smoothing must be at least 2
+        assert!(TrendEfficiencyRatio::new(10, 1).is_err());
+    }
+
+    #[test]
+    fn test_trend_efficiency_ratio_trait() {
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        assert_eq!(ter.name(), "Trend Efficiency Ratio");
+        assert_eq!(ter.min_periods(), 13);
+    }
+
+    #[test]
+    fn test_trend_efficiency_ratio_choppy_market() {
+        // Choppy data - low efficiency expected
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + if i % 2 == 0 { 2.0 } else { -2.0 })
+            .collect();
+
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        let result = ter.calculate(&close);
+        // Choppy market should show low efficiency
+        assert!(result[40] < 30.0);
+    }
+
+    #[test]
+    fn test_trend_efficiency_ratio_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        let result = ter.calculate(&short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_velocity_index() {
+        let (high, low, close, _) = make_test_data();
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        let result = tvi.calculate(&high, &low, &close);
+
+        assert_eq!(result.len(), close.len());
+        // Uptrend should show positive velocity
+        assert!(result[30] > 0.0);
+        // Values should be in -100 to +100 range
+        for val in &result[17..] {
+            assert!(*val >= -100.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_velocity_index_invalid_params() {
+        // period must be at least 7
+        assert!(TrendVelocityIndex::new(5, 7, 3).is_err());
+        // volatility_period must be at least 5
+        assert!(TrendVelocityIndex::new(14, 3, 3).is_err());
+        // smoothing must be at least 2
+        assert!(TrendVelocityIndex::new(14, 7, 1).is_err());
+    }
+
+    #[test]
+    fn test_trend_velocity_index_trait() {
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        assert_eq!(tvi.name(), "Trend Velocity Index");
+        assert_eq!(tvi.min_periods(), 17);
+    }
+
+    #[test]
+    fn test_trend_velocity_index_downtrend() {
+        let close: Vec<f64> = (0..50).map(|i| 150.0 - i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 2.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 2.0).collect();
+
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        let result = tvi.calculate(&high, &low, &close);
+        // Downtrend should show negative velocity
+        assert!(result[30] < 0.0);
+    }
+
+    #[test]
+    fn test_trend_velocity_index_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        let result = tvi.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be 0.0 since not enough data
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_regime_detector() {
+        let (high, low, close, _) = make_test_data();
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        let result = trd.calculate(&high, &low, &close);
+
+        assert_eq!(result.len(), close.len());
+        // Strong uptrend should show high regime score
+        assert!(result[30] > 50.0);
+        // Values should be in 0-100 range
+        for val in &result[20..] {
+            assert!(*val >= 0.0 && *val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_regime_detector_invalid_params() {
+        // long_period must be at least 15
+        assert!(TrendRegimeDetector::new(10, 3, 1.5).is_err());
+        // short_period must be < long_period / 2
+        assert!(TrendRegimeDetector::new(20, 12, 1.5).is_err());
+        // short_period must be at least 3
+        assert!(TrendRegimeDetector::new(20, 2, 1.5).is_err());
+        // sensitivity must be between 0.5 and 3.0
+        assert!(TrendRegimeDetector::new(20, 7, 0.3).is_err());
+        assert!(TrendRegimeDetector::new(20, 7, 4.0).is_err());
+    }
+
+    #[test]
+    fn test_trend_regime_detector_trait() {
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        assert_eq!(trd.name(), "Trend Regime Detector");
+        assert_eq!(trd.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_trend_regime_detector_downtrend() {
+        let close: Vec<f64> = (0..50).map(|i| 150.0 - i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 2.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 2.0).collect();
+
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        let result = trd.calculate(&high, &low, &close);
+        // Strong downtrend should show low regime score
+        assert!(result[40] < 50.0);
+    }
+
+    #[test]
+    fn test_trend_regime_detector_ranging_market() {
+        // Create ranging/choppy data
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + 2.0 * (i as f64 * 0.5).sin())
+            .collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        let result = trd.calculate(&high, &low, &close);
+        // Ranging market should show scores closer to 50
+        assert!(result[40] >= 30.0 && result[40] <= 70.0);
+    }
+
+    #[test]
+    fn test_trend_regime_detector_short_data() {
+        let short_close = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let short_high = vec![102.0, 103.0, 104.0, 105.0, 106.0];
+        let short_low = vec![98.0, 99.0, 100.0, 101.0, 102.0];
+
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        let result = trd.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(result.len(), short_close.len());
+        // All values should be default (50.0) since not enough data
+        for val in &result {
+            assert_eq!(*val, 50.0);
+        }
+    }
+
+    #[test]
+    fn test_newest_six_indicators_trait_implementations() {
+        // Verify all 6 new indicators implement TechnicalIndicator correctly
+        let tpi = TrendPersistenceIndex::new(20, 5).unwrap();
+        assert_eq!(tpi.name(), "Trend Persistence Index");
+        assert_eq!(tpi.min_periods(), 21);
+
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        assert_eq!(tso.name(), "Trend Strength Oscillator");
+        assert_eq!(tso.min_periods(), 17);
+
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        assert_eq!(msti.name(), "Multi-Scale Trend Index");
+        assert_eq!(msti.min_periods(), 31);
+
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        assert_eq!(ter.name(), "Trend Efficiency Ratio");
+        assert_eq!(ter.min_periods(), 13);
+
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        assert_eq!(tvi.name(), "Trend Velocity Index");
+        assert_eq!(tvi.min_periods(), 17);
+
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        assert_eq!(trd.name(), "Trend Regime Detector");
+        assert_eq!(trd.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_newest_six_indicators_uptrend_data() {
+        // Test all 6 new indicators with standard uptrend test data
+        let (high, low, close, _) = make_test_data();
+
+        let tpi = TrendPersistenceIndex::new(20, 5).unwrap();
+        let result = tpi.calculate(&close);
+        assert!(result[35] > 0.0, "TrendPersistenceIndex should be positive in uptrend");
+
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        let result = tso.calculate(&high, &low, &close);
+        assert!(result[35] > 0.0, "TrendStrengthOscillator should be positive in uptrend");
+
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        let result = msti.calculate(&close);
+        assert!(result[35] > 0.0, "MultiScaleTrendIndex should be positive in uptrend");
+
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        let result = ter.calculate(&close);
+        assert!(result[35] > 50.0, "TrendEfficiencyRatio should be high in clean uptrend");
+
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        let result = tvi.calculate(&high, &low, &close);
+        assert!(result[35] > 0.0, "TrendVelocityIndex should be positive in uptrend");
+
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        let result = trd.calculate(&high, &low, &close);
+        assert!(result[35] > 50.0, "TrendRegimeDetector should indicate uptrend regime");
+    }
+
+    #[test]
+    fn test_newest_six_indicators_downtrend_data() {
+        // Test all 6 new indicators with downtrend data
+        let close: Vec<f64> = (0..50).map(|i| 150.0 - i as f64).collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 2.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 2.0).collect();
+
+        let tpi = TrendPersistenceIndex::new(20, 5).unwrap();
+        let result = tpi.calculate(&close);
+        assert!(result[40] > 0.0, "TrendPersistenceIndex should be positive (measures persistence regardless of direction)");
+
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        let result = tso.calculate(&high, &low, &close);
+        assert!(result[40] < 0.0, "TrendStrengthOscillator should be negative in downtrend");
+
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        let result = msti.calculate(&close);
+        assert!(result[40] < 0.0, "MultiScaleTrendIndex should be negative in downtrend");
+
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        let result = ter.calculate(&close);
+        assert!(result[40] > 50.0, "TrendEfficiencyRatio should be high in clean downtrend too");
+
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        let result = tvi.calculate(&high, &low, &close);
+        assert!(result[40] < 0.0, "TrendVelocityIndex should be negative in downtrend");
+
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        let result = trd.calculate(&high, &low, &close);
+        assert!(result[40] < 50.0, "TrendRegimeDetector should indicate downtrend regime");
+    }
+
+    #[test]
+    fn test_newest_six_indicators_choppy_market() {
+        // Test all 6 new indicators with choppy/ranging data
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + if i % 2 == 0 { 1.5 } else { -1.5 })
+            .collect();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+
+        let tpi = TrendPersistenceIndex::new(20, 3).unwrap();
+        let result = tpi.calculate(&close);
+        assert!(result[40] < 50.0, "TrendPersistenceIndex should be low in choppy market");
+
+        let tso = TrendStrengthOscillator::new(14, 3).unwrap();
+        let result = tso.calculate(&high, &low, &close);
+        assert!(result[40].abs() < 50.0, "TrendStrengthOscillator should be weak in choppy market");
+
+        let msti = MultiScaleTrendIndex::new(5, 30).unwrap();
+        let result = msti.calculate(&close);
+        assert!(result[40].abs() < 50.0, "MultiScaleTrendIndex should be weak in choppy market");
+
+        let ter = TrendEfficiencyRatio::new(10, 3).unwrap();
+        let result = ter.calculate(&close);
+        assert!(result[40] < 30.0, "TrendEfficiencyRatio should be low in choppy market");
+
+        let tvi = TrendVelocityIndex::new(14, 7, 3).unwrap();
+        let result = tvi.calculate(&high, &low, &close);
+        assert!(result[40].abs() < 50.0, "TrendVelocityIndex should be weak in choppy market");
+
+        let trd = TrendRegimeDetector::new(20, 7, 1.5).unwrap();
+        let result = trd.calculate(&high, &low, &close);
+        assert!(result[40] >= 35.0 && result[40] <= 65.0, "TrendRegimeDetector should indicate ranging regime");
     }
 }
