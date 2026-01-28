@@ -14,6 +14,7 @@ pub mod laguerre_rsi;
 pub mod roofing;
 pub mod supersmoother;
 pub mod decycler;
+pub mod cycles;
 
 // Re-exports
 pub use mesa::MESA;
@@ -26,3 +27,7 @@ pub use laguerre_rsi::LaguerreRSI;
 pub use roofing::RoofingFilter;
 pub use supersmoother::Supersmoother;
 pub use decycler::Decycler;
+pub use cycles::{
+    DominantCyclePeriod, CycleAmplitude, CyclePhase,
+    TrendCycleDecomposition, CycleMomentum, CycleTurningPoint,
+};

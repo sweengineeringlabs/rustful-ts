@@ -23,6 +23,7 @@ pub mod swing;
 pub mod demark;
 pub mod intermarket;
 pub mod crypto;
+pub mod sentiment;
 
 #[cfg(feature = "simd")]
 pub mod simd;
@@ -220,6 +221,14 @@ pub use crypto::{
     SOPR, SOPROutput, SOPRSignal,
     HashRibbons, HashRibbonsOutput, HashRibbonsPhase,
     FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedWeights,
+};
+
+// ============================================================================
+// Sentiment Exports
+// ============================================================================
+pub use sentiment::{
+    FearIndex, GreedIndex, CrowdPsychology, MarketEuphoria,
+    Capitulation, SmartMoneyConfidence,
 };
 
 // ============================================================================

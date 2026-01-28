@@ -23,6 +23,7 @@ pub mod descriptive;
 pub mod tests_stat;
 pub mod diagnostics;
 pub mod stationarity;
+pub mod seasonal;
 
 // Re-exports
 pub use std_dev::StandardDeviation;
@@ -55,4 +56,8 @@ pub use diagnostics::{
 pub use stationarity::{
     KolmogorovSmirnov, AndersonDarling, AugmentedDickeyFuller, KPSS, PhillipsPerron,
     TRINMovingAverage,
+};
+pub use seasonal::{
+    SeasonalStrength, DayOfWeekEffect, TurnOfMonthEffect, HolidayEffect,
+    QuarterlyEffect, JanuaryEffect,
 };
