@@ -42,6 +42,7 @@ pub mod kase_permission;
 pub mod projection_oscillator;
 pub mod elder_power;
 pub mod lane;
+pub mod derivatives;
 
 // Re-exports
 pub use rsi::RSI;
@@ -88,4 +89,8 @@ pub use lane::{
     FullStochastic, FullStochasticOutput, LaneStochastic,
     StochasticDivergence, DivergenceType, DivergenceOutput,
     StochasticPop, StochasticDrop, StochasticCrossover, CrossoverOutput,
+};
+pub use derivatives::{
+    PriceVelocity, PriceAcceleration, MomentumDivergence, SmoothedROC,
+    ComparativeMomentum, DynamicMomentumIndex, MomentumQuality, NormalizedMomentum,
 };

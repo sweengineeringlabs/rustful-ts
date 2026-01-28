@@ -56,6 +56,8 @@ pub use oscillators::{
     RelativeVolatilityIndex, DoubleStochastic, PriceOscillator, RainbowOscillator,
     KasePermissionStochastic, ProjectionOscillator, KasePeakOscillator,
     ElderPower, ElderPowerOutput,
+    PriceVelocity, PriceAcceleration, MomentumDivergence, SmoothedROC,
+    ComparativeMomentum, DynamicMomentumIndex, MomentumQuality, NormalizedMomentum,
 };
 
 // ============================================================================
@@ -221,6 +223,8 @@ pub use crypto::{
     SOPR, SOPROutput, SOPRSignal,
     HashRibbons, HashRibbonsOutput, HashRibbonsPhase,
     FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedWeights,
+    PuellMultiple, ReserveRisk, StockToFlow, ThermocapMultiple,
+    CoinDaysDestroyed, RealizedCapAge,
 };
 
 // ============================================================================
