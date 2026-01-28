@@ -135,8 +135,8 @@ These indicators are already implemented in indicator-core but were not listed i
 
 | ID | Indicator | Category | Description | Complexity | Status |
 |----|-----------|----------|-------------|------------|--------|
-| IND-069 | Volume Profile | Volume | Price-volume distribution | High | |
-| IND-070 | Market Profile | Volume | TPO-based value area | High | |
+| IND-069 | Volume Profile | Volume | Price-volume distribution | High | ✅ Done |
+| IND-070 | Market Profile | Volume | TPO-based value area | High | ✅ Done |
 | IND-071 | Volume Oscillator | Volume | Fast/slow volume MA difference | Low | ✅ Done |
 | IND-072 | PVT | Volume | Price-Volume Trend | Low | ✅ Done |
 | IND-073 | NVI | Volume | Negative Volume Index | Medium | ✅ Done |
@@ -148,14 +148,14 @@ These indicators are already implemented in indicator-core but were not listed i
 
 | ID | Indicator | Category | Description | Complexity | Status |
 |----|-----------|----------|-------------|------------|--------|
-| IND-077 | Rainbow MA | Trend | 10 recursive SMAs visualization | Low | |
+| IND-077 | Rainbow MA | Trend | 10 recursive SMAs visualization | Low | ✅ Done |
 | IND-078 | Rainbow Oscillator | Oscillator | Rainbow deviation | Medium | ✅ Done |
 | IND-079 | Projection Oscillator | Oscillator | Linear regression oscillator | Medium | ✅ Done |
 | IND-080 | Price Oscillator | Oscillator | MA difference (absolute) | Low | ✅ Done |
-| IND-081 | Percentage Bands | Volatility | Fixed percentage from MA | Low | |
-| IND-082 | Darvas Box | Pattern | Breakout boxes | Medium | |
-| IND-083 | Keltner Original | Volatility | Original 10-day ATR version | Low | |
-| IND-084 | Commodity Selection Index | Composite | ADXR + ATR composite | Medium | |
+| IND-081 | Percentage Bands | Volatility | Fixed percentage from MA | Low | ✅ Done |
+| IND-082 | Darvas Box | Pattern | Breakout boxes | Medium | ✅ Done |
+| IND-083 | Keltner Original | Volatility | Original 10-day ATR version | Low | ✅ Done |
+| IND-084 | Commodity Selection Index | Composite | ADXR + ATR composite | Medium | ✅ Done |
 
 ## Priority 12: Crypto & Modern
 

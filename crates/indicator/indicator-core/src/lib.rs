@@ -82,6 +82,7 @@ pub use volume::{
     VWAP, OBV, MFI, CMF, VWMA, ADLine, ForceIndex, KlingerOscillator,
     BalanceOfPower, EaseOfMovement, VROC, PVT, NVI, PVI, WilliamsAD,
     TwiggsMoneyFlow, VolumeOscillator, NetVolume, ChaikinOscillator, TWAP,
+    VolumeProfile, VolumeProfileOutput, MarketProfile, MarketProfileOutput,
 };
 
 // ============================================================================
@@ -230,6 +231,7 @@ pub use indicator_api::{
     BollingerConfig, ATRConfig, DonchianConfig, KeltnerConfig,
     // Volume
     VWAPConfig, OBVConfig, MFIConfig, CMFConfig,
+    VolumeProfileConfig, MarketProfileConfig,
     // Other
     ElderRayConfig, PivotType,
 };

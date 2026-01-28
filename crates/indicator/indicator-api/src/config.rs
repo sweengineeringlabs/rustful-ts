@@ -1334,3 +1334,139 @@ impl Default for StepVhfAdaptiveVMAConfig {
         }
     }
 }
+
+// ============================================================================
+// Volume Profile Indicators
+// ============================================================================
+
+/// Volume Profile configuration.
+///
+/// Shows volume traded at each price level as a histogram.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeProfileConfig {
+    /// Price bin size (auto-calculated if None).
+    pub tick_size: Option<f64>,
+    /// Number of bins if tick_size is None.
+    pub num_bins: usize,
+    /// Value area percentage (default: 0.70).
+    pub value_area_pct: f64,
+    /// Profile period in bars (0 = entire series).
+    pub period: usize,
+    /// Use close only vs full OHLC range.
+    pub close_only: bool,
+}
+
+impl VolumeProfileConfig {
+    pub fn new(num_bins: usize) -> Self {
+        Self {
+            tick_size: None,
+            num_bins,
+            value_area_pct: 0.70,
+            period: 0,
+            close_only: false,
+        }
+    }
+
+    pub fn with_tick_size(tick_size: f64) -> Self {
+        Self {
+            tick_size: Some(tick_size),
+            num_bins: 50,
+            value_area_pct: 0.70,
+            period: 0,
+            close_only: false,
+        }
+    }
+
+    pub fn with_period(mut self, period: usize) -> Self {
+        self.period = period;
+        self
+    }
+
+    pub fn with_value_area_pct(mut self, pct: f64) -> Self {
+        self.value_area_pct = pct;
+        self
+    }
+}
+
+impl Default for VolumeProfileConfig {
+    fn default() -> Self {
+        Self {
+            tick_size: None,
+            num_bins: 50,
+            value_area_pct: 0.70,
+            period: 0,
+            close_only: false,
+        }
+    }
+}
+
+/// Market Profile (TPO) configuration.
+///
+/// Time Price Opportunity based analysis showing time spent at each price level.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketProfileConfig {
+    /// Price bin size (auto-calculated if None).
+    pub tick_size: Option<f64>,
+    /// Number of bins if tick_size is None.
+    pub num_bins: usize,
+    /// Value area percentage (default: 0.70).
+    pub value_area_pct: f64,
+    /// Bars per TPO period.
+    pub tpo_period: usize,
+    /// Initial Balance TPO periods.
+    pub ib_periods: usize,
+    /// Session length in bars (0 = entire series).
+    pub session_bars: usize,
+}
+
+impl MarketProfileConfig {
+    pub fn new(num_bins: usize) -> Self {
+        Self {
+            tick_size: None,
+            num_bins,
+            value_area_pct: 0.70,
+            tpo_period: 1,
+            ib_periods: 2,
+            session_bars: 0,
+        }
+    }
+
+    pub fn with_tick_size(tick_size: f64) -> Self {
+        Self {
+            tick_size: Some(tick_size),
+            num_bins: 50,
+            value_area_pct: 0.70,
+            tpo_period: 1,
+            ib_periods: 2,
+            session_bars: 0,
+        }
+    }
+
+    pub fn with_tpo_period(mut self, period: usize) -> Self {
+        self.tpo_period = period;
+        self
+    }
+
+    pub fn with_ib_periods(mut self, periods: usize) -> Self {
+        self.ib_periods = periods;
+        self
+    }
+
+    pub fn with_session_bars(mut self, bars: usize) -> Self {
+        self.session_bars = bars;
+        self
+    }
+}
+
+impl Default for MarketProfileConfig {
+    fn default() -> Self {
+        Self {
+            tick_size: None,
+            num_bins: 50,
+            value_area_pct: 0.70,
+            tpo_period: 1,
+            ib_periods: 2,
+            session_bars: 0,
+        }
+    }
+}

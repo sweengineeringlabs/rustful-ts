@@ -27,6 +27,8 @@ pub mod volume_zone;
 pub mod elder_thermometer;
 pub mod volume_price_confirm;
 pub mod vwmacd;
+pub mod volume_profile;
+pub mod market_profile;
 
 // Re-exports
 pub use vwap::VWAP;
@@ -54,3 +56,5 @@ pub use volume_zone::VolumeZoneOscillator;
 pub use elder_thermometer::ElderThermometer;
 pub use volume_price_confirm::VolumePriceConfirm;
 pub use vwmacd::VWMACD;
+pub use volume_profile::{VolumeProfile, VolumeProfileOutput};
+pub use market_profile::{MarketProfile, MarketProfileOutput};
