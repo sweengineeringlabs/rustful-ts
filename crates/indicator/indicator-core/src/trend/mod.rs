@@ -23,6 +23,7 @@ pub mod vhf;
 pub mod vortex;
 pub mod safezone_stop;
 pub mod weinstein;
+pub mod extended;
 
 // Re-exports
 pub use macd::MACD;
@@ -49,4 +50,8 @@ pub use weinstein::{
     StageAnalysis, StageAnalysisOutput, WeinStage, WeinsteinMA,
     MansfieldRS, RelativePriceStrength, VolumeConfirmation,
     SupportResistanceLevels, BreakoutValidation, TrendScore,
+};
+pub use extended::{
+    CompositeTrendScore, TrendPersistence, PriceChannelPosition,
+    TrendExhaustion, DirectionalMovementQuality, MultiTimeframeTrend,
 };

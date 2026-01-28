@@ -69,6 +69,8 @@ pub use trend::{
     EfficiencyRatio, GatorOscillator, KaseCD,
     McGinleyDynamic, RainbowMA, RandomWalkIndex, TrendDetectionIndex, TrendIntensityIndex,
     VerticalHorizontalFilter, VortexIndicator, SafeZoneStop, SafeZoneStopOutput,
+    CompositeTrendScore, TrendPersistence, PriceChannelPosition,
+    TrendExhaustion, DirectionalMovementQuality, MultiTimeframeTrend,
 };
 
 // ============================================================================
@@ -80,6 +82,8 @@ pub use volatility::{
     RealizedVolatility, NormalizedATR, ChoppinessIndex, UlcerIndex,
     VolatilityCone, VolatilityConeOutput, CloseToCloseVolatility,
     KaseDevStops, KaseDevStopsOutput, MarketThermometer,
+    VolatilityRatio, RangeExpansionIndex, IntradayIntensityVolatility,
+    NormalizedVolatility, VolatilityBreakout, VolatilityRegimeClassifier,
 };
 
 // ============================================================================
@@ -90,6 +94,8 @@ pub use volume::{
     BalanceOfPower, EaseOfMovement, VROC, PVT, NVI, PVI, WilliamsAD,
     TwiggsMoneyFlow, VolumeOscillator, NetVolume, ChaikinOscillator, TWAP,
     VolumeProfile, VolumeProfileOutput, MarketProfile, MarketProfileOutput,
+    VolumeMomentum, RelativeVolume, VolumeWeightedPriceMomentum,
+    VPTExtended, VolumeBuyingPressure, PriceVolumeRank,
 };
 
 // ============================================================================
@@ -99,6 +105,8 @@ pub use bands::{
     BollingerBands, KeltnerChannels, DonchianChannels,
     AccelerationBands, ChandelierExit, ElderAutoEnvelope, Envelope, HighLowBands, PriceChannel,
     ProjectionBands, STARCBands, StandardErrorBands, TironeLevels, TironeLevelsOutput,
+    AdaptiveBands, FixedPercentageEnvelope, MomentumBands,
+    VolumeWeightedBands, DynamicChannel, LinearRegressionChannel,
 };
 
 // ============================================================================
@@ -134,6 +142,7 @@ pub use pattern::{
 pub use risk::{
     SharpeRatio, SortinoRatio, CalmarRatio, MaxDrawdown, ValueAtRisk, VaRMethod,
     ConditionalVaR, Beta, Alpha, TreynorRatio, InformationRatio, OmegaRatio, GainLossRatio,
+    SterlingRatio, BurkeRatio, UlcerPerformanceIndex, PainIndex, RecoveryFactor, TailRatio,
 };
 
 // ============================================================================

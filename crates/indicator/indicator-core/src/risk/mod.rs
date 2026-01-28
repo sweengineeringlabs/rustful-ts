@@ -14,6 +14,7 @@ pub mod treynor;
 pub mod information_ratio;
 pub mod omega;
 pub mod gain_loss;
+pub mod extended;
 
 // Re-exports
 pub use sharpe::SharpeRatio;
@@ -28,3 +29,7 @@ pub use treynor::TreynorRatio;
 pub use information_ratio::InformationRatio;
 pub use omega::OmegaRatio;
 pub use gain_loss::GainLossRatio;
+pub use extended::{
+    SterlingRatio, BurkeRatio, UlcerPerformanceIndex,
+    PainIndex, RecoveryFactor, TailRatio,
+};

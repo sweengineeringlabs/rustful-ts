@@ -21,6 +21,7 @@ pub mod market_thermometer;
 pub mod kase_dev_stops;
 pub mod vix_derived;
 pub mod implied_vol;
+pub mod extended;
 
 // Re-exports
 pub use atr::ATR;
@@ -47,4 +48,8 @@ pub use vix_derived::{
 pub use implied_vol::{
     IVRank, IVPercentile, IVSkewSlope, TermStructureSlope,
     VolOfVol, RiskReversal,
+};
+pub use extended::{
+    VolatilityRatio, RangeExpansionIndex, IntradayIntensityVolatility,
+    NormalizedVolatility, VolatilityBreakout, VolatilityRegimeClassifier,
 };

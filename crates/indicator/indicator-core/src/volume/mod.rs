@@ -32,6 +32,7 @@ pub mod market_profile;
 pub mod arms_granville;
 pub mod tick_data;
 pub mod order_flow;
+pub mod extended;
 
 // Re-exports
 pub use vwap::VWAP;
@@ -72,4 +73,8 @@ pub use tick_data::{
 pub use order_flow::{
     DeltaVolume, CumulativeDelta, ImbalanceRatio, Absorption,
     VolumePOC, FootprintImbalance,
+};
+pub use extended::{
+    VolumeMomentum, RelativeVolume, VolumeWeightedPriceMomentum,
+    VPTExtended, VolumeBuyingPressure, PriceVolumeRank,
 };
