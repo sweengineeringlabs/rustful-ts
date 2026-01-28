@@ -38,6 +38,11 @@ pub use extended::{
 pub use advanced::{
     MarketMomentumBreadth, BreadthOscillator, CumulativeBreadthIndex,
     VolumeBreadthRatio, BreadthDivergence, ParticipationRate,
+    BreadthMomentumAdvanced, BreadthStrength, BreadthOverbought,
+    BreadthOversold, BreadthTrend, BreadthConfirmation,
+    // New breadth indicators
+    BreadthMomentumIndex, CumulativeBreadthMomentum, BreadthVolatility,
+    BreadthTrendStrength, BreadthExtremeDetector, BreadthDivergenceIndex,
 };
 
 // Re-export SPI types from crate root

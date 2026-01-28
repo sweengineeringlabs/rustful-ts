@@ -82,4 +82,8 @@ pub use extended::{
 pub use advanced::{
     VolumeAccumulation, VolumeBreakout, RelativeVolumeStrength,
     VolumeClimaxDetector, SmartMoneyVolume, VolumeEfficiency,
+    VolumeDistribution, VolumeIntensity, VolumeTrend,
+    VolumeAnomaly, VolumePriceConfirmation, VolumeExhaustion,
+    VolumeWeightedMomentum, VolumeForceIndex, CumulativeVolumeOscillator,
+    VolumeRateOfChange, RelativeVolumeProfile, VolumeImpulse,
 };

@@ -59,4 +59,8 @@ pub use extended::{
 pub use advanced::{
     TrendAcceleration, TrendConsistency, AdaptiveTrendLine,
     TrendStrengthMeter, TrendChangeDetector, MultiScaleTrend,
+    AdaptiveTrendFollower, TrendQualityIndex, TrendBreakoutStrength,
+    TrendPersistenceMetric, TrendCycleFinder, TrendVolatilityRatio,
+    TrendContinuity, TrendMomentumConvergence, AdaptiveTrendStrength,
+    TrendDirectionIndex, TrendMaturity, MultiPeriodTrendAlignment,
 };

@@ -74,6 +74,8 @@ pub use oscillators::{
     TrendIntensityOscillator, RangeOscillator, MomentumDivergenceOscillator,
     CycleOscillator, VolatilityOscillator, TrendOscillator,
     PriceActionOscillator, VolumeFlowOscillator, MomentumFlowOscillator,
+    AdaptiveCCI, SmoothedTSI, VolatilityAdjustedRSI,
+    CycleTunedOscillator, MomentumAccumulator, PriceStrengthIndex,
 };
 
 // ============================================================================
@@ -89,6 +91,8 @@ pub use trend::{
     TrendExhaustion, DirectionalMovementQuality, MultiTimeframeTrend,
     TrendAcceleration, TrendConsistency, AdaptiveTrendLine,
     TrendStrengthMeter, TrendChangeDetector, MultiScaleTrend,
+    TrendContinuity, TrendMomentumConvergence, AdaptiveTrendStrength,
+    TrendDirectionIndex, TrendMaturity, MultiPeriodTrendAlignment,
 };
 
 // ============================================================================
@@ -104,6 +108,8 @@ pub use volatility::{
     NormalizedVolatility, VolatilityBreakout, VolatilityRegimeClassifier,
     VolatilityTrend, VolatilityMomentum, RelativeVolatility,
     PriceVolatilitySkew, ImpliedVolatilityProxy, VolatilityPersistence,
+    VolatilityAcceleration, VolatilityMeanReversionDistance, VolatilitySpread,
+    NormalizedRangeVolatility, VolatilitySkewIndicator, AdaptiveVolatilityBands,
 };
 
 // ============================================================================
@@ -118,6 +124,10 @@ pub use volume::{
     VPTExtended, VolumeBuyingPressure, PriceVolumeRank,
     VolumeAccumulation, VolumeBreakout, RelativeVolumeStrength,
     VolumeClimaxDetector, SmartMoneyVolume, VolumeEfficiency,
+    VolumeDistribution, VolumeIntensity, VolumeTrend,
+    VolumeAnomaly, VolumePriceConfirmation, VolumeExhaustion,
+    VolumeWeightedMomentum, VolumeForceIndex, CumulativeVolumeOscillator,
+    VolumeRateOfChange, RelativeVolumeProfile, VolumeImpulse,
 };
 
 // ============================================================================
@@ -131,6 +141,8 @@ pub use bands::{
     VolumeWeightedBands, DynamicChannel, LinearRegressionChannel,
     VolatilityBands, TrendBands, MomentumBandsAdvanced,
     PriceEnvelope, DynamicPriceChannel, RangeBands,
+    AdaptiveKeltnerChannels, VolatilityWeightedBands, TrendFollowingChannel,
+    DynamicSupportResistanceBands, MomentumBandwidth, PriceEnvelopeOscillator,
 };
 
 // ============================================================================
@@ -245,6 +257,8 @@ pub use breadth::{
     BullishPercent, BPISeries, BPISignal, BPIStatus,
     MarketMomentumBreadth, BreadthOscillator, CumulativeBreadthIndex,
     VolumeBreadthRatio, BreadthDivergence, ParticipationRate,
+    BreadthMomentumIndex, CumulativeBreadthMomentum, BreadthVolatility,
+    BreadthTrendStrength, BreadthExtremeDetector, BreadthDivergenceIndex,
 };
 
 // ============================================================================
@@ -263,6 +277,8 @@ pub use swing::{
     SwingVelocity, SwingStrength, SwingFailurePattern,
     SwingTrendStrength, SwingReversal, SwingVolatility,
     SwingMomentumAdvanced, SwingTargetLevels, SwingDuration,
+    SwingProjection, SwingConfirmation, SwingRangeAnalysis,
+    SwingBreakout, SwingMomentumFlow, SwingTrendAnalysis,
 };
 
 // ============================================================================
@@ -298,6 +314,8 @@ pub use intermarket::{
     SectorRelativePerformance, CorrelationMomentum, RiskAppetiteIndex, DivergenceIndex,
     LeadLagIndicator, PriceSpreadMomentum, CorrelationTrend,
     RelativeValueIndex, SpreadMeanReversion, PairsTradingSignal,
+    CrossMarketCorrelation, RelativeStrengthMomentum, IntermarketDivergence,
+    SectorMomentumRank, CrossAssetVolatility, MarketLeadLag,
 };
 
 // ============================================================================
@@ -325,6 +343,10 @@ pub use sentiment::{
     ReversalSentiment, ExtremeReadings, SentimentOscillator,
     PriceActionSentiment, VolumeBasedSentiment, MomentumSentiment,
     ExtremeSentiment, SentimentDivergence, CompositeSentimentScore,
+    SentimentMomentum, SentimentExtremeDetector, SentimentTrendFollower,
+    SentimentContrarianSignal, SentimentVolatility, SentimentCycle,
+    SentimentStrength, SentimentAcceleration, SentimentMeanReversion,
+    CrowdBehaviorIndex, SentimentRegimeDetector, ContraSentimentSignal,
 };
 
 // ============================================================================

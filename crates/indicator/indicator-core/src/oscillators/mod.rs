@@ -103,4 +103,6 @@ pub use extended::{
 pub use advanced::{
     CycleOscillator, VolatilityOscillator, TrendOscillator,
     PriceActionOscillator, VolumeFlowOscillator, MomentumFlowOscillator,
+    AdaptiveCCI, SmoothedTSI, VolatilityAdjustedRSI,
+    CycleTunedOscillator, MomentumAccumulator, PriceStrengthIndex,
 };

@@ -57,4 +57,8 @@ pub use extended::{
 pub use advanced::{
     VolatilityTrend, VolatilityMomentum, RelativeVolatility,
     PriceVolatilitySkew, ImpliedVolatilityProxy, VolatilityPersistence,
+    VolatilityForecast, VolatilitySpike, VolatilityMeanReversion,
+    VolatilityClustering, VolatilityAsymmetry, VolatilityEfficiency,
+    VolatilityAcceleration, VolatilityMeanReversionDistance, VolatilitySpread,
+    NormalizedRangeVolatility, VolatilitySkewIndicator, AdaptiveVolatilityBands,
 };

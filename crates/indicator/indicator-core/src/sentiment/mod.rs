@@ -19,4 +19,10 @@ pub use advanced::{
     PriceActionSentiment, VolumeBasedSentiment, MomentumSentiment,
     ExtremeSentiment, SentimentDivergence, CompositeSentimentScore,
     SentimentWeights,
+    // New advanced sentiment indicators
+    SentimentMomentum, SentimentExtremeDetector, SentimentTrendFollower,
+    SentimentContrarianSignal, SentimentVolatility, SentimentCycle,
+    // Extended advanced sentiment indicators
+    SentimentStrength, SentimentAcceleration, SentimentMeanReversion,
+    CrowdBehaviorIndex, SentimentRegimeDetector, ContraSentimentSignal,
 };

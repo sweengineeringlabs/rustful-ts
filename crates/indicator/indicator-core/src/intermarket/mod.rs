@@ -37,6 +37,10 @@ pub use extended::{
 pub use advanced::{
     LeadLagIndicator, PriceSpreadMomentum, CorrelationTrend,
     RelativeValueIndex, SpreadMeanReversion, PairsTradingSignal,
+    RelativePerformance, MomentumLeader, TrendLeader,
+    CorrelationBreakdown, SpreadAnalysis, FlowIndicator,
+    CrossMarketCorrelation, RelativeStrengthMomentum, IntermarketDivergence,
+    SectorMomentumRank, CrossAssetVolatility, MarketLeadLag,
 };
 
 // ============================================================================

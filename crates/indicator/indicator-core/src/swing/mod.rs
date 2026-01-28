@@ -17,6 +17,7 @@ pub mod safezone_stop;
 pub mod kase_dev_stops;
 pub mod extended;
 pub mod advanced;
+pub mod r#final;
 
 // Re-exports
 pub use swing_index::SwingIndex;
@@ -38,4 +39,8 @@ pub use extended::{
 pub use advanced::{
     SwingTrendStrength, SwingReversal, SwingVolatility,
     SwingMomentumAdvanced, SwingTargetLevels, SwingDuration,
+};
+pub use r#final::{
+    SwingProjection, SwingConfirmation, SwingRangeAnalysis,
+    SwingBreakout, SwingMomentumFlow, SwingTrendAnalysis,
 };

@@ -54,4 +54,8 @@ pub use extended::{
 pub use advanced::{
     VolatilityBands, TrendBands, MomentumBandsAdvanced,
     PriceEnvelope, DynamicPriceChannel, RangeBands,
+    AdaptiveBandsSystem, TrendAwareBands, VolatilityAdjustedBands,
+    CycleBands, DynamicEnvelope,
+    AdaptiveKeltnerChannels, VolatilityWeightedBands, TrendFollowingChannel,
+    DynamicSupportResistanceBands, MomentumBandwidth, PriceEnvelopeOscillator,
 };

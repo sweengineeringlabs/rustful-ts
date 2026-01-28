@@ -607,6 +607,1358 @@ impl TechnicalIndicator for CompositeSentimentScore {
     }
 }
 
+// ============================================================================
+// Additional Advanced Sentiment Indicators
+// ============================================================================
+
+/// Sentiment Momentum - Tracks momentum in sentiment changes
+#[derive(Debug, Clone)]
+pub struct SentimentMomentum {
+    period: usize,
+    smoothing: usize,
+}
+
+impl SentimentMomentum {
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate sentiment momentum (-100 to 100)
+    /// Measures the rate of change in underlying sentiment readings
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut raw_sentiment = vec![0.0; n];
+        let mut sentiment_momentum = vec![0.0; n];
+
+        // First pass: Calculate raw sentiment based on price action and volume
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Close position in range (-1 to 1)
+                let position = (close[i] - low[i]) / range * 2.0 - 1.0;
+
+                // Price change direction
+                let price_change = if close[i - 1] > 0.0 {
+                    (close[i] / close[i - 1] - 1.0) * 100.0
+                } else {
+                    0.0
+                };
+
+                // Volume factor (relative to simple average)
+                let vol_factor = if i >= self.period {
+                    let avg_vol: f64 = volume[(i - self.period)..i].iter().sum::<f64>() / self.period as f64;
+                    if avg_vol > 0.0 { (volume[i] / avg_vol).min(3.0) } else { 1.0 }
+                } else {
+                    1.0
+                };
+
+                // Raw sentiment combines position, price change, and volume
+                raw_sentiment[i] = (position * 30.0 + price_change * 5.0) * vol_factor.sqrt();
+            }
+        }
+
+        // Second pass: Calculate sentiment momentum (rate of change in sentiment)
+        for i in self.period..n {
+            let sent_change = raw_sentiment[i] - raw_sentiment[i - self.period];
+
+            // Also consider acceleration
+            let mid = i - self.period / 2;
+            let first_half = raw_sentiment[mid] - raw_sentiment[i - self.period];
+            let second_half = raw_sentiment[i] - raw_sentiment[mid];
+            let acceleration = second_half - first_half;
+
+            sentiment_momentum[i] = (sent_change * 0.7 + acceleration * 0.3).clamp(-100.0, 100.0);
+        }
+
+        // Third pass: Apply smoothing
+        let total_lookback = self.period + self.smoothing - 1;
+        for i in total_lookback..n {
+            let sum: f64 = sentiment_momentum[(i - self.smoothing + 1)..=i].iter().sum();
+            result[i] = (sum / self.smoothing as f64).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentMomentum {
+    fn name(&self) -> &str {
+        "Sentiment Momentum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Extreme Detector - Detects extreme sentiment conditions
+#[derive(Debug, Clone)]
+pub struct SentimentExtremeDetector {
+    period: usize,
+    z_threshold: f64,
+}
+
+impl SentimentExtremeDetector {
+    pub fn new(period: usize, z_threshold: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if z_threshold <= 0.0 || z_threshold > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "z_threshold".to_string(),
+                reason: "must be between 0 and 5".to_string(),
+            });
+        }
+        Ok(Self { period, z_threshold })
+    }
+
+    /// Calculate extreme sentiment detection (-100 to 100)
+    /// Returns strong signals when sentiment reaches extreme levels
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment_readings = vec![0.0; n];
+
+        // Calculate sentiment readings
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                let position = (close[i] - low[i]) / range;
+                let body = close[i] - close[i - 1];
+                let body_ratio = body / range;
+
+                // Volume confirmation
+                let vol_spike = if i >= self.period {
+                    let avg_vol: f64 = volume[(i - self.period)..i].iter().sum::<f64>() / self.period as f64;
+                    if avg_vol > 0.0 && volume[i] > avg_vol * 1.5 { 1.5 } else { 1.0 }
+                } else {
+                    1.0
+                };
+
+                sentiment_readings[i] = (position * 2.0 - 1.0 + body_ratio) * 50.0 * vol_spike;
+            }
+        }
+
+        // Detect extremes using z-score
+        for i in self.period..n {
+            let start = i - self.period;
+            let slice = &sentiment_readings[start..=i];
+
+            let mean: f64 = slice.iter().sum::<f64>() / (self.period + 1) as f64;
+            let variance: f64 = slice.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / (self.period + 1) as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev > 1e-10 {
+                let z_score = (sentiment_readings[i] - mean) / std_dev;
+
+                // Only output when extreme
+                if z_score.abs() >= self.z_threshold {
+                    let intensity = (z_score.abs() / self.z_threshold).min(2.0);
+                    result[i] = (z_score.signum() * intensity * 50.0).clamp(-100.0, 100.0);
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentExtremeDetector {
+    fn name(&self) -> &str {
+        "Sentiment Extreme Detector"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Trend Follower - Follows sentiment trends with confirmation
+#[derive(Debug, Clone)]
+pub struct SentimentTrendFollower {
+    fast_period: usize,
+    slow_period: usize,
+}
+
+impl SentimentTrendFollower {
+    pub fn new(fast_period: usize, slow_period: usize) -> Result<Self> {
+        if fast_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if slow_period <= fast_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "slow_period".to_string(),
+                reason: "must be greater than fast_period".to_string(),
+            });
+        }
+        Ok(Self { fast_period, slow_period })
+    }
+
+    /// Calculate sentiment trend following signal (-100 to 100)
+    /// Positive indicates bullish sentiment trend, negative indicates bearish
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment_base = vec![0.0; n];
+
+        // Calculate base sentiment
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Close position normalized
+                let position = (close[i] - low[i]) / range * 2.0 - 1.0;
+
+                // Momentum component
+                let momentum = if close[i - 1] > 0.0 {
+                    ((close[i] / close[i - 1]) - 1.0) * 100.0
+                } else {
+                    0.0
+                };
+
+                // Volume weight
+                let vol_weight = if i >= 5 {
+                    let avg_vol: f64 = volume[(i - 5)..i].iter().sum::<f64>() / 5.0;
+                    if avg_vol > 0.0 { (volume[i] / avg_vol).sqrt().min(2.0) } else { 1.0 }
+                } else {
+                    1.0
+                };
+
+                sentiment_base[i] = (position * 40.0 + momentum * 3.0) * vol_weight;
+            }
+        }
+
+        // Calculate fast and slow sentiment averages
+        for i in self.slow_period..n {
+            // Fast average
+            let fast_start = i - self.fast_period;
+            let fast_avg: f64 = sentiment_base[fast_start..=i].iter().sum::<f64>()
+                / (self.fast_period + 1) as f64;
+
+            // Slow average
+            let slow_start = i - self.slow_period;
+            let slow_avg: f64 = sentiment_base[slow_start..=i].iter().sum::<f64>()
+                / (self.slow_period + 1) as f64;
+
+            // Trend following: fast above slow = bullish trend
+            let trend_diff = fast_avg - slow_avg;
+
+            // Trend strength based on alignment
+            let trend_alignment = if (fast_avg > 0.0 && slow_avg > 0.0) ||
+                                     (fast_avg < 0.0 && slow_avg < 0.0) {
+                1.3  // Aligned trends are stronger
+            } else {
+                0.8  // Divergent trends are weaker
+            };
+
+            result[i] = (trend_diff * 2.0 * trend_alignment).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentTrendFollower {
+    fn name(&self) -> &str {
+        "Sentiment Trend Follower"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.slow_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Contrarian Signal - Generates contrarian signals from sentiment extremes
+#[derive(Debug, Clone)]
+pub struct SentimentContrarianSignal {
+    period: usize,
+    contrarian_threshold: f64,
+}
+
+impl SentimentContrarianSignal {
+    pub fn new(period: usize, contrarian_threshold: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if contrarian_threshold <= 0.0 || contrarian_threshold > 100.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "contrarian_threshold".to_string(),
+                reason: "must be between 0 and 100".to_string(),
+            });
+        }
+        Ok(Self { period, contrarian_threshold })
+    }
+
+    /// Calculate contrarian sentiment signal (-100 to 100)
+    /// Positive = contrarian bullish (sentiment was too bearish)
+    /// Negative = contrarian bearish (sentiment was too bullish)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment_readings = vec![0.0; n];
+
+        // Calculate sentiment readings
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Multiple sentiment components
+                let position = (close[i] - low[i]) / range;
+                let body = (close[i] - close[i - 1]).signum();
+
+                // Volume surge indicator
+                let vol_surge = if i >= self.period {
+                    let avg_vol: f64 = volume[(i - self.period)..i].iter().sum::<f64>() / self.period as f64;
+                    if avg_vol > 0.0 { (volume[i] / avg_vol - 1.0).max(0.0) } else { 0.0 }
+                } else {
+                    0.0
+                };
+
+                // Higher volume on moves increases sentiment reading
+                sentiment_readings[i] = ((position * 2.0 - 1.0) * 50.0 + body * 20.0) * (1.0 + vol_surge * 0.5);
+            }
+        }
+
+        // Generate contrarian signals
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Calculate average sentiment over period
+            let avg_sentiment: f64 = sentiment_readings[start..=i].iter().sum::<f64>()
+                / (self.period + 1) as f64;
+
+            // Check for extreme sentiment that warrants contrarian signal
+            if avg_sentiment.abs() >= self.contrarian_threshold {
+                // Contrarian: opposite of extreme sentiment
+                // If sentiment was extremely bullish (positive), generate bearish contrarian signal
+                // If sentiment was extremely bearish (negative), generate bullish contrarian signal
+                let excess = avg_sentiment.abs() - self.contrarian_threshold;
+                let intensity = (1.0 + excess / 50.0).min(2.0);
+
+                // Contrarian signal is OPPOSITE of current sentiment
+                result[i] = (-avg_sentiment.signum() * intensity * 50.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentContrarianSignal {
+    fn name(&self) -> &str {
+        "Sentiment Contrarian Signal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Volatility - Measures volatility in sentiment readings
+#[derive(Debug, Clone)]
+pub struct SentimentVolatility {
+    period: usize,
+}
+
+impl SentimentVolatility {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate sentiment volatility (0 to 100)
+    /// Higher values indicate more volatile/unstable sentiment
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment_readings = vec![0.0; n];
+
+        // Calculate daily sentiment readings
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Position-based sentiment
+                let position = (close[i] - low[i]) / range * 2.0 - 1.0;
+
+                // Change-based sentiment
+                let change_sentiment = if close[i - 1] > 0.0 {
+                    ((close[i] / close[i - 1]) - 1.0) * 50.0
+                } else {
+                    0.0
+                };
+
+                sentiment_readings[i] = (position * 50.0 + change_sentiment).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Calculate volatility of sentiment
+        for i in self.period..n {
+            let start = i - self.period;
+            let slice = &sentiment_readings[start..=i];
+
+            // Mean sentiment
+            let mean: f64 = slice.iter().sum::<f64>() / (self.period + 1) as f64;
+
+            // Standard deviation of sentiment
+            let variance: f64 = slice.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / (self.period + 1) as f64;
+            let std_dev = variance.sqrt();
+
+            // Also measure max swing in sentiment
+            let max_sent = slice.iter().cloned().fold(f64::MIN, f64::max);
+            let min_sent = slice.iter().cloned().fold(f64::MAX, f64::min);
+            let sentiment_range = max_sent - min_sent;
+
+            // Combine std dev and range for volatility measure
+            // Scale to 0-100 range
+            result[i] = ((std_dev * 1.5 + sentiment_range * 0.3) / 2.0).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentVolatility {
+    fn name(&self) -> &str {
+        "Sentiment Volatility"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+/// Sentiment Cycle - Tracks sentiment cycles and phases
+#[derive(Debug, Clone)]
+pub struct SentimentCycle {
+    period: usize,
+    cycle_length: usize,
+}
+
+impl SentimentCycle {
+    pub fn new(period: usize, cycle_length: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if cycle_length < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_length".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, cycle_length })
+    }
+
+    /// Calculate sentiment cycle position (-100 to 100)
+    /// Tracks where sentiment is in its cycle: -100 = trough, 100 = peak
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment_readings = vec![0.0; n];
+        let max_period = self.period.max(self.cycle_length);
+
+        // Calculate sentiment readings
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                let position = (close[i] - low[i]) / range;
+                let momentum = if close[i - 1] > 0.0 {
+                    (close[i] / close[i - 1] - 1.0) * 100.0
+                } else {
+                    0.0
+                };
+
+                // Volume factor
+                let vol_factor = if i >= self.period {
+                    let avg_vol: f64 = volume[(i - self.period)..i].iter().sum::<f64>() / self.period as f64;
+                    if avg_vol > 0.0 { (volume[i] / avg_vol).sqrt().min(2.0) } else { 1.0 }
+                } else {
+                    1.0
+                };
+
+                sentiment_readings[i] = ((position * 2.0 - 1.0) * 40.0 + momentum * 3.0) * vol_factor;
+            }
+        }
+
+        // Calculate cycle position
+        for i in max_period..n {
+            let cycle_start = i - self.cycle_length;
+            let cycle_slice = &sentiment_readings[cycle_start..=i];
+
+            // Find cycle high and low
+            let cycle_high = cycle_slice.iter().cloned().fold(f64::MIN, f64::max);
+            let cycle_low = cycle_slice.iter().cloned().fold(f64::MAX, f64::min);
+            let cycle_range = cycle_high - cycle_low;
+
+            // Current position in cycle
+            let current_sentiment = sentiment_readings[i];
+
+            if cycle_range > 1e-10 {
+                // Normalize to -100 to 100 based on cycle position
+                let cycle_position = (current_sentiment - cycle_low) / cycle_range * 2.0 - 1.0;
+
+                // Detect cycle phase based on recent trajectory
+                let recent_avg: f64 = sentiment_readings[(i - self.period)..=i].iter().sum::<f64>()
+                    / (self.period + 1) as f64;
+                let older_avg: f64 = if i >= self.period * 2 {
+                    sentiment_readings[(i - self.period * 2)..(i - self.period)].iter().sum::<f64>()
+                        / self.period as f64
+                } else {
+                    recent_avg
+                };
+
+                let trend = recent_avg - older_avg;
+
+                // Combine cycle position with trend for phase detection
+                // Rising sentiment near bottom = early cycle (bullish)
+                // Falling sentiment near top = late cycle (bearish)
+                let phase_adjustment = if cycle_position < 0.0 && trend > 0.0 {
+                    10.0  // Recovery phase
+                } else if cycle_position > 0.0 && trend < 0.0 {
+                    -10.0  // Distribution phase
+                } else {
+                    0.0
+                };
+
+                result[i] = (cycle_position * 100.0 + phase_adjustment).clamp(-100.0, 100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentCycle {
+    fn name(&self) -> &str {
+        "Sentiment Cycle"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.cycle_length) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// Extended Advanced Sentiment Indicators
+// ============================================================================
+
+/// Sentiment Strength - Overall sentiment strength measure
+/// Combines multiple factors to gauge the overall strength of market sentiment
+#[derive(Debug, Clone)]
+pub struct SentimentStrength {
+    period: usize,
+    smoothing: usize,
+}
+
+impl SentimentStrength {
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate overall sentiment strength (0 to 100)
+    /// Higher values indicate stronger sentiment (either bullish or bearish)
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut raw_strength = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // 1. Price momentum strength
+            let price_change = if close[start] > 0.0 {
+                ((close[i] / close[start]) - 1.0).abs() * 100.0
+            } else {
+                0.0
+            };
+
+            // 2. Directional consistency (how many bars moved in same direction)
+            let mut up_count = 0;
+            let mut down_count = 0;
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_count += 1;
+                } else if close[j] < close[j - 1] {
+                    down_count += 1;
+                }
+            }
+            let consistency = (up_count.max(down_count) as f64) / self.period as f64;
+
+            // 3. Volume confirmation strength
+            let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let mut vol_confirmed_moves = 0.0;
+            let mut total_moves = 0.0;
+            for j in (start + 1)..=i {
+                if close[j] != close[j - 1] {
+                    total_moves += 1.0;
+                    if volume[j] > avg_vol {
+                        vol_confirmed_moves += 1.0;
+                    }
+                }
+            }
+            let vol_confirmation = if total_moves > 0.0 {
+                vol_confirmed_moves / total_moves
+            } else {
+                0.5
+            };
+
+            // 4. Body strength (large bodies indicate conviction)
+            let mut body_strength_sum = 0.0;
+            for j in start..=i {
+                let range = high[j] - low[j];
+                if range > 1e-10 {
+                    let body = (close[j] - open[j]).abs();
+                    body_strength_sum += body / range;
+                }
+            }
+            let body_strength = body_strength_sum / (self.period + 1) as f64;
+
+            // 5. Range expansion (wider ranges indicate stronger sentiment)
+            let mut atr_sum = 0.0;
+            for j in (start + 1)..=i {
+                let tr1 = high[j] - low[j];
+                let tr2 = (high[j] - close[j - 1]).abs();
+                let tr3 = (low[j] - close[j - 1]).abs();
+                atr_sum += tr1.max(tr2).max(tr3);
+            }
+            let atr = atr_sum / self.period as f64;
+            let range_strength = if close[i] > 0.0 {
+                (atr / close[i] * 100.0).min(10.0) / 10.0
+            } else {
+                0.0
+            };
+
+            // Combine all components
+            raw_strength[i] = (
+                price_change.min(50.0) / 50.0 * 25.0 +   // Price momentum (max 25)
+                consistency * 25.0 +                       // Directional consistency (max 25)
+                vol_confirmation * 20.0 +                  // Volume confirmation (max 20)
+                body_strength * 15.0 +                     // Body strength (max 15)
+                range_strength * 15.0                      // Range expansion (max 15)
+            ).clamp(0.0, 100.0);
+        }
+
+        // Apply smoothing
+        let total_lookback = self.period + self.smoothing - 1;
+        for i in total_lookback..n {
+            let sum: f64 = raw_strength[(i - self.smoothing + 1)..=i].iter().sum();
+            result[i] = (sum / self.smoothing as f64).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentStrength {
+    fn name(&self) -> &str {
+        "Sentiment Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Acceleration - Rate of change of sentiment
+/// Measures how quickly sentiment is changing (second derivative of sentiment)
+#[derive(Debug, Clone)]
+pub struct SentimentAcceleration {
+    period: usize,
+    roc_period: usize,
+}
+
+impl SentimentAcceleration {
+    pub fn new(period: usize, roc_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if roc_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "roc_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, roc_period })
+    }
+
+    /// Calculate sentiment acceleration (-100 to 100)
+    /// Positive = sentiment improving at increasing rate
+    /// Negative = sentiment deteriorating at increasing rate
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment = vec![0.0; n];
+        let mut sentiment_velocity = vec![0.0; n];
+
+        // First pass: Calculate base sentiment
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Position-based sentiment
+                let position = (close[i] - low[i]) / range * 2.0 - 1.0;
+
+                // Momentum-based sentiment
+                let momentum = if close[i - 1] > 0.0 {
+                    ((close[i] / close[i - 1]) - 1.0) * 100.0
+                } else {
+                    0.0
+                };
+
+                // Volume factor
+                let vol_factor = if i >= self.period {
+                    let avg_vol: f64 = volume[(i - self.period)..i].iter().sum::<f64>() / self.period as f64;
+                    if avg_vol > 0.0 { (volume[i] / avg_vol).sqrt().min(2.0) } else { 1.0 }
+                } else {
+                    1.0
+                };
+
+                sentiment[i] = (position * 40.0 + momentum * 5.0) * vol_factor;
+            }
+        }
+
+        // Second pass: Calculate sentiment velocity (first derivative)
+        for i in self.period..n {
+            let start = i - self.period;
+            let recent_sentiment: f64 = sentiment[(i - self.period / 2)..=i].iter().sum::<f64>()
+                / ((self.period / 2) + 1) as f64;
+            let older_sentiment: f64 = sentiment[start..(i - self.period / 2)].iter().sum::<f64>()
+                / (self.period / 2) as f64;
+
+            sentiment_velocity[i] = recent_sentiment - older_sentiment;
+        }
+
+        // Third pass: Calculate sentiment acceleration (second derivative)
+        let total_lookback = self.period + self.roc_period;
+        for i in total_lookback..n {
+            let current_velocity = sentiment_velocity[i];
+            let past_velocity = sentiment_velocity[i - self.roc_period];
+
+            // Acceleration is the change in velocity
+            let acceleration = current_velocity - past_velocity;
+
+            // Scale and clamp
+            result[i] = (acceleration * 2.0).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentAcceleration {
+    fn name(&self) -> &str {
+        "Sentiment Acceleration"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.roc_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Mean Reversion - Distance from sentiment mean
+/// Measures how far current sentiment deviates from its historical average
+#[derive(Debug, Clone)]
+pub struct SentimentMeanReversion {
+    short_period: usize,
+    long_period: usize,
+}
+
+impl SentimentMeanReversion {
+    pub fn new(short_period: usize, long_period: usize) -> Result<Self> {
+        if short_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if long_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        Ok(Self { short_period, long_period })
+    }
+
+    /// Calculate sentiment mean reversion signal (-100 to 100)
+    /// Positive = sentiment below mean (potential bullish reversion)
+    /// Negative = sentiment above mean (potential bearish reversion)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment = vec![0.0; n];
+
+        // Calculate base sentiment readings
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Multi-factor sentiment
+                let position = (close[i] - low[i]) / range * 2.0 - 1.0;
+                let momentum = if close[i - 1] > 0.0 {
+                    ((close[i] / close[i - 1]) - 1.0) * 100.0
+                } else {
+                    0.0
+                };
+
+                // Volume weight
+                let vol_weight = if i >= 5 {
+                    let avg_vol: f64 = volume[(i - 5)..i].iter().sum::<f64>() / 5.0;
+                    if avg_vol > 0.0 { (volume[i] / avg_vol).sqrt().min(2.0) } else { 1.0 }
+                } else {
+                    1.0
+                };
+
+                sentiment[i] = (position * 40.0 + momentum * 4.0) * vol_weight;
+            }
+        }
+
+        // Calculate mean reversion signal
+        for i in self.long_period..n {
+            // Short-term sentiment average
+            let short_start = i - self.short_period;
+            let short_avg: f64 = sentiment[short_start..=i].iter().sum::<f64>()
+                / (self.short_period + 1) as f64;
+
+            // Long-term sentiment average (the "mean")
+            let long_start = i - self.long_period;
+            let long_avg: f64 = sentiment[long_start..=i].iter().sum::<f64>()
+                / (self.long_period + 1) as f64;
+
+            // Calculate standard deviation of long-term sentiment
+            let variance: f64 = sentiment[long_start..=i].iter()
+                .map(|&x| (x - long_avg).powi(2))
+                .sum::<f64>() / (self.long_period + 1) as f64;
+            let std_dev = variance.sqrt();
+
+            // Calculate deviation from mean in terms of standard deviations
+            let deviation = if std_dev > 1e-10 {
+                (short_avg - long_avg) / std_dev
+            } else {
+                0.0
+            };
+
+            // Mean reversion signal: opposite of deviation
+            // When sentiment is too high (deviation > 0), expect bearish reversion (negative signal)
+            // When sentiment is too low (deviation < 0), expect bullish reversion (positive signal)
+            result[i] = (-deviation * 33.0).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentMeanReversion {
+    fn name(&self) -> &str {
+        "Sentiment Mean Reversion"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Crowd Behavior Index - Index of crowd/herd behavior
+/// Measures the degree of herding or crowd behavior in market sentiment
+#[derive(Debug, Clone)]
+pub struct CrowdBehaviorIndex {
+    period: usize,
+    threshold: f64,
+}
+
+impl CrowdBehaviorIndex {
+    pub fn new(period: usize, threshold: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if threshold <= 0.0 || threshold > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be between 0 and 1".to_string(),
+            });
+        }
+        Ok(Self { period, threshold })
+    }
+
+    /// Calculate crowd behavior index (0 to 100)
+    /// Higher values indicate stronger herd behavior / crowd following
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // 1. Directional unanimity - how much agreement in direction
+            let mut up_days = 0;
+            let mut down_days = 0;
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_days += 1;
+                } else if close[j] < close[j - 1] {
+                    down_days += 1;
+                }
+            }
+            let total_directional = up_days + down_days;
+            let unanimity = if total_directional > 0 {
+                (up_days.max(down_days) as f64) / (total_directional as f64)
+            } else {
+                0.5
+            };
+
+            // 2. Volume clustering - high volume when moving in the same direction
+            let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let dominant_direction = if up_days > down_days { 1 } else { -1 };
+            let mut vol_in_dominant_direction = 0.0;
+            let mut total_vol = 0.0;
+            for j in (start + 1)..=i {
+                let direction = if close[j] > close[j - 1] { 1 } else if close[j] < close[j - 1] { -1 } else { 0 };
+                if direction == dominant_direction && volume[j] > avg_vol * self.threshold {
+                    vol_in_dominant_direction += volume[j];
+                }
+                total_vol += volume[j];
+            }
+            let vol_clustering = if total_vol > 0.0 {
+                vol_in_dominant_direction / total_vol
+            } else {
+                0.0
+            };
+
+            // 3. Price pattern conformity - similar candle patterns
+            let mut pattern_similarity = 0.0;
+            let mut pattern_count = 0;
+            for j in (start + 1)..=i {
+                let range = high[j] - low[j];
+                if range > 1e-10 {
+                    let body_ratio = (close[j] - open[j]) / range;
+                    // Check if pattern matches dominant direction
+                    if (dominant_direction == 1 && body_ratio > 0.0) ||
+                       (dominant_direction == -1 && body_ratio < 0.0) {
+                        pattern_similarity += body_ratio.abs();
+                    }
+                    pattern_count += 1;
+                }
+            }
+            let pattern_conformity = if pattern_count > 0 {
+                pattern_similarity / pattern_count as f64
+            } else {
+                0.0
+            };
+
+            // 4. Consecutive moves - runs of same direction
+            let mut max_consecutive = 0;
+            let mut current_consecutive = 0;
+            let mut last_direction = 0;
+            for j in (start + 1)..=i {
+                let direction = if close[j] > close[j - 1] { 1 } else if close[j] < close[j - 1] { -1 } else { 0 };
+                if direction != 0 && direction == last_direction {
+                    current_consecutive += 1;
+                    max_consecutive = max_consecutive.max(current_consecutive);
+                } else if direction != 0 {
+                    current_consecutive = 1;
+                    last_direction = direction;
+                }
+            }
+            let consecutive_factor = (max_consecutive as f64) / (self.period as f64 / 2.0);
+
+            // 5. Momentum alignment - closing prices consistently near highs or lows
+            let mut alignment_sum = 0.0;
+            for j in start..=i {
+                let range = high[j] - low[j];
+                if range > 1e-10 {
+                    let position = (close[j] - low[j]) / range;
+                    // Extreme positions indicate crowd behavior
+                    if position > 0.8 || position < 0.2 {
+                        alignment_sum += 1.0;
+                    }
+                }
+            }
+            let alignment_factor = alignment_sum / (self.period + 1) as f64;
+
+            // Combine all factors into crowd behavior index
+            result[i] = (
+                unanimity * 25.0 +
+                vol_clustering * 100.0 * 25.0 +
+                pattern_conformity * 100.0 * 20.0 +
+                consecutive_factor.min(1.0) * 15.0 +
+                alignment_factor * 15.0
+            ).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CrowdBehaviorIndex {
+    fn name(&self) -> &str {
+        "Crowd Behavior Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Regime Detector - Detects sentiment regime changes
+/// Identifies transitions between bullish, bearish, and neutral sentiment regimes
+#[derive(Debug, Clone)]
+pub struct SentimentRegimeDetector {
+    short_period: usize,
+    long_period: usize,
+    sensitivity: f64,
+}
+
+impl SentimentRegimeDetector {
+    pub fn new(short_period: usize, long_period: usize, sensitivity: f64) -> Result<Self> {
+        if short_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if long_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if sensitivity <= 0.0 || sensitivity > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0 and 5".to_string(),
+            });
+        }
+        Ok(Self { short_period, long_period, sensitivity })
+    }
+
+    /// Calculate sentiment regime (-100 to 100)
+    /// Strong positive = bullish regime, Strong negative = bearish regime
+    /// Values near 0 = neutral/transitioning regime
+    /// Spikes indicate regime changes
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment = vec![0.0; n];
+
+        // Calculate base sentiment
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                let position = (close[i] - low[i]) / range * 2.0 - 1.0;
+                let momentum = if close[i - 1] > 0.0 {
+                    ((close[i] / close[i - 1]) - 1.0) * 100.0
+                } else {
+                    0.0
+                };
+
+                let vol_factor = if i >= 5 {
+                    let avg_vol: f64 = volume[(i - 5)..i].iter().sum::<f64>() / 5.0;
+                    if avg_vol > 0.0 { (volume[i] / avg_vol).sqrt().min(2.0) } else { 1.0 }
+                } else {
+                    1.0
+                };
+
+                sentiment[i] = (position * 40.0 + momentum * 5.0) * vol_factor;
+            }
+        }
+
+        // Detect regime and regime changes
+        for i in self.long_period..n {
+            // Calculate short-term regime
+            let short_start = i - self.short_period;
+            let short_avg: f64 = sentiment[short_start..=i].iter().sum::<f64>()
+                / (self.short_period + 1) as f64;
+            let short_var: f64 = sentiment[short_start..=i].iter()
+                .map(|&x| (x - short_avg).powi(2))
+                .sum::<f64>() / (self.short_period + 1) as f64;
+            let short_std = short_var.sqrt();
+
+            // Calculate long-term regime baseline
+            let long_start = i - self.long_period;
+            let long_avg: f64 = sentiment[long_start..=i].iter().sum::<f64>()
+                / (self.long_period + 1) as f64;
+            let long_var: f64 = sentiment[long_start..=i].iter()
+                .map(|&x| (x - long_avg).powi(2))
+                .sum::<f64>() / (self.long_period + 1) as f64;
+            let long_std = long_var.sqrt();
+
+            // Regime detection based on position relative to long-term average
+            let regime_position = if long_std > 1e-10 {
+                (short_avg - long_avg) / long_std
+            } else {
+                0.0
+            };
+
+            // Regime change detection - look for volatility expansion and direction shift
+            let volatility_ratio = if long_std > 1e-10 {
+                short_std / long_std
+            } else {
+                1.0
+            };
+
+            // Check for momentum shift
+            let half_short = self.short_period / 2;
+            let recent_avg: f64 = sentiment[(i - half_short)..=i].iter().sum::<f64>()
+                / (half_short + 1) as f64;
+            let older_avg: f64 = sentiment[short_start..(i - half_short)].iter().sum::<f64>()
+                / half_short as f64;
+            let momentum_shift = recent_avg - older_avg;
+
+            // Combine factors for regime signal
+            let base_regime = regime_position * 30.0;
+            let change_signal = if volatility_ratio > 1.5 && momentum_shift.abs() > self.sensitivity * 10.0 {
+                momentum_shift.signum() * (volatility_ratio - 1.0).min(1.0) * 30.0
+            } else {
+                0.0
+            };
+
+            // Current regime with change emphasis
+            result[i] = (base_regime + change_signal + short_avg * 0.5).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentRegimeDetector {
+    fn name(&self) -> &str {
+        "Sentiment Regime Detector"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Contra Sentiment Signal - Contrarian signals from sentiment extremes
+/// Generates signals when sentiment reaches extremes, suggesting potential reversals
+#[derive(Debug, Clone)]
+pub struct ContraSentimentSignal {
+    period: usize,
+    extreme_threshold: f64,
+    confirmation_period: usize,
+}
+
+impl ContraSentimentSignal {
+    pub fn new(period: usize, extreme_threshold: f64, confirmation_period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if extreme_threshold <= 0.0 || extreme_threshold > 3.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "extreme_threshold".to_string(),
+                reason: "must be between 0 and 3".to_string(),
+            });
+        }
+        if confirmation_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "confirmation_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, extreme_threshold, confirmation_period })
+    }
+
+    /// Calculate contra sentiment signal (-100 to 100)
+    /// Positive = contrarian bullish (sentiment extremely bearish)
+    /// Negative = contrarian bearish (sentiment extremely bullish)
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut sentiment = vec![0.0; n];
+
+        // Calculate comprehensive sentiment readings
+        for i in 1..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Price action sentiment
+                let position = (close[i] - low[i]) / range * 2.0 - 1.0;
+                let body = (close[i] - open[i]) / range;
+
+                // Momentum sentiment
+                let momentum = if close[i - 1] > 0.0 {
+                    ((close[i] / close[i - 1]) - 1.0) * 100.0
+                } else {
+                    0.0
+                };
+
+                // Volume-weighted sentiment
+                let vol_factor = if i >= 5 {
+                    let avg_vol: f64 = volume[(i - 5)..i].iter().sum::<f64>() / 5.0;
+                    if avg_vol > 0.0 {
+                        let vol_ratio = volume[i] / avg_vol;
+                        vol_ratio.sqrt().min(2.0)
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                };
+
+                sentiment[i] = (position * 30.0 + body * 20.0 + momentum * 3.0) * vol_factor;
+            }
+        }
+
+        // Generate contrarian signals
+        let total_lookback = self.period + self.confirmation_period;
+        for i in total_lookback..n {
+            let start = i - self.period;
+
+            // Calculate sentiment statistics
+            let slice = &sentiment[start..=i];
+            let mean: f64 = slice.iter().sum::<f64>() / (self.period + 1) as f64;
+            let variance: f64 = slice.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / (self.period + 1) as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev < 1e-10 {
+                continue;
+            }
+
+            // Calculate z-score of recent sentiment
+            let recent_avg: f64 = sentiment[(i - self.confirmation_period)..=i].iter().sum::<f64>()
+                / (self.confirmation_period + 1) as f64;
+            let z_score = (recent_avg - mean) / std_dev;
+
+            // Check for extreme sentiment
+            if z_score.abs() >= self.extreme_threshold {
+                // Look for early signs of reversal
+                let very_recent = sentiment[i];
+                let slightly_older = sentiment[i - self.confirmation_period];
+                let reversal_hint = (very_recent - slightly_older).signum() != z_score.signum();
+
+                // Calculate signal strength
+                let extreme_intensity = ((z_score.abs() - self.extreme_threshold) / self.extreme_threshold).min(1.0);
+
+                // Volume confirmation for reversal
+                let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+                let recent_vol_factor = if avg_vol > 0.0 && volume[i] > avg_vol * 1.3 {
+                    1.3
+                } else {
+                    1.0
+                };
+
+                // Generate contrarian signal (opposite of extreme sentiment)
+                let base_signal = -z_score.signum() * (50.0 + extreme_intensity * 30.0);
+                let reversal_bonus = if reversal_hint { 20.0 * (-z_score.signum()) } else { 0.0 };
+
+                result[i] = ((base_signal + reversal_bonus) * recent_vol_factor).clamp(-100.0, 100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for ContraSentimentSignal {
+    fn name(&self) -> &str {
+        "Contra Sentiment Signal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.confirmation_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,5 +2109,748 @@ mod tests {
             volatility: 0.50,
         };
         assert!(CompositeSentimentScore::with_weights(10, bad_weights).is_err());
+    }
+
+    // ============================================================================
+    // Tests for New Advanced Sentiment Indicators
+    // ============================================================================
+
+    #[test]
+    fn test_sentiment_momentum() {
+        let (_, high, low, close, volume) = make_test_data();
+        let sm = SentimentMomentum::new(5, 3).unwrap();
+        let result = sm.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        // Check values are within bounds
+        for &val in &result[10..] {
+            assert!(val >= -100.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_momentum_validation() {
+        // period must be at least 2
+        assert!(SentimentMomentum::new(1, 3).is_err());
+        assert!(SentimentMomentum::new(2, 3).is_ok());
+
+        // smoothing must be at least 1
+        assert!(SentimentMomentum::new(5, 0).is_err());
+        assert!(SentimentMomentum::new(5, 1).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_momentum_min_periods() {
+        let sm = SentimentMomentum::new(5, 3).unwrap();
+        assert_eq!(sm.min_periods(), 8); // period + smoothing
+    }
+
+    #[test]
+    fn test_sentiment_extreme_detector() {
+        let (_, high, low, close, volume) = make_test_data();
+        let sed = SentimentExtremeDetector::new(10, 2.0).unwrap();
+        let result = sed.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_extreme_detector_validation() {
+        // period must be at least 2
+        assert!(SentimentExtremeDetector::new(1, 2.0).is_err());
+        assert!(SentimentExtremeDetector::new(2, 2.0).is_ok());
+
+        // z_threshold must be between 0 and 5
+        assert!(SentimentExtremeDetector::new(10, 0.0).is_err());
+        assert!(SentimentExtremeDetector::new(10, 5.1).is_err());
+        assert!(SentimentExtremeDetector::new(10, 2.0).is_ok());
+        assert!(SentimentExtremeDetector::new(10, 5.0).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_extreme_detector_min_periods() {
+        let sed = SentimentExtremeDetector::new(10, 2.0).unwrap();
+        assert_eq!(sed.min_periods(), 11); // period + 1
+    }
+
+    #[test]
+    fn test_sentiment_trend_follower() {
+        let (_, high, low, close, volume) = make_test_data();
+        let stf = SentimentTrendFollower::new(5, 15).unwrap();
+        let result = stf.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_trend_follower_validation() {
+        // fast_period must be at least 2
+        assert!(SentimentTrendFollower::new(1, 10).is_err());
+        assert!(SentimentTrendFollower::new(2, 10).is_ok());
+
+        // slow_period must be greater than fast_period
+        assert!(SentimentTrendFollower::new(5, 5).is_err());
+        assert!(SentimentTrendFollower::new(5, 4).is_err());
+        assert!(SentimentTrendFollower::new(5, 6).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_trend_follower_min_periods() {
+        let stf = SentimentTrendFollower::new(5, 15).unwrap();
+        assert_eq!(stf.min_periods(), 16); // slow_period + 1
+    }
+
+    #[test]
+    fn test_sentiment_contrarian_signal() {
+        let (_, high, low, close, volume) = make_test_data();
+        let scs = SentimentContrarianSignal::new(10, 30.0).unwrap();
+        let result = scs.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_contrarian_signal_validation() {
+        // period must be at least 2
+        assert!(SentimentContrarianSignal::new(1, 30.0).is_err());
+        assert!(SentimentContrarianSignal::new(2, 30.0).is_ok());
+
+        // contrarian_threshold must be between 0 and 100
+        assert!(SentimentContrarianSignal::new(10, 0.0).is_err());
+        assert!(SentimentContrarianSignal::new(10, 101.0).is_err());
+        assert!(SentimentContrarianSignal::new(10, 50.0).is_ok());
+        assert!(SentimentContrarianSignal::new(10, 100.0).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_contrarian_signal_min_periods() {
+        let scs = SentimentContrarianSignal::new(10, 30.0).unwrap();
+        assert_eq!(scs.min_periods(), 11); // period + 1
+    }
+
+    #[test]
+    fn test_sentiment_volatility() {
+        let (_, high, low, close, _) = make_test_data();
+        let sv = SentimentVolatility::new(10).unwrap();
+        let result = sv.calculate(&high, &low, &close);
+
+        assert_eq!(result.len(), close.len());
+        // Volatility should be non-negative
+        for &val in &result[10..] {
+            assert!(val >= 0.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_volatility_validation() {
+        // period must be at least 2
+        assert!(SentimentVolatility::new(1).is_err());
+        assert!(SentimentVolatility::new(2).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_volatility_min_periods() {
+        let sv = SentimentVolatility::new(10).unwrap();
+        assert_eq!(sv.min_periods(), 11); // period + 1
+    }
+
+    #[test]
+    fn test_sentiment_cycle() {
+        let (_, high, low, close, volume) = make_test_data();
+        let sc = SentimentCycle::new(5, 15).unwrap();
+        let result = sc.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_cycle_validation() {
+        // period must be at least 2
+        assert!(SentimentCycle::new(1, 10).is_err());
+        assert!(SentimentCycle::new(2, 10).is_ok());
+
+        // cycle_length must be at least 2
+        assert!(SentimentCycle::new(5, 1).is_err());
+        assert!(SentimentCycle::new(5, 2).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_cycle_min_periods() {
+        let sc = SentimentCycle::new(5, 15).unwrap();
+        assert_eq!(sc.min_periods(), 16); // max(period, cycle_length) + 1
+
+        let sc2 = SentimentCycle::new(20, 10).unwrap();
+        assert_eq!(sc2.min_periods(), 21); // max(20, 10) + 1
+    }
+
+    #[test]
+    fn test_sentiment_momentum_name() {
+        let sm = SentimentMomentum::new(5, 3).unwrap();
+        assert_eq!(sm.name(), "Sentiment Momentum");
+    }
+
+    #[test]
+    fn test_sentiment_extreme_detector_name() {
+        let sed = SentimentExtremeDetector::new(10, 2.0).unwrap();
+        assert_eq!(sed.name(), "Sentiment Extreme Detector");
+    }
+
+    #[test]
+    fn test_sentiment_trend_follower_name() {
+        let stf = SentimentTrendFollower::new(5, 15).unwrap();
+        assert_eq!(stf.name(), "Sentiment Trend Follower");
+    }
+
+    #[test]
+    fn test_sentiment_contrarian_signal_name() {
+        let scs = SentimentContrarianSignal::new(10, 30.0).unwrap();
+        assert_eq!(scs.name(), "Sentiment Contrarian Signal");
+    }
+
+    #[test]
+    fn test_sentiment_volatility_name() {
+        let sv = SentimentVolatility::new(10).unwrap();
+        assert_eq!(sv.name(), "Sentiment Volatility");
+    }
+
+    #[test]
+    fn test_sentiment_cycle_name() {
+        let sc = SentimentCycle::new(5, 15).unwrap();
+        assert_eq!(sc.name(), "Sentiment Cycle");
+    }
+
+    #[test]
+    fn test_sentiment_indicators_with_flat_data() {
+        // Test with flat (constant) data
+        let high = vec![100.0; 30];
+        let low = vec![100.0; 30];
+        let close = vec![100.0; 30];
+        let volume = vec![1000.0; 30];
+
+        // SentimentMomentum should handle flat data
+        let sm = SentimentMomentum::new(5, 3).unwrap();
+        let result = sm.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 30);
+
+        // SentimentVolatility should be 0 for flat data
+        let sv = SentimentVolatility::new(10).unwrap();
+        let result = sv.calculate(&high, &low, &close);
+        assert_eq!(result.len(), 30);
+    }
+
+    #[test]
+    fn test_sentiment_indicators_with_volatile_data() {
+        // Test with highly volatile data
+        let high: Vec<f64> = (0..30).map(|i| 100.0 + (i as f64 * 5.0).sin() * 20.0 + 5.0).collect();
+        let low: Vec<f64> = (0..30).map(|i| 100.0 + (i as f64 * 5.0).sin() * 20.0 - 5.0).collect();
+        let close: Vec<f64> = (0..30).map(|i| 100.0 + (i as f64 * 5.0).sin() * 20.0).collect();
+        let volume: Vec<f64> = (0..30).map(|i| 1000.0 + (i as f64 * 3.0).cos() * 500.0).collect();
+
+        // All indicators should handle volatile data without panicking
+        let sm = SentimentMomentum::new(5, 3).unwrap();
+        let result = sm.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 30);
+
+        let sed = SentimentExtremeDetector::new(5, 1.5).unwrap();
+        let result = sed.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 30);
+
+        let stf = SentimentTrendFollower::new(3, 8).unwrap();
+        let result = stf.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 30);
+
+        let scs = SentimentContrarianSignal::new(5, 20.0).unwrap();
+        let result = scs.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 30);
+
+        let sv = SentimentVolatility::new(5).unwrap();
+        let result = sv.calculate(&high, &low, &close);
+        assert_eq!(result.len(), 30);
+
+        let sc = SentimentCycle::new(5, 10).unwrap();
+        let result = sc.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 30);
+    }
+
+    // ============================================================================
+    // Tests for Extended Advanced Sentiment Indicators
+    // ============================================================================
+
+    #[test]
+    fn test_sentiment_strength() {
+        let (open, high, low, close, volume) = make_test_data();
+        let ss = SentimentStrength::new(10, 3).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        // Strength should be non-negative
+        for &val in &result[15..] {
+            assert!(val >= 0.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_strength_validation() {
+        // period must be at least 5
+        assert!(SentimentStrength::new(4, 3).is_err());
+        assert!(SentimentStrength::new(5, 3).is_ok());
+
+        // smoothing must be at least 1
+        assert!(SentimentStrength::new(10, 0).is_err());
+        assert!(SentimentStrength::new(10, 1).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_strength_min_periods() {
+        let ss = SentimentStrength::new(10, 3).unwrap();
+        assert_eq!(ss.min_periods(), 13); // period + smoothing
+    }
+
+    #[test]
+    fn test_sentiment_strength_name() {
+        let ss = SentimentStrength::new(10, 3).unwrap();
+        assert_eq!(ss.name(), "Sentiment Strength");
+    }
+
+    #[test]
+    fn test_sentiment_strength_uptrend() {
+        // Test with strong uptrend data - should show high strength
+        let open: Vec<f64> = (0..30).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let high: Vec<f64> = (0..30).map(|i| 102.0 + i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..30).map(|i| 99.0 + i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..30).map(|i| 101.5 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..30).map(|i| 1000.0 + i as f64 * 50.0).collect();
+
+        let ss = SentimentStrength::new(10, 3).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+
+        // Strong trend should produce higher strength values
+        let avg_strength: f64 = result[20..].iter().sum::<f64>() / 10.0;
+        assert!(avg_strength > 20.0, "Expected strong trend to show strength > 20, got {}", avg_strength);
+    }
+
+    #[test]
+    fn test_sentiment_acceleration() {
+        let (_, high, low, close, volume) = make_test_data();
+        let sa = SentimentAcceleration::new(10, 5).unwrap();
+        let result = sa.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_acceleration_validation() {
+        // period must be at least 5
+        assert!(SentimentAcceleration::new(4, 3).is_err());
+        assert!(SentimentAcceleration::new(5, 3).is_ok());
+
+        // roc_period must be at least 2
+        assert!(SentimentAcceleration::new(10, 1).is_err());
+        assert!(SentimentAcceleration::new(10, 2).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_acceleration_min_periods() {
+        let sa = SentimentAcceleration::new(10, 5).unwrap();
+        assert_eq!(sa.min_periods(), 16); // period + roc_period + 1
+    }
+
+    #[test]
+    fn test_sentiment_acceleration_name() {
+        let sa = SentimentAcceleration::new(10, 5).unwrap();
+        assert_eq!(sa.name(), "Sentiment Acceleration");
+    }
+
+    #[test]
+    fn test_sentiment_acceleration_with_accelerating_trend() {
+        // Create data with accelerating momentum
+        let mut close = vec![100.0; 40];
+        for i in 10..40 {
+            // Accelerating gains
+            let acceleration = ((i - 10) as f64).powi(2) * 0.01;
+            close[i] = close[i - 1] + 0.5 + acceleration;
+        }
+        let high: Vec<f64> = close.iter().map(|&c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|&c| c - 1.0).collect();
+        let volume = vec![1000.0; 40];
+
+        let sa = SentimentAcceleration::new(10, 5).unwrap();
+        let result = sa.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), 40);
+    }
+
+    #[test]
+    fn test_sentiment_mean_reversion() {
+        let (_, high, low, close, volume) = make_test_data();
+        let smr = SentimentMeanReversion::new(10, 25).unwrap();
+        let result = smr.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[25..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_mean_reversion_validation() {
+        // short_period must be at least 5
+        assert!(SentimentMeanReversion::new(4, 20).is_err());
+        assert!(SentimentMeanReversion::new(5, 20).is_ok());
+
+        // long_period must be greater than short_period
+        assert!(SentimentMeanReversion::new(10, 10).is_err());
+        assert!(SentimentMeanReversion::new(10, 9).is_err());
+        assert!(SentimentMeanReversion::new(10, 11).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_mean_reversion_min_periods() {
+        let smr = SentimentMeanReversion::new(10, 25).unwrap();
+        assert_eq!(smr.min_periods(), 26); // long_period + 1
+    }
+
+    #[test]
+    fn test_sentiment_mean_reversion_name() {
+        let smr = SentimentMeanReversion::new(10, 25).unwrap();
+        assert_eq!(smr.name(), "Sentiment Mean Reversion");
+    }
+
+    #[test]
+    fn test_sentiment_mean_reversion_extreme_deviation() {
+        // Create data that deviates from mean then reverts
+        let mut close = vec![100.0; 40];
+        // First create stable period
+        for i in 1..20 {
+            close[i] = 100.0 + (i as f64 * 0.1).sin() * 2.0;
+        }
+        // Then extreme deviation
+        for i in 20..30 {
+            close[i] = 100.0 + (i - 20) as f64 * 3.0; // Strong upward deviation
+        }
+        // Then slight reversion
+        for i in 30..40 {
+            close[i] = 130.0 - (i - 30) as f64 * 1.0;
+        }
+        let high: Vec<f64> = close.iter().map(|&c| c + 2.0).collect();
+        let low: Vec<f64> = close.iter().map(|&c| c - 2.0).collect();
+        let volume = vec![1000.0; 40];
+
+        let smr = SentimentMeanReversion::new(5, 15).unwrap();
+        let result = smr.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), 40);
+    }
+
+    #[test]
+    fn test_crowd_behavior_index() {
+        let (open, high, low, close, volume) = make_test_data();
+        let cbi = CrowdBehaviorIndex::new(15, 0.7).unwrap();
+        let result = cbi.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        // Crowd behavior index should be non-negative
+        for &val in &result[15..] {
+            assert!(val >= 0.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_crowd_behavior_index_validation() {
+        // period must be at least 10
+        assert!(CrowdBehaviorIndex::new(9, 0.5).is_err());
+        assert!(CrowdBehaviorIndex::new(10, 0.5).is_ok());
+
+        // threshold must be between 0 and 1
+        assert!(CrowdBehaviorIndex::new(15, 0.0).is_err());
+        assert!(CrowdBehaviorIndex::new(15, 1.1).is_err());
+        assert!(CrowdBehaviorIndex::new(15, 0.5).is_ok());
+        assert!(CrowdBehaviorIndex::new(15, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_crowd_behavior_index_min_periods() {
+        let cbi = CrowdBehaviorIndex::new(15, 0.7).unwrap();
+        assert_eq!(cbi.min_periods(), 16); // period + 1
+    }
+
+    #[test]
+    fn test_crowd_behavior_index_name() {
+        let cbi = CrowdBehaviorIndex::new(15, 0.7).unwrap();
+        assert_eq!(cbi.name(), "Crowd Behavior Index");
+    }
+
+    #[test]
+    fn test_crowd_behavior_index_with_herding() {
+        // Create data with strong herding behavior - all days moving same direction
+        let open: Vec<f64> = (0..40).map(|i| 100.0 + i as f64).collect();
+        let high: Vec<f64> = (0..40).map(|i| 101.5 + i as f64).collect();
+        let low: Vec<f64> = (0..40).map(|i| 99.5 + i as f64).collect();
+        let close: Vec<f64> = (0..40).map(|i| 101.0 + i as f64).collect();
+        let volume: Vec<f64> = (0..40).map(|i| 1000.0 + i as f64 * 20.0).collect();
+
+        let cbi = CrowdBehaviorIndex::new(15, 0.5).unwrap();
+        let result = cbi.calculate(&open, &high, &low, &close, &volume);
+
+        // Strong herding should produce high crowd behavior values
+        let avg_cbi: f64 = result[20..].iter().sum::<f64>() / 20.0;
+        assert!(avg_cbi > 30.0, "Expected high herding to show CBI > 30, got {}", avg_cbi);
+    }
+
+    #[test]
+    fn test_sentiment_regime_detector() {
+        let (_, high, low, close, volume) = make_test_data();
+        let srd = SentimentRegimeDetector::new(10, 25, 1.5).unwrap();
+        let result = srd.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_regime_detector_validation() {
+        // short_period must be at least 5
+        assert!(SentimentRegimeDetector::new(4, 20, 1.5).is_err());
+        assert!(SentimentRegimeDetector::new(5, 20, 1.5).is_ok());
+
+        // long_period must be greater than short_period
+        assert!(SentimentRegimeDetector::new(10, 10, 1.5).is_err());
+        assert!(SentimentRegimeDetector::new(10, 9, 1.5).is_err());
+        assert!(SentimentRegimeDetector::new(10, 11, 1.5).is_ok());
+
+        // sensitivity must be between 0 and 5
+        assert!(SentimentRegimeDetector::new(10, 20, 0.0).is_err());
+        assert!(SentimentRegimeDetector::new(10, 20, 5.1).is_err());
+        assert!(SentimentRegimeDetector::new(10, 20, 2.5).is_ok());
+        assert!(SentimentRegimeDetector::new(10, 20, 5.0).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_regime_detector_min_periods() {
+        let srd = SentimentRegimeDetector::new(10, 25, 1.5).unwrap();
+        assert_eq!(srd.min_periods(), 26); // long_period + 1
+    }
+
+    #[test]
+    fn test_sentiment_regime_detector_name() {
+        let srd = SentimentRegimeDetector::new(10, 25, 1.5).unwrap();
+        assert_eq!(srd.name(), "Sentiment Regime Detector");
+    }
+
+    #[test]
+    fn test_sentiment_regime_detector_regime_change() {
+        // Create data with clear regime change
+        let mut close = vec![100.0; 50];
+        // Bullish regime
+        for i in 1..25 {
+            close[i] = close[i - 1] + 0.5;
+        }
+        // Regime change to bearish
+        for i in 25..50 {
+            close[i] = close[i - 1] - 0.5;
+        }
+        let high: Vec<f64> = close.iter().map(|&c| c + 1.5).collect();
+        let low: Vec<f64> = close.iter().map(|&c| c - 1.5).collect();
+        let volume = vec![1000.0; 50];
+
+        let srd = SentimentRegimeDetector::new(5, 15, 1.5).unwrap();
+        let result = srd.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.len(), 50);
+        // Check that regime differs between first and second half
+        let first_half_avg: f64 = result[20..25].iter().sum::<f64>() / 5.0;
+        let second_half_avg: f64 = result[35..45].iter().sum::<f64>() / 10.0;
+        assert!(first_half_avg > second_half_avg,
+                "Expected bullish regime ({}) > bearish regime ({})", first_half_avg, second_half_avg);
+    }
+
+    #[test]
+    fn test_contra_sentiment_signal() {
+        let (open, high, low, close, volume) = make_test_data();
+        let css = ContraSentimentSignal::new(15, 1.5, 3).unwrap();
+        let result = css.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_contra_sentiment_signal_validation() {
+        // period must be at least 10
+        assert!(ContraSentimentSignal::new(9, 1.5, 3).is_err());
+        assert!(ContraSentimentSignal::new(10, 1.5, 3).is_ok());
+
+        // extreme_threshold must be between 0 and 3
+        assert!(ContraSentimentSignal::new(15, 0.0, 3).is_err());
+        assert!(ContraSentimentSignal::new(15, 3.1, 3).is_err());
+        assert!(ContraSentimentSignal::new(15, 1.5, 3).is_ok());
+        assert!(ContraSentimentSignal::new(15, 3.0, 3).is_ok());
+
+        // confirmation_period must be at least 1
+        assert!(ContraSentimentSignal::new(15, 1.5, 0).is_err());
+        assert!(ContraSentimentSignal::new(15, 1.5, 1).is_ok());
+    }
+
+    #[test]
+    fn test_contra_sentiment_signal_min_periods() {
+        let css = ContraSentimentSignal::new(15, 1.5, 3).unwrap();
+        assert_eq!(css.min_periods(), 19); // period + confirmation_period + 1
+    }
+
+    #[test]
+    fn test_contra_sentiment_signal_name() {
+        let css = ContraSentimentSignal::new(15, 1.5, 3).unwrap();
+        assert_eq!(css.name(), "Contra Sentiment Signal");
+    }
+
+    #[test]
+    fn test_contra_sentiment_signal_extreme_bullish() {
+        // Create extremely bullish data to trigger contrarian bearish signal
+        let open: Vec<f64> = (0..40).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let high: Vec<f64> = (0..40).map(|i| 102.0 + i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..40).map(|i| 99.5 + i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..40).map(|i| 101.8 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..40).map(|i| 1000.0 + i as f64 * 100.0).collect();
+
+        let css = ContraSentimentSignal::new(10, 1.0, 3).unwrap();
+        let result = css.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), 40);
+    }
+
+    #[test]
+    fn test_extended_indicators_with_flat_data() {
+        // Test all new indicators with flat (constant) data
+        let open = vec![100.0; 50];
+        let high = vec![100.0; 50];
+        let low = vec![100.0; 50];
+        let close = vec![100.0; 50];
+        let volume = vec![1000.0; 50];
+
+        // SentimentStrength
+        let ss = SentimentStrength::new(10, 3).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+
+        // SentimentAcceleration
+        let sa = SentimentAcceleration::new(10, 5).unwrap();
+        let result = sa.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+
+        // SentimentMeanReversion
+        let smr = SentimentMeanReversion::new(10, 25).unwrap();
+        let result = smr.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+
+        // CrowdBehaviorIndex
+        let cbi = CrowdBehaviorIndex::new(15, 0.7).unwrap();
+        let result = cbi.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+
+        // SentimentRegimeDetector
+        let srd = SentimentRegimeDetector::new(10, 25, 1.5).unwrap();
+        let result = srd.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+
+        // ContraSentimentSignal
+        let css = ContraSentimentSignal::new(15, 1.5, 3).unwrap();
+        let result = css.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+    }
+
+    #[test]
+    fn test_extended_indicators_with_volatile_data() {
+        // Test all new indicators with highly volatile data
+        let open: Vec<f64> = (0..50).map(|i| 100.0 + (i as f64 * 0.5).sin() * 20.0).collect();
+        let high: Vec<f64> = (0..50).map(|i| 105.0 + (i as f64 * 0.5).sin() * 25.0).collect();
+        let low: Vec<f64> = (0..50).map(|i| 95.0 + (i as f64 * 0.5).sin() * 15.0).collect();
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + (i as f64 * 0.5).sin() * 22.0).collect();
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 0.3).cos().abs() * 2000.0).collect();
+
+        // SentimentStrength
+        let ss = SentimentStrength::new(10, 3).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+        for &val in &result[15..] {
+            assert!(val >= 0.0 && val <= 100.0);
+        }
+
+        // SentimentAcceleration
+        let sa = SentimentAcceleration::new(10, 5).unwrap();
+        let result = sa.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+
+        // SentimentMeanReversion
+        let smr = SentimentMeanReversion::new(10, 25).unwrap();
+        let result = smr.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+        for &val in &result[25..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+
+        // CrowdBehaviorIndex
+        let cbi = CrowdBehaviorIndex::new(15, 0.7).unwrap();
+        let result = cbi.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+        for &val in &result[15..] {
+            assert!(val >= 0.0 && val <= 100.0);
+        }
+
+        // SentimentRegimeDetector
+        let srd = SentimentRegimeDetector::new(10, 25, 1.5).unwrap();
+        let result = srd.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+
+        // ContraSentimentSignal
+        let css = ContraSentimentSignal::new(15, 1.5, 3).unwrap();
+        let result = css.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 50);
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_extended_indicators_with_short_data() {
+        // Test with minimal data length
+        let open = vec![100.0, 101.0, 102.0, 103.0, 104.0];
+        let high = vec![101.0, 102.0, 103.0, 104.0, 105.0];
+        let low = vec![99.0, 100.0, 101.0, 102.0, 103.0];
+        let close = vec![100.5, 101.5, 102.5, 103.5, 104.5];
+        let volume = vec![1000.0, 1100.0, 1200.0, 1300.0, 1400.0];
+
+        // These should not panic even with short data
+        let ss = SentimentStrength::new(5, 1).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 5);
+
+        let sa = SentimentAcceleration::new(5, 2).unwrap();
+        let result = sa.calculate(&high, &low, &close, &volume);
+        assert_eq!(result.len(), 5);
     }
 }
