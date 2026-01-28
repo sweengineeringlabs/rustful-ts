@@ -21,6 +21,7 @@ pub mod tdi;
 pub mod tii;
 pub mod vhf;
 pub mod vortex;
+pub mod safezone_stop;
 
 // Re-exports
 pub use macd::MACD;
@@ -42,3 +43,4 @@ pub use tdi::TrendDetectionIndex;
 pub use tii::TrendIntensityIndex;
 pub use vhf::VerticalHorizontalFilter;
 pub use vortex::VortexIndicator;
+pub use safezone_stop::{SafeZoneStop, SafeZoneStopOutput};

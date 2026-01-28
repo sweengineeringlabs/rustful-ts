@@ -17,6 +17,7 @@ pub mod tirone;
 pub mod percentage_bands;
 pub mod vwap_bands;
 pub mod auto_envelope;
+pub mod elder_auto_envelope;
 pub mod fractal_chaos_bands;
 pub mod prime_number_bands;
 
@@ -36,5 +37,6 @@ pub use tirone::{TironeLevels, TironeLevelsOutput};
 pub use percentage_bands::PercentageBands;
 pub use vwap_bands::VWAPBands;
 pub use auto_envelope::AutoEnvelope;
+pub use elder_auto_envelope::ElderAutoEnvelope;
 pub use fractal_chaos_bands::FractalChaosBands;
 pub use prime_number_bands::PrimeNumberBands;

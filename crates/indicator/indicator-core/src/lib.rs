@@ -53,6 +53,7 @@ pub use oscillators::{
     APO, ErgodicOscillator, PolarizedFractalEfficiency, IntradayMomentumIndex,
     RelativeVolatilityIndex, DoubleStochastic, PriceOscillator, RainbowOscillator,
     KasePermissionStochastic, ProjectionOscillator, KasePeakOscillator,
+    ElderPower, ElderPowerOutput,
 };
 
 // ============================================================================
@@ -63,7 +64,7 @@ pub use trend::{
     Alligator, AlligatorOutput, Aroon, AroonOutput, CoppockCurve, DPO,
     EfficiencyRatio, GatorOscillator, KaseCD,
     McGinleyDynamic, RainbowMA, RandomWalkIndex, TrendDetectionIndex, TrendIntensityIndex,
-    VerticalHorizontalFilter, VortexIndicator,
+    VerticalHorizontalFilter, VortexIndicator, SafeZoneStop, SafeZoneStopOutput,
 };
 
 // ============================================================================
@@ -74,6 +75,7 @@ pub use volatility::{
     GarmanKlassVolatility, RogersSatchellVolatility, YangZhangVolatility,
     RealizedVolatility, NormalizedATR, ChoppinessIndex, UlcerIndex,
     VolatilityCone, VolatilityConeOutput, CloseToCloseVolatility,
+    KaseDevStops, KaseDevStopsOutput, MarketThermometer,
 };
 
 // ============================================================================
@@ -91,7 +93,7 @@ pub use volume::{
 // ============================================================================
 pub use bands::{
     BollingerBands, KeltnerChannels, DonchianChannels,
-    AccelerationBands, ChandelierExit, Envelope, HighLowBands, PriceChannel,
+    AccelerationBands, ChandelierExit, ElderAutoEnvelope, Envelope, HighLowBands, PriceChannel,
     ProjectionBands, STARCBands, StandardErrorBands, TironeLevels, TironeLevelsOutput,
 };
 
@@ -106,6 +108,7 @@ pub use support_resistance::{PivotPoints, Fibonacci, FibonacciLevels};
 pub use statistical::{
     StandardDeviation, Variance, ZScore, LinearRegression, LinearRegressionOutput,
     Correlation, Spread, Ratio, ZScoreSpread, Autocorrelation, Skewness, Kurtosis,
+    FractalDimension, FractalDimensionMethod,
 };
 
 // ============================================================================
@@ -115,7 +118,7 @@ pub use pattern::{
     ZigZag, HeikinAshi, HeikinAshiOutput, DarvasBox, Fractals, Doji, Hammer, Engulfing,
     Harami, MorningStar, ThreeSoldiers, Marubozu, Piercing, SpinningTop, Tweezer,
     ThreeInside, ThreeOutside, AbandonedBaby, BeltHold, Kicking, ThreeLineStrike,
-    TasukiGap, RisingFallingMethods,
+    TasukiGap, RisingFallingMethods, KaseBars, KaseBarsOutput, KaseBarsStats,
 };
 
 // ============================================================================
@@ -230,10 +233,10 @@ pub use indicator_api::{
     RSIConfig, StochasticConfig, WilliamsRConfig, CCIConfig,
     TRIXConfig, UltimateOscillatorConfig,
     // Trend
-    MACDConfig, ADXConfig, IchimokuConfig, SuperTrendConfig, ParabolicSARConfig,
+    MACDConfig, ADXConfig, IchimokuConfig, SuperTrendConfig, ParabolicSARConfig, SafeZoneStopConfig,
     // Volatility
-    BollingerConfig, ATRConfig, DonchianConfig, KeltnerConfig,
-    VolatilityConeConfig, CloseToCloseVolatilityConfig,
+    BollingerConfig, ElderAutoEnvelopeConfig, ATRConfig, DonchianConfig, KeltnerConfig,
+    VolatilityConeConfig, CloseToCloseVolatilityConfig, ElderThermometerConfig, KaseDevStopsConfig,
     // Volume
     VWAPConfig, OBVConfig, MFIConfig, CMFConfig,
     VolumeProfileConfig, MarketProfileConfig,
@@ -241,6 +244,10 @@ pub use indicator_api::{
     BullishPercentConfig, NewHighsLowsConfig, NewHighsLowsOutputMode,
     // Intermarket
     RelativeStrengthConfig,
+    // Statistical
+    FractalDimensionConfig,
+    // Pattern
+    KaseBarsConfig,
     // Other
-    ElderRayConfig, PivotType,
+    ElderRayConfig, ElderPowerConfig, PivotType,
 };

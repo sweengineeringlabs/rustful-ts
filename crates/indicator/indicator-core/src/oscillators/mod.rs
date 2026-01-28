@@ -40,6 +40,7 @@ pub mod rainbow_oscillator;
 pub mod kase_peak;
 pub mod kase_permission;
 pub mod projection_oscillator;
+pub mod elder_power;
 
 // Re-exports
 pub use rsi::RSI;
@@ -80,3 +81,4 @@ pub use rainbow_oscillator::RainbowOscillator;
 pub use kase_peak::KasePeakOscillator;
 pub use kase_permission::KasePermissionStochastic;
 pub use projection_oscillator::ProjectionOscillator;
+pub use elder_power::{ElderPower, ElderPowerOutput};

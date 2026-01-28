@@ -180,6 +180,36 @@ impl Default for BollingerConfig {
     }
 }
 
+/// Elder's AutoEnvelope configuration.
+///
+/// Adaptive envelope bands that automatically adjust width based on recent volatility
+/// using standard deviation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElderAutoEnvelopeConfig {
+    /// Period for EMA calculation.
+    pub ema_period: usize,
+    /// Period for standard deviation calculation.
+    pub std_period: usize,
+    /// Multiplier for standard deviation to determine band width.
+    pub multiplier: f64,
+}
+
+impl ElderAutoEnvelopeConfig {
+    pub fn new(ema_period: usize, std_period: usize, multiplier: f64) -> Self {
+        Self { ema_period, std_period, multiplier }
+    }
+}
+
+impl Default for ElderAutoEnvelopeConfig {
+    fn default() -> Self {
+        Self {
+            ema_period: 13,
+            std_period: 13,
+            multiplier: 2.7,
+        }
+    }
+}
+
 /// Average True Range configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ATRConfig {
@@ -288,6 +318,66 @@ impl Default for CloseToCloseVolatilityConfig {
             period: 20,
             annualize: true,
             trading_days: 252,
+        }
+    }
+}
+
+/// Elder's Market Thermometer configuration (IND-178).
+///
+/// Measures intraday volatility by comparing current bar's range to previous bar.
+/// High readings indicate increased volatility.
+///
+/// Algorithm:
+/// 1. Calculate absolute difference: |high - previous_high| and |low - previous_low|
+/// 2. Thermometer = max(|H - prev_H|, |L - prev_L|)
+/// 3. Calculate EMA of thermometer values for smoothing
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElderThermometerConfig {
+    /// EMA period for smoothing (default: 22).
+    pub period: usize,
+}
+
+impl ElderThermometerConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Default for ElderThermometerConfig {
+    fn default() -> Self {
+        Self { period: 22 }
+    }
+}
+
+/// Kase Dev Stops configuration (IND-182).
+///
+/// Deviation-based trailing stops using True Range and standard deviation.
+/// Provides adaptive stop levels that adjust to market volatility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KaseDevStopsConfig {
+    /// Lookback period for ATR and StdDev calculations.
+    pub period: usize,
+    /// Number of standard deviations for stop calculation.
+    pub num_devs: f64,
+}
+
+impl KaseDevStopsConfig {
+    /// Create a new Kase Dev Stops configuration.
+    pub fn new(period: usize, num_devs: f64) -> Self {
+        Self { period, num_devs }
+    }
+
+    /// Create with default num_devs (2.0).
+    pub fn with_period(period: usize) -> Self {
+        Self { period, num_devs: 2.0 }
+    }
+}
+
+impl Default for KaseDevStopsConfig {
+    fn default() -> Self {
+        Self {
+            period: 30,
+            num_devs: 2.0,
         }
     }
 }
@@ -498,6 +588,27 @@ impl ElderRayConfig {
 }
 
 impl Default for ElderRayConfig {
+    fn default() -> Self {
+        Self { period: 13 }
+    }
+}
+
+/// Elder's Bull/Bear Power (Enhanced) configuration.
+///
+/// Enhanced version of Elder Ray with combined bull/bear power signal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElderPowerConfig {
+    /// EMA period (default: 13).
+    pub period: usize,
+}
+
+impl ElderPowerConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Default for ElderPowerConfig {
     fn default() -> Self {
         Self { period: 13 }
     }
@@ -1810,5 +1921,82 @@ impl RelativeStrengthConfig {
 impl Default for RelativeStrengthConfig {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// Statistical Indicators
+// ============================================================================
+
+/// Fractal Dimension indicator configuration.
+///
+/// Measures market complexity/roughness using fractal analysis.
+/// - Values near 1.5 indicate random walk
+/// - Values < 1.5 indicate trending market
+/// - Values > 1.5 indicate mean-reverting market
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FractalDimensionConfig {
+    /// Lookback period for fractal dimension calculation.
+    pub period: usize,
+}
+
+impl FractalDimensionConfig {
+    pub fn new(period: usize) -> Self {
+        Self { period }
+    }
+}
+
+impl Default for FractalDimensionConfig {
+    fn default() -> Self {
+        Self { period: 30 }
+    }
+}
+
+// ============================================================================
+// Pattern / Transform Indicators
+// ============================================================================
+
+/// Kase Bars configuration.
+///
+/// Volatility-normalized OHLC bars developed by Cynthia Kase.
+/// Normalizes price data by ATR to create bars that account for
+/// varying volatility conditions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KaseBarsConfig {
+    /// Period for ATR calculation (default: 30).
+    pub period: usize,
+    /// Smoothing period for baseline calculation (default: same as period).
+    pub smoothing: Option<usize>,
+}
+
+impl KaseBarsConfig {
+    /// Create a new Kase Bars configuration.
+    pub fn new(period: usize) -> Self {
+        Self {
+            period,
+            smoothing: None,
+        }
+    }
+
+    /// Create with custom smoothing period.
+    pub fn with_smoothing(period: usize, smoothing: usize) -> Self {
+        Self {
+            period,
+            smoothing: Some(smoothing),
+        }
+    }
+
+    /// Get the smoothing period (defaults to period if not specified).
+    pub fn smoothing_period(&self) -> usize {
+        self.smoothing.unwrap_or(self.period)
+    }
+}
+
+impl Default for KaseBarsConfig {
+    fn default() -> Self {
+        Self {
+            period: 30,
+            smoothing: None,
+        }
     }
 }

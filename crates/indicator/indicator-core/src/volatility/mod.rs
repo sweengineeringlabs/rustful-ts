@@ -18,6 +18,7 @@ pub mod keltner_original;
 pub mod volatility_cone;
 pub mod close_to_close;
 pub mod market_thermometer;
+pub mod kase_dev_stops;
 
 // Re-exports
 pub use atr::ATR;
@@ -36,3 +37,4 @@ pub use keltner_original::KeltnerOriginal;
 pub use volatility_cone::{VolatilityCone, VolatilityConeOutput};
 pub use close_to_close::CloseToCloseVolatility;
 pub use market_thermometer::MarketThermometer;
+pub use kase_dev_stops::{KaseDevStops, KaseDevStopsOutput};

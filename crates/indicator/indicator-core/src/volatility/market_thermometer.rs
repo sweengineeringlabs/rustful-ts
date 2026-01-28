@@ -7,6 +7,7 @@ use crate::{
     IndicatorError, IndicatorOutput, IndicatorSignal, OHLCVSeries, Result, SignalIndicator,
     TechnicalIndicator,
 };
+use indicator_api::ElderThermometerConfig;
 
 /// Market Thermometer (Elder's).
 ///
@@ -14,13 +15,11 @@ use crate::{
 /// bar's range to the previous bar. It helps identify when the market is
 /// "hot" (highly volatile) or "cold" (calm).
 ///
-/// Formula:
-/// Thermometer = max(High - Previous High, Previous Low - Low)
-///
-/// If the current bar extends beyond the previous bar's range in either
-/// direction, the thermometer reading is positive. Overlapping bars (where
-/// current high is below previous high AND current low is above previous low)
-/// have a thermometer reading of 0.
+/// Formula (IND-178):
+/// 1. Calculate absolute difference: |high - previous_high| and |low - previous_low|
+/// 2. Thermometer = max(|H - prev_H|, |L - prev_L|)
+/// 3. Calculate EMA of thermometer values for smoothing
+/// 4. High readings indicate increased volatility
 ///
 /// The indicator is typically smoothed with an EMA and compared to a threshold
 /// (often the 22-period EMA multiplied by a factor like 2).
@@ -37,7 +36,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct MarketThermometer {
     /// EMA period for smoothing (typically 22).
-    ema_period: usize,
+    period: usize,
     /// Multiplier for hot threshold (typically 2.0).
     hot_multiplier: f64,
 }
@@ -46,10 +45,18 @@ impl MarketThermometer {
     /// Create a new Market Thermometer indicator.
     ///
     /// # Arguments
-    /// * `ema_period` - Period for EMA smoothing (commonly 22)
-    pub fn new(ema_period: usize) -> Self {
+    /// * `period` - Period for EMA smoothing (commonly 22)
+    pub fn new(period: usize) -> Self {
         Self {
-            ema_period,
+            period,
+            hot_multiplier: 2.0,
+        }
+    }
+
+    /// Create from configuration.
+    pub fn from_config(config: ElderThermometerConfig) -> Self {
+        Self {
+            period: config.period,
             hot_multiplier: 2.0,
         }
     }
@@ -100,6 +107,10 @@ impl MarketThermometer {
     }
 
     /// Calculate raw thermometer values (before smoothing).
+    ///
+    /// IND-178 Algorithm:
+    /// 1. Calculate absolute difference: |high - previous_high| and |low - previous_low|
+    /// 2. Thermometer = max(|H - prev_H|, |L - prev_L|)
     fn raw_thermometer(high: &[f64], low: &[f64]) -> Vec<f64> {
         let n = high.len();
         if n < 2 {
@@ -109,13 +120,13 @@ impl MarketThermometer {
         let mut thermo = vec![f64::NAN]; // First bar has no previous bar
 
         for i in 1..n {
-            // Extension above previous high
-            let high_ext = (high[i] - high[i - 1]).max(0.0);
-            // Extension below previous low
-            let low_ext = (low[i - 1] - low[i]).max(0.0);
+            // Absolute difference from previous high
+            let high_diff = (high[i] - high[i - 1]).abs();
+            // Absolute difference from previous low
+            let low_diff = (low[i] - low[i - 1]).abs();
 
-            // Thermometer is the greater of the two extensions
-            thermo.push(high_ext.max(low_ext));
+            // Thermometer is the greater of the two absolute differences
+            thermo.push(high_diff.max(low_diff));
         }
 
         thermo
@@ -126,7 +137,7 @@ impl MarketThermometer {
     /// Returns (raw_thermometer, smoothed_thermometer, hot_threshold).
     pub fn calculate(&self, high: &[f64], low: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let n = high.len();
-        if n < self.ema_period + 1 || self.ema_period == 0 {
+        if n < self.period + 1 || self.period == 0 {
             return (vec![f64::NAN; n], vec![f64::NAN; n], vec![f64::NAN; n]);
         }
 
@@ -134,7 +145,7 @@ impl MarketThermometer {
         let raw = Self::raw_thermometer(high, low);
 
         // Calculate EMA of thermometer
-        let smoothed = Self::ema(&raw, self.ema_period);
+        let smoothed = Self::ema(&raw, self.period);
 
         // Calculate hot threshold (EMA * multiplier)
         let hot: Vec<f64> = smoothed
@@ -164,9 +175,9 @@ impl TechnicalIndicator for MarketThermometer {
     }
 
     fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
-        if data.high.len() < self.ema_period + 1 {
+        if data.high.len() < self.period + 1 {
             return Err(IndicatorError::InsufficientData {
-                required: self.ema_period + 1,
+                required: self.period + 1,
                 got: data.high.len(),
             });
         }
@@ -176,7 +187,7 @@ impl TechnicalIndicator for MarketThermometer {
     }
 
     fn min_periods(&self) -> usize {
-        self.ema_period + 1
+        self.period + 1
     }
 
     fn output_features(&self) -> usize {
@@ -286,50 +297,61 @@ mod tests {
         let raw = MarketThermometer::raw_thermometer(&high, &low);
 
         assert!(raw[0].is_nan()); // First bar
-        assert!((raw[1] - 2.0).abs() < 1e-10); // max(102-100, 98-97) = max(2, 1) = 2
-        assert!((raw[2] - 2.0).abs() < 1e-10); // max(104-102, 97-96) = max(2, 1) = 2
-        assert!((raw[3] - 2.0).abs() < 1e-10); // max(106-104, 96-95) = max(2, 1) = 2
+        // Bar 1: max(|102-100|, |97-98|) = max(2, 1) = 2
+        assert!((raw[1] - 2.0).abs() < 1e-10);
+        // Bar 2: max(|104-102|, |96-97|) = max(2, 1) = 2
+        assert!((raw[2] - 2.0).abs() < 1e-10);
+        // Bar 3: max(|106-104|, |95-96|) = max(2, 1) = 2
+        assert!((raw[3] - 2.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_raw_thermometer_contracting_bars() {
         // Test case where bars contract (inside bars)
+        // With absolute differences, contracting bars still have positive thermometer values
         let high = vec![110.0, 108.0, 106.0, 104.0];
         let low = vec![90.0, 92.0, 94.0, 96.0];
 
         let raw = MarketThermometer::raw_thermometer(&high, &low);
 
         assert!(raw[0].is_nan()); // First bar
-                                  // Bar 1: max(108-110, 90-92) = max(-2, -2) -> both negative, so 0
-        assert!((raw[1] - 0.0).abs() < 1e-10);
-        // Bar 2: max(106-108, 92-94) = max(-2, -2) -> both negative, so 0
-        assert!((raw[2] - 0.0).abs() < 1e-10);
-        // Bar 3: max(104-106, 94-96) = max(-2, -2) -> both negative, so 0
-        assert!((raw[3] - 0.0).abs() < 1e-10);
+        // Bar 1: max(|108-110|, |92-90|) = max(2, 2) = 2
+        assert!((raw[1] - 2.0).abs() < 1e-10);
+        // Bar 2: max(|106-108|, |94-92|) = max(2, 2) = 2
+        assert!((raw[2] - 2.0).abs() < 1e-10);
+        // Bar 3: max(|104-106|, |96-94|) = max(2, 2) = 2
+        assert!((raw[3] - 2.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_raw_thermometer_mixed() {
-        // Test mixed scenario
+        // Test mixed scenario with absolute differences
         let high = vec![100.0, 103.0, 101.0, 105.0];
         let low = vec![98.0, 96.0, 99.0, 94.0];
 
         let raw = MarketThermometer::raw_thermometer(&high, &low);
 
         assert!(raw[0].is_nan());
-        // Bar 1: max(103-100, 98-96) = max(3, 2) = 3
+        // Bar 1: max(|103-100|, |96-98|) = max(3, 2) = 3
         assert!((raw[1] - 3.0).abs() < 1e-10);
-        // Bar 2: max(101-103, 96-99) = max(-2, -3) -> both negative, so 0
-        assert!((raw[2] - 0.0).abs() < 1e-10);
-        // Bar 3: max(105-101, 99-94) = max(4, 5) = 5
+        // Bar 2: max(|101-103|, |99-96|) = max(2, 3) = 3
+        assert!((raw[2] - 3.0).abs() < 1e-10);
+        // Bar 3: max(|105-101|, |94-99|) = max(4, 5) = 5
         assert!((raw[3] - 5.0).abs() < 1e-10);
     }
 
     #[test]
     fn test_market_thermometer_default() {
         let thermo = MarketThermometer::default_params();
-        assert_eq!(thermo.ema_period, 22);
+        assert_eq!(thermo.period, 22);
         assert!((thermo.hot_multiplier - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_from_config() {
+        let config = ElderThermometerConfig::new(14);
+        let thermo = MarketThermometer::from_config(config);
+        assert_eq!(thermo.period, 14);
     }
 
     #[test]
@@ -406,20 +428,23 @@ mod tests {
     fn test_market_thermometer_signal_calm() {
         let thermo = MarketThermometer::new(5);
 
-        // Generate data with large initial volatility, then calm
+        // Generate data with large initial volatility, then very small changes
         let mut high = Vec::new();
         let mut low = Vec::new();
 
-        // Volatile period
+        // Volatile period - each bar shifts significantly
         for i in 0..10 {
-            high.push(110.0 + i as f64 * 2.0);
-            low.push(90.0 - i as f64);
+            high.push(110.0 + i as f64 * 5.0);
+            low.push(90.0 - i as f64 * 3.0);
         }
 
-        // Calm period (inside bars)
+        // Calm period - bars barely move (small absolute differences)
+        let last_high = high[9];
+        let last_low = low[9];
         for _ in 10..15 {
-            high.push(high[9] - 5.0);
-            low.push(low[9] + 3.0);
+            // Tiny movements of 0.01
+            high.push(last_high + 0.01);
+            low.push(last_low + 0.01);
         }
 
         let series = OHLCVSeries {
@@ -431,7 +456,7 @@ mod tests {
         };
 
         let signal = thermo.signal(&series).unwrap();
-        // Inside bars should be calm (bullish)
+        // Very small movements should be below smoothed average (bullish = calm)
         assert_eq!(signal, IndicatorSignal::Bullish);
     }
 
