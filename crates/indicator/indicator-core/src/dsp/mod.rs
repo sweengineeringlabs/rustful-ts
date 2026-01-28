@@ -15,6 +15,7 @@ pub mod roofing;
 pub mod supersmoother;
 pub mod decycler;
 pub mod cycles;
+pub mod extended;
 
 // Re-exports
 pub use mesa::MESA;
@@ -30,4 +31,8 @@ pub use decycler::Decycler;
 pub use cycles::{
     DominantCyclePeriod, CycleAmplitude, CyclePhase,
     TrendCycleDecomposition, CycleMomentum, CycleTurningPoint,
+};
+pub use extended::{
+    SpectralDensity, PhaseIndicator, InstantaneousFrequency,
+    AdaptiveBandwidthFilter, ZeroLagIndicator, SignalToNoiseRatio,
 };

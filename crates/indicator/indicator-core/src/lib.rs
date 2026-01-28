@@ -151,6 +151,8 @@ pub use risk::{
 pub use dsp::{
     MESA, MAMA, SineWave, HilbertTransform, CyberCycle, CGOscillator,
     LaguerreRSI, RoofingFilter, Supersmoother, Decycler,
+    SpectralDensity, PhaseIndicator, InstantaneousFrequency,
+    AdaptiveBandwidthFilter, ZeroLagIndicator, SignalToNoiseRatio,
 };
 
 // ============================================================================
