@@ -26,6 +26,7 @@ pub mod tasuki_gap;
 pub mod rising_falling_methods;
 pub mod kase_bars;
 pub mod minervini;
+pub mod price_patterns;
 
 // Re-exports
 pub use zigzag::ZigZag;
@@ -54,4 +55,7 @@ pub use kase_bars::{KaseBars, KaseBarsOutput, KaseBarsStats};
 pub use minervini::{
     TrendTemplate, VolatilityContractionPattern, PocketPivot,
     PowerPlay, BullFlag, CupPattern,
+};
+pub use price_patterns::{
+    DoubleTop, DoubleBottom, HeadShoulders, Triangle, Channel, Wedge,
 };

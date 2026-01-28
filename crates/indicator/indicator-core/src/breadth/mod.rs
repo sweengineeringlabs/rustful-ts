@@ -15,6 +15,7 @@ pub mod percent_above_ma;
 pub mod put_call;
 pub mod tick_index;
 pub mod trin;
+pub mod extended;
 
 // Re-exports - Primary indicators
 pub use advance_decline::AdvanceDeclineLine;
@@ -29,6 +30,10 @@ pub use percent_above_ma::{MarketCondition, PercentAboveMA, PercentAboveMASeries
 pub use put_call::{ContrarianSignal, PutCallRatio, PutCallSeries, PutCallSignal};
 pub use tick_index::{TickBias, TickIndex, TickSeries, TickSignal, TickStats};
 pub use trin::{TRINSignal, TRIN};
+pub use extended::{
+    ADThrust, ZweigBreadthThrust, TRINSmoothed, BreadthMomentum,
+    VolumeBreadth, PercentageBreadth,
+};
 
 // Re-export SPI types from crate root
 pub use crate::{
