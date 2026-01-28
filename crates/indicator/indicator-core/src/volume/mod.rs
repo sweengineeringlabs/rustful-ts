@@ -30,6 +30,7 @@ pub mod vwmacd;
 pub mod volume_profile;
 pub mod market_profile;
 pub mod arms_granville;
+pub mod tick_data;
 
 // Re-exports
 pub use vwap::VWAP;
@@ -62,4 +63,8 @@ pub use market_profile::{MarketProfile, MarketProfileOutput};
 pub use arms_granville::{
     EaseOfMovementMA, VAMA, EquivolumeWidth, OBVTrend,
     OBVDivergence, OBVDivergenceType, VolumeClimax,
+};
+pub use tick_data::{
+    TickVolume, TickSpeed, TradeIntensity, TradeSizeDistribution,
+    DollarVolume, VWAPDeviation,
 };

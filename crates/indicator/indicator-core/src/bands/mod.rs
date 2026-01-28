@@ -20,6 +20,7 @@ pub mod auto_envelope;
 pub mod elder_auto_envelope;
 pub mod fractal_chaos_bands;
 pub mod prime_number_bands;
+pub mod donchian_ext;
 
 // Re-exports
 pub use bollinger::BollingerBands;
@@ -40,3 +41,7 @@ pub use auto_envelope::AutoEnvelope;
 pub use elder_auto_envelope::ElderAutoEnvelope;
 pub use fractal_chaos_bands::FractalChaosBands;
 pub use prime_number_bands::PrimeNumberBands;
+pub use donchian_ext::{
+    DonchianWidth, FourWeekRule, TurtleEntry, TurtleEntryOutput,
+    TurtleExit, DualBreakout, DonchianMiddleCross,
+};

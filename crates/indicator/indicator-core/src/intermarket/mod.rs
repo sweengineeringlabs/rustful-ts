@@ -7,12 +7,27 @@ pub mod cointegration;
 pub mod currency_strength;
 pub mod relative_strength;
 pub mod sector_rotation;
+pub mod commodity;
+pub mod fixed_income;
+pub mod forex;
 
 // Re-exports
 pub use cointegration::{Cointegration, CointegrationOutput, CointegrationSignal};
 pub use currency_strength::{CurrencyPair, CurrencyStrength, CurrencyStrengthOutput};
 pub use relative_strength::{RelativeStrength, RelativeStrengthOutput, RelativeStrengthSignal};
 pub use sector_rotation::{SectorRank, SectorRotation, SectorRotationOutput};
+pub use commodity::{
+    ContangoBackwardation, RollYield, Basis, ConvenienceYield,
+    InventorySurprise, CrackSpread,
+};
+pub use fixed_income::{
+    YieldCurveShape, ButterflySpread, BreakevenInflation,
+    RealRate, EffectiveDuration, KeyRateDuration,
+};
+pub use forex::{
+    CarryTradeIndex, FXVolatilityTerm, RiskReversal25D, Butterfly25D,
+    FXPositioning, DollarSmile, PPPDeviation, BEER,
+};
 
 // ============================================================================
 // Dual Series Support
