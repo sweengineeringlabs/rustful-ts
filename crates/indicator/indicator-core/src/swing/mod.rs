@@ -15,6 +15,7 @@ pub mod swing_points;
 pub mod pivot_highs_lows;
 pub mod safezone_stop;
 pub mod kase_dev_stops;
+pub mod extended;
 
 // Re-exports
 pub use swing_index::SwingIndex;
@@ -29,3 +30,7 @@ pub use swing_points::{SwingPoints, SwingPoint, SwingPointType};
 pub use pivot_highs_lows::{PivotHighsLows, PivotPoint, PivotType};
 pub use safezone_stop::SafeZoneStop;
 pub use kase_dev_stops::{KaseDevStops, KaseDevStopsOutput, KaseTrailingStops, KaseCurrentStops};
+pub use extended::{
+    SwingMomentum, SwingRange, SwingDirection,
+    SwingVelocity, SwingStrength, SwingFailurePattern,
+};

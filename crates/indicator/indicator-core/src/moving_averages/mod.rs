@@ -20,6 +20,7 @@ pub mod gmma;
 pub mod sine_wma;
 pub mod jurik_ma;
 pub mod evwma;
+pub mod extended;
 
 // Re-exports
 pub use sma::SMA;
@@ -40,3 +41,7 @@ pub use gmma::GMMA;
 pub use sine_wma::SineWMA;
 pub use jurik_ma::JurikMA;
 pub use evwma::EVWMA;
+pub use extended::{
+    VolumeAdjustedMA, RangeWeightedMA, MomentumWeightedMA,
+    AdaptiveMA, DoubleSmoothedMA, TripleSmoothedMA,
+};

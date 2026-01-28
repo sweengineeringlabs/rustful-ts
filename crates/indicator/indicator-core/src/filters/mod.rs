@@ -8,6 +8,7 @@ pub mod gaussian;
 pub mod svhma;
 pub mod filtered_average;
 pub mod step_vhf_vma;
+pub mod extended;
 
 // Re-exports
 pub use kalman::KalmanFilter;
@@ -16,3 +17,7 @@ pub use gaussian::GaussianFilter;
 pub use svhma::SVHMA;
 pub use filtered_average::DeviationFilteredAverage;
 pub use step_vhf_vma::StepVhfAdaptiveVMA;
+pub use extended::{
+    ExponentialSmoothingFilter, ButterworthFilter, HighPassFilter,
+    BandPassFilter, AdaptiveNoiseFilter, TrendFilter,
+};

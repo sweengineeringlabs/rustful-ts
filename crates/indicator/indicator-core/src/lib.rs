@@ -34,6 +34,8 @@ pub mod simd;
 pub use moving_averages::{
     SMA, EMA, WMA, DEMA, TEMA, HMA, KAMA, ZLEMA, SMMA, ALMA,
     FRAMA, VIDYA, T3, TRIMA, GMMA, SineWMA, JurikMA, EVWMA,
+    VolumeAdjustedMA, RangeWeightedMA, MomentumWeightedMA,
+    AdaptiveMA, DoubleSmoothedMA, TripleSmoothedMA,
 };
 
 // ============================================================================
@@ -42,6 +44,8 @@ pub use moving_averages::{
 pub use filters::{
     KalmanFilter, MedianFilter, GaussianFilter, SVHMA,
     DeviationFilteredAverage, StepVhfAdaptiveVMA,
+    ExponentialSmoothingFilter, ButterworthFilter, HighPassFilter,
+    BandPassFilter, AdaptiveNoiseFilter, TrendFilter,
 };
 
 // ============================================================================
@@ -124,6 +128,8 @@ pub use statistical::{
     HurstExponent, HurstMethod,
     DetrendedFluctuationAnalysis,
     MarketEntropy, EntropyMethod,
+    RollingVariance, RollingSkewness, RollingKurtosis,
+    PriceDistribution, ReturnDistribution, TailRiskIndicator,
 };
 
 // ============================================================================
@@ -134,6 +140,8 @@ pub use pattern::{
     Harami, MorningStar, ThreeSoldiers, Marubozu, Piercing, SpinningTop, Tweezer,
     ThreeInside, ThreeOutside, AbandonedBaby, BeltHold, Kicking, ThreeLineStrike,
     TasukiGap, RisingFallingMethods, KaseBars, KaseBarsOutput, KaseBarsStats,
+    GapAnalysis, InsideBar, OutsideBar, NarrowRange,
+    WideRangeBar, TrendBar, ConsolidationPattern,
 };
 
 // ============================================================================
@@ -168,6 +176,8 @@ pub use composite::{
     SqueezeMomentum, SqueezeMomentumConfig, SqueezeMomentumOutput,
     TrendStrengthIndex, TrendStrengthConfig, TrendStrengthOutput, TrendComponents,
     RegimeDetector, RegimeDetectorConfig, RegimeDetectorOutput, MarketRegime,
+    TrendMomentumScore, VolatilityTrendCombo, MultiPeriodMomentum,
+    MomentumStrengthIndex, MarketConditionScore, PriceActionScore,
 };
 
 // ============================================================================
@@ -197,6 +207,8 @@ pub use swing::{
     BreakOfStructure, BOSType, BOSEvent, CHoCHType,
     SwingPoints, SwingPoint, SwingPointType,
     PivotHighsLows, PivotPoint, PivotType as SwingPivotType,
+    SwingMomentum, SwingRange, SwingDirection,
+    SwingVelocity, SwingStrength, SwingFailurePattern,
 };
 
 // ============================================================================
@@ -223,6 +235,8 @@ pub use intermarket::{
     CurrencyStrength, CurrencyPair, CurrencyStrengthOutput,
     RelativeStrength, RelativeStrengthOutput, RelativeStrengthSignal,
     SectorRotation, SectorRank, SectorRotationOutput,
+    CrossMarketMomentum, BetaCoefficient, MarketRegimeIndicator,
+    SectorRelativePerformance, CorrelationMomentum, RiskAppetiteIndex, DivergenceIndex,
 };
 
 // ============================================================================
@@ -244,6 +258,8 @@ pub use crypto::{
 pub use sentiment::{
     FearIndex, GreedIndex, CrowdPsychology, MarketEuphoria,
     Capitulation, SmartMoneyConfidence,
+    MarketMomentumSentiment, VolatilitySentiment, TrendSentiment,
+    ReversalSentiment, ExtremeReadings, SentimentOscillator,
 };
 
 // ============================================================================

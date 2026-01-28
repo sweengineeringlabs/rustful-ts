@@ -10,6 +10,7 @@ pub mod sector_rotation;
 pub mod commodity;
 pub mod fixed_income;
 pub mod forex;
+pub mod extended;
 
 // Re-exports
 pub use cointegration::{Cointegration, CointegrationOutput, CointegrationSignal};
@@ -27,6 +28,10 @@ pub use fixed_income::{
 pub use forex::{
     CarryTradeIndex, FXVolatilityTerm, RiskReversal25D, Butterfly25D,
     FXPositioning, DollarSmile, PPPDeviation, BEER,
+};
+pub use extended::{
+    CrossMarketMomentum, BetaCoefficient, MarketRegimeIndicator,
+    SectorRelativePerformance, CorrelationMomentum, RiskAppetiteIndex, DivergenceIndex,
 };
 
 // ============================================================================

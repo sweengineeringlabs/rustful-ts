@@ -27,6 +27,7 @@ pub mod rising_falling_methods;
 pub mod kase_bars;
 pub mod minervini;
 pub mod price_patterns;
+pub mod extended;
 
 // Re-exports
 pub use zigzag::ZigZag;
@@ -58,4 +59,8 @@ pub use minervini::{
 };
 pub use price_patterns::{
     DoubleTop, DoubleBottom, HeadShoulders, Triangle, Channel, Wedge,
+};
+pub use extended::{
+    GapAnalysis, InsideBar, OutsideBar, NarrowRange,
+    WideRangeBar, TrendBar, ConsolidationPattern,
 };

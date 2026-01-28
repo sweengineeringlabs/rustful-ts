@@ -24,6 +24,7 @@ pub mod tests_stat;
 pub mod diagnostics;
 pub mod stationarity;
 pub mod seasonal;
+pub mod extended;
 
 // Re-exports
 pub use std_dev::StandardDeviation;
@@ -60,4 +61,8 @@ pub use stationarity::{
 pub use seasonal::{
     SeasonalStrength, DayOfWeekEffect, TurnOfMonthEffect, HolidayEffect,
     QuarterlyEffect, JanuaryEffect,
+};
+pub use extended::{
+    RollingVariance, RollingSkewness, RollingKurtosis,
+    PriceDistribution, ReturnDistribution, TailRiskIndicator,
 };

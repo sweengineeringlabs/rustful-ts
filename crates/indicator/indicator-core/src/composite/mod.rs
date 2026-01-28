@@ -27,6 +27,7 @@ pub mod schaff;
 pub mod squeeze_momentum;
 pub mod trend_strength;
 pub mod ttm_squeeze;
+pub mod extended;
 
 // ============================================================================
 // Re-exports
@@ -58,3 +59,9 @@ pub use regime_detector::{RegimeDetector, RegimeDetectorConfig, RegimeDetectorOu
 
 // Elder Ray
 pub use elder_ray::ElderRay;
+
+// Extended composites
+pub use extended::{
+    TrendMomentumScore, VolatilityTrendCombo, MultiPeriodMomentum,
+    MomentumStrengthIndex, MarketConditionScore, PriceActionScore,
+};
