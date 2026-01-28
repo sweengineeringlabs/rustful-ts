@@ -44,6 +44,7 @@ pub mod elder_power;
 pub mod lane;
 pub mod derivatives;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use rsi::RSI;
@@ -98,4 +99,8 @@ pub use derivatives::{
 pub use extended::{
     AdaptiveRSI, VolumeWeightedRSI, StochasticMomentum,
     TrendIntensityOscillator, RangeOscillator, MomentumDivergenceOscillator,
+};
+pub use advanced::{
+    CycleOscillator, VolatilityOscillator, TrendOscillator,
+    PriceActionOscillator, VolumeFlowOscillator, MomentumFlowOscillator,
 };

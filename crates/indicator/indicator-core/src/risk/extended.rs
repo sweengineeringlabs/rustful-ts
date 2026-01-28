@@ -486,3 +486,684 @@ mod tests {
         assert_eq!(result.len(), close.len());
     }
 }
+
+/// Conditional Drawdown - Conditional drawdown measure (expected drawdown given in drawdown)
+#[derive(Debug, Clone)]
+pub struct ConditionalDrawdown {
+    period: usize,
+    threshold: f64,
+}
+
+impl ConditionalDrawdown {
+    /// Create a new Conditional Drawdown indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation
+    /// * `threshold` - Drawdown threshold for conditional calculation (e.g., 0.05 for 5%)
+    pub fn new(period: usize, threshold: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if threshold <= 0.0 || threshold >= 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be between 0 and 1 (exclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, threshold })
+    }
+
+    /// Calculate Conditional Drawdown values
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate drawdowns for each point in window
+            let mut peak = close[start];
+            let mut drawdowns = Vec::new();
+
+            for j in start..=i {
+                if close[j] > peak {
+                    peak = close[j];
+                }
+                let dd = (peak - close[j]) / peak;
+                drawdowns.push(dd);
+            }
+
+            // Filter drawdowns exceeding threshold and calculate conditional mean
+            let conditional_dds: Vec<f64> = drawdowns
+                .iter()
+                .filter(|&&dd| dd >= self.threshold)
+                .cloned()
+                .collect();
+
+            if !conditional_dds.is_empty() {
+                result[i] = conditional_dds.iter().sum::<f64>() / conditional_dds.len() as f64;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for ConditionalDrawdown {
+    fn name(&self) -> &str {
+        "Conditional Drawdown"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Risk-Adjusted Return - Risk-adjusted return metric (return per unit of risk)
+#[derive(Debug, Clone)]
+pub struct RiskAdjustedReturn {
+    period: usize,
+    risk_free_rate: f64,
+}
+
+impl RiskAdjustedReturn {
+    /// Create a new Risk-Adjusted Return indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation
+    /// * `risk_free_rate` - Annualized risk-free rate (e.g., 0.02 for 2%)
+    pub fn new(period: usize, risk_free_rate: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if risk_free_rate < 0.0 || risk_free_rate > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "risk_free_rate".to_string(),
+                reason: "must be between 0 and 1".to_string(),
+            });
+        }
+        Ok(Self { period, risk_free_rate })
+    }
+
+    /// Calculate Risk-Adjusted Return values
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let returns: Vec<f64> = (start + 1..=i)
+                .map(|j| close[j] / close[j - 1] - 1.0)
+                .collect();
+
+            if returns.is_empty() {
+                continue;
+            }
+
+            let avg_return = returns.iter().sum::<f64>() / returns.len() as f64;
+
+            // Calculate volatility (standard deviation of returns)
+            let variance = returns
+                .iter()
+                .map(|r| (r - avg_return).powi(2))
+                .sum::<f64>() / (returns.len() - 1).max(1) as f64;
+            let volatility = variance.sqrt();
+
+            // Annualize
+            let annualized_return = avg_return * 252.0;
+            let annualized_vol = volatility * (252.0_f64).sqrt();
+            let excess_return = annualized_return - self.risk_free_rate;
+
+            if annualized_vol > 1e-10 {
+                result[i] = excess_return / annualized_vol;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for RiskAdjustedReturn {
+    fn name(&self) -> &str {
+        "Risk-Adjusted Return"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Return Variance - Rolling variance of returns
+#[derive(Debug, Clone)]
+pub struct ReturnVariance {
+    period: usize,
+    annualize: bool,
+}
+
+impl ReturnVariance {
+    /// Create a new Return Variance indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation
+    /// * `annualize` - Whether to annualize the variance
+    pub fn new(period: usize, annualize: bool) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, annualize })
+    }
+
+    /// Calculate Return Variance values
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let returns: Vec<f64> = (start + 1..=i)
+                .map(|j| close[j] / close[j - 1] - 1.0)
+                .collect();
+
+            if returns.len() < 2 {
+                continue;
+            }
+
+            let avg_return = returns.iter().sum::<f64>() / returns.len() as f64;
+
+            // Calculate variance
+            let variance = returns
+                .iter()
+                .map(|r| (r - avg_return).powi(2))
+                .sum::<f64>() / (returns.len() - 1) as f64;
+
+            result[i] = if self.annualize {
+                variance * 252.0
+            } else {
+                variance
+            };
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for ReturnVariance {
+    fn name(&self) -> &str {
+        "Return Variance"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Drawdown Duration - Duration of drawdowns in periods
+#[derive(Debug, Clone)]
+pub struct DrawdownDuration {
+    period: usize,
+}
+
+impl DrawdownDuration {
+    /// Create a new Drawdown Duration indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Drawdown Duration values (average duration of drawdown periods)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Track drawdown periods
+            let mut peak = close[start];
+            let mut current_dd_duration = 0;
+            let mut dd_durations = Vec::new();
+            let mut in_drawdown = false;
+
+            for j in start..=i {
+                if close[j] > peak {
+                    peak = close[j];
+                    if in_drawdown && current_dd_duration > 0 {
+                        dd_durations.push(current_dd_duration);
+                    }
+                    current_dd_duration = 0;
+                    in_drawdown = false;
+                } else if close[j] < peak {
+                    in_drawdown = true;
+                    current_dd_duration += 1;
+                }
+            }
+
+            // Include final drawdown if still in one
+            if in_drawdown && current_dd_duration > 0 {
+                dd_durations.push(current_dd_duration);
+            }
+
+            // Calculate average drawdown duration
+            if !dd_durations.is_empty() {
+                result[i] = dd_durations.iter().sum::<i32>() as f64 / dd_durations.len() as f64;
+            }
+        }
+        result
+    }
+
+    /// Calculate current drawdown duration at each point
+    pub fn calculate_current(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let mut peak = close[0];
+        let mut current_duration = 0;
+
+        for i in 0..n {
+            if close[i] >= peak {
+                peak = close[i];
+                current_duration = 0;
+            } else {
+                current_duration += 1;
+            }
+            result[i] = current_duration as f64;
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for DrawdownDuration {
+    fn name(&self) -> &str {
+        "Drawdown Duration"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Recovery Ratio - Ratio of recovery to drawdown (how quickly recoveries happen)
+#[derive(Debug, Clone)]
+pub struct RecoveryRatio {
+    period: usize,
+}
+
+impl RecoveryRatio {
+    /// Create a new Recovery Ratio indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Recovery Ratio values
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Track drawdowns and recoveries
+            let mut peak = close[start];
+            let mut trough = close[start];
+            let mut in_drawdown = false;
+            let mut dd_depths = Vec::new();
+            let mut recovery_depths = Vec::new();
+            let mut current_dd_depth = 0.0;
+
+            for j in start..=i {
+                if close[j] > peak {
+                    // New peak - if we were in drawdown, record recovery
+                    if in_drawdown {
+                        let recovery = (close[j] - trough) / trough;
+                        recovery_depths.push(recovery);
+                        dd_depths.push(current_dd_depth);
+                    }
+                    peak = close[j];
+                    trough = close[j];
+                    in_drawdown = false;
+                    current_dd_depth = 0.0;
+                } else if close[j] < trough {
+                    trough = close[j];
+                    current_dd_depth = (peak - trough) / peak;
+                    in_drawdown = true;
+                }
+            }
+
+            // Calculate ratio of average recovery to average drawdown
+            if !dd_depths.is_empty() && !recovery_depths.is_empty() {
+                let avg_dd = dd_depths.iter().sum::<f64>() / dd_depths.len() as f64;
+                let avg_recovery = recovery_depths.iter().sum::<f64>() / recovery_depths.len() as f64;
+
+                if avg_dd > 1e-10 {
+                    result[i] = avg_recovery / avg_dd;
+                }
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for RecoveryRatio {
+    fn name(&self) -> &str {
+        "Recovery Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Volatility Risk Ratio - Ratio of volatility to expected returns
+#[derive(Debug, Clone)]
+pub struct VolatilityRiskRatio {
+    period: usize,
+}
+
+impl VolatilityRiskRatio {
+    /// Create a new Volatility Risk Ratio indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Volatility Risk Ratio values
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let returns: Vec<f64> = (start + 1..=i)
+                .map(|j| close[j] / close[j - 1] - 1.0)
+                .collect();
+
+            if returns.len() < 2 {
+                continue;
+            }
+
+            let avg_return = returns.iter().sum::<f64>() / returns.len() as f64;
+
+            // Calculate volatility (standard deviation of returns)
+            let variance = returns
+                .iter()
+                .map(|r| (r - avg_return).powi(2))
+                .sum::<f64>() / (returns.len() - 1) as f64;
+            let volatility = variance.sqrt();
+
+            // Ratio of volatility to absolute expected return
+            // High ratio means more risk per unit of expected return
+            if avg_return.abs() > 1e-10 {
+                result[i] = volatility / avg_return.abs();
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilityRiskRatio {
+    fn name(&self) -> &str {
+        "Volatility Risk Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+
+    fn make_volatile_test_data() -> Vec<f64> {
+        vec![100.0, 102.0, 99.0, 104.0, 101.0, 106.0, 103.0, 108.0, 105.0, 110.0,
+             107.0, 112.0, 109.0, 114.0, 111.0, 116.0, 113.0, 118.0, 115.0, 120.0,
+             117.0, 122.0, 119.0, 124.0, 121.0, 126.0, 123.0, 128.0, 125.0, 130.0]
+    }
+
+    #[test]
+    fn test_conditional_drawdown() {
+        let close = make_volatile_test_data();
+        let cdd = ConditionalDrawdown::new(20, 0.01).unwrap();
+        let result = cdd.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // First period values should be zero
+        assert_eq!(result[0], 0.0);
+        // Later values may have conditional drawdown
+        assert!(result[25] >= 0.0);
+    }
+
+    #[test]
+    fn test_conditional_drawdown_invalid_params() {
+        let result = ConditionalDrawdown::new(5, 0.01);
+        assert!(result.is_err());
+
+        let result = ConditionalDrawdown::new(20, 0.0);
+        assert!(result.is_err());
+
+        let result = ConditionalDrawdown::new(20, 1.0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_risk_adjusted_return() {
+        let close = make_volatile_test_data();
+        let rar = RiskAdjustedReturn::new(20, 0.02).unwrap();
+        let result = rar.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Positive trend should give positive risk-adjusted return
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_risk_adjusted_return_invalid_params() {
+        let result = RiskAdjustedReturn::new(2, 0.02);
+        assert!(result.is_err());
+
+        let result = RiskAdjustedReturn::new(20, -0.01);
+        assert!(result.is_err());
+
+        let result = RiskAdjustedReturn::new(20, 1.5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_return_variance() {
+        let close = make_volatile_test_data();
+        let rv = ReturnVariance::new(20, false).unwrap();
+        let result = rv.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Variance should be non-negative
+        assert!(result[25] >= 0.0);
+    }
+
+    #[test]
+    fn test_return_variance_annualized() {
+        let close = make_volatile_test_data();
+        let rv_daily = ReturnVariance::new(20, false).unwrap();
+        let rv_annual = ReturnVariance::new(20, true).unwrap();
+        let daily_result = rv_daily.calculate(&close);
+        let annual_result = rv_annual.calculate(&close);
+
+        // Annualized variance should be ~252 times daily variance
+        let ratio = annual_result[25] / daily_result[25];
+        assert!((ratio - 252.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_return_variance_invalid_params() {
+        let result = ReturnVariance::new(1, false);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_drawdown_duration() {
+        let close = make_volatile_test_data();
+        let dd = DrawdownDuration::new(20).unwrap();
+        let result = dd.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Duration should be non-negative
+        assert!(result[25] >= 0.0);
+    }
+
+    #[test]
+    fn test_drawdown_duration_current() {
+        let close = vec![100.0, 110.0, 105.0, 103.0, 108.0, 115.0];
+        let dd = DrawdownDuration::new(5).unwrap();
+        let result = dd.calculate_current(&close);
+
+        assert_eq!(result.len(), close.len());
+        // At index 2, we're 1 period into drawdown from peak at 110
+        assert_eq!(result[2], 1.0);
+        // At index 3, we're 2 periods into drawdown
+        assert_eq!(result[3], 2.0);
+        // At index 5, new peak so duration resets
+        assert_eq!(result[5], 0.0);
+    }
+
+    #[test]
+    fn test_drawdown_duration_invalid_params() {
+        let result = DrawdownDuration::new(2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_recovery_ratio() {
+        let close = make_volatile_test_data();
+        let rr = RecoveryRatio::new(20).unwrap();
+        let result = rr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Recovery ratio should be non-negative
+        assert!(result[25] >= 0.0);
+    }
+
+    #[test]
+    fn test_recovery_ratio_invalid_params() {
+        let result = RecoveryRatio::new(5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_volatility_risk_ratio() {
+        let close = make_volatile_test_data();
+        let vrr = VolatilityRiskRatio::new(20).unwrap();
+        let result = vrr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Ratio should be non-negative
+        assert!(result[25] >= 0.0);
+    }
+
+    #[test]
+    fn test_volatility_risk_ratio_invalid_params() {
+        let result = VolatilityRiskRatio::new(2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_indicator_names() {
+        let cdd = ConditionalDrawdown::new(20, 0.01).unwrap();
+        assert_eq!(cdd.name(), "Conditional Drawdown");
+
+        let rar = RiskAdjustedReturn::new(20, 0.02).unwrap();
+        assert_eq!(rar.name(), "Risk-Adjusted Return");
+
+        let rv = ReturnVariance::new(20, false).unwrap();
+        assert_eq!(rv.name(), "Return Variance");
+
+        let dd = DrawdownDuration::new(20).unwrap();
+        assert_eq!(dd.name(), "Drawdown Duration");
+
+        let rr = RecoveryRatio::new(20).unwrap();
+        assert_eq!(rr.name(), "Recovery Ratio");
+
+        let vrr = VolatilityRiskRatio::new(20).unwrap();
+        assert_eq!(vrr.name(), "Volatility Risk Ratio");
+    }
+
+    #[test]
+    fn test_min_periods() {
+        let cdd = ConditionalDrawdown::new(20, 0.01).unwrap();
+        assert_eq!(cdd.min_periods(), 21);
+
+        let rar = RiskAdjustedReturn::new(15, 0.02).unwrap();
+        assert_eq!(rar.min_periods(), 16);
+
+        let rv = ReturnVariance::new(10, false).unwrap();
+        assert_eq!(rv.min_periods(), 11);
+
+        let dd = DrawdownDuration::new(25).unwrap();
+        assert_eq!(dd.min_periods(), 26);
+
+        let rr = RecoveryRatio::new(30).unwrap();
+        assert_eq!(rr.min_periods(), 31);
+
+        let vrr = VolatilityRiskRatio::new(12).unwrap();
+        assert_eq!(vrr.min_periods(), 13);
+    }
+}

@@ -29,6 +29,7 @@ pub mod trend_strength;
 pub mod ttm_squeeze;
 pub mod extended;
 pub mod multi_factor;
+pub mod advanced;
 
 // ============================================================================
 // Re-exports
@@ -71,4 +72,14 @@ pub use extended::{
 pub use multi_factor::{
     QualityMomentumFactor, ValueMomentumComposite, RiskAdjustedTrend,
     BreakoutStrengthIndex, TrendReversalProbability, MultiFactorAlphaScore,
+};
+
+// Advanced composites
+pub use advanced::{
+    TrendVolatilityIndex, TrendVolatilityIndexConfig, TrendVolatilityIndexOutput,
+    MomentumQualityScore, MomentumQualityScoreConfig, MomentumQualityScoreOutput,
+    MarketPhaseIndicator, MarketPhaseIndicatorConfig, MarketPhaseIndicatorOutput, MarketPhase,
+    PriceTrendStrength, PriceTrendStrengthConfig, PriceTrendStrengthOutput,
+    AdaptiveMarketIndicator, AdaptiveMarketIndicatorConfig, AdaptiveMarketIndicatorOutput,
+    CompositeSignalStrength, CompositeSignalStrengthConfig, CompositeSignalStrengthOutput,
 };

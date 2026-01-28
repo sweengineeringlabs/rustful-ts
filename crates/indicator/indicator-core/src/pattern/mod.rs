@@ -29,6 +29,7 @@ pub mod minervini;
 pub mod price_patterns;
 pub mod extended;
 pub mod r#final;
+pub mod advanced;
 
 // Re-exports
 pub use zigzag::ZigZag;
@@ -67,4 +68,8 @@ pub use extended::{
 };
 pub use r#final::{
     PriceMomentumPattern, RangeContractionExpansion,
+};
+pub use advanced::{
+    TrendContinuationPattern, ReversalCandlePattern, VolumePricePattern,
+    MomentumPattern, BreakoutPattern, ConsolidationBreak,
 };

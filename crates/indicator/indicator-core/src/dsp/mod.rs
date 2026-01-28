@@ -17,6 +17,7 @@ pub mod decycler;
 pub mod cycles;
 pub mod extended;
 pub mod signal_analysis;
+pub mod advanced;
 
 // Re-exports
 pub use mesa::MESA;
@@ -40,4 +41,8 @@ pub use extended::{
 pub use signal_analysis::{
     AutoCorrelationPeriod, TrendStrengthFFT, CycleDeviationAmplitude,
     PhaseAccumulator, SpectralNoiseRatio, AdaptiveCycleFilter,
+};
+pub use advanced::{
+    AdaptiveFrequencyFilter, TrendPhaseAnalysis, CycleModeIndicator,
+    SignalStrengthMeter, FrequencyResponseIndicator, PhaseSynchronization,
 };

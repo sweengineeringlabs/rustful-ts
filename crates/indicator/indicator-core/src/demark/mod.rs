@@ -13,6 +13,7 @@ pub mod td_pressure;
 pub mod td_dwave;
 pub mod td_trend_factor;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports from td_setup
 pub use td_setup::{TDSetup, TDSetupOutput, TDSetupConfig, SetupPhase};
@@ -45,4 +46,11 @@ pub use td_trend_factor::{TDTrendFactor, TDTrendFactorOutput, TDTrendFactorConfi
 pub use extended::{
     TDCamouflage, TDCLOP, TDMovingAverageQualifier,
     TDRiskLevel, TDMomentum, TDDifferential,
+};
+
+// Re-exports from advanced
+pub use advanced::{
+    TDLine, TDLineOutput, TDRange, TDRangeOutput,
+    TDChannel, TDChannelOutput, TDQualifier, TDQualifierOutput,
+    TDAlignment, TDAlignmentOutput, TDExhaustion, TDExhaustionOutput,
 };

@@ -17,8 +17,8 @@ pub use sopr::{SOPR, SOPROutput, SOPRSignal};
 pub use hash_ribbons::{HashRibbons, HashRibbonsOutput, HashRibbonsPhase};
 pub use fear_greed::{FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedWeights};
 pub use advanced::{
-    PuellMultiple, ReserveRisk, StockToFlow, ThermocapMultiple,
-    CoinDaysDestroyed, RealizedCapAge,
+    HashRateMomentum, MinerCapitulation, WhaleAccumulation,
+    RetailSentimentProxy, InstitutionalFlowProxy, NetworkActivityProxy,
 };
 pub use extended::{
     ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,

@@ -21,6 +21,7 @@ pub mod sine_wma;
 pub mod jurik_ma;
 pub mod evwma;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use sma::SMA;
@@ -44,4 +45,9 @@ pub use evwma::EVWMA;
 pub use extended::{
     VolumeAdjustedMA, RangeWeightedMA, MomentumWeightedMA,
     AdaptiveMA, DoubleSmoothedMA, TripleSmoothedMA,
+};
+pub use advanced::{
+    FractalAdaptiveMA, VolumeAdaptiveMA, TrendAdaptiveMA,
+    NoiseAdaptiveMA, MomentumAdaptiveMA, EfficiencyAdaptiveMA,
+    VolatilityAdaptiveMA, CycleAdaptiveMA,
 };

@@ -36,6 +36,9 @@ pub use moving_averages::{
     FRAMA, VIDYA, T3, TRIMA, GMMA, SineWMA, JurikMA, EVWMA,
     VolumeAdjustedMA, RangeWeightedMA, MomentumWeightedMA,
     AdaptiveMA, DoubleSmoothedMA, TripleSmoothedMA,
+    FractalAdaptiveMA, VolumeAdaptiveMA, TrendAdaptiveMA,
+    NoiseAdaptiveMA, MomentumAdaptiveMA, EfficiencyAdaptiveMA,
+    VolatilityAdaptiveMA, CycleAdaptiveMA,
 };
 
 // ============================================================================
@@ -61,10 +64,16 @@ pub use oscillators::{
     RelativeVolatilityIndex, DoubleStochastic, PriceOscillator, RainbowOscillator,
     KasePermissionStochastic, ProjectionOscillator, KasePeakOscillator,
     ElderPower, ElderPowerOutput,
+    FastStochasticK, FastStochasticD, SlowStochasticK, SlowStochasticD,
+    FullStochastic, FullStochasticOutput, LaneStochastic,
+    StochasticDivergence, DivergenceType, DivergenceOutput,
+    StochasticPop, StochasticDrop, StochasticCrossover, CrossoverOutput,
     PriceVelocity, PriceAcceleration, MomentumDivergence, SmoothedROC,
     ComparativeMomentum, DynamicMomentumIndex, MomentumQuality, NormalizedMomentum,
     AdaptiveRSI, VolumeWeightedRSI, StochasticMomentum,
     TrendIntensityOscillator, RangeOscillator, MomentumDivergenceOscillator,
+    CycleOscillator, VolatilityOscillator, TrendOscillator,
+    PriceActionOscillator, VolumeFlowOscillator, MomentumFlowOscillator,
 };
 
 // ============================================================================
@@ -157,9 +166,14 @@ pub use pattern::{
     Harami, MorningStar, ThreeSoldiers, Marubozu, Piercing, SpinningTop, Tweezer,
     ThreeInside, ThreeOutside, AbandonedBaby, BeltHold, Kicking, ThreeLineStrike,
     TasukiGap, RisingFallingMethods, KaseBars, KaseBarsOutput, KaseBarsStats,
+    TrendTemplate, VolatilityContractionPattern, PocketPivot,
+    PowerPlay, BullFlag, CupPattern,
+    DoubleTop, DoubleBottom, HeadShoulders, Triangle, Channel, Wedge,
     GapAnalysis, InsideBar, OutsideBar, NarrowRange,
     WideRangeBar, TrendBar, ConsolidationPattern,
     PriceMomentumPattern, RangeContractionExpansion,
+    TrendContinuationPattern, ReversalCandlePattern, VolumePricePattern,
+    MomentumPattern, BreakoutPattern, ConsolidationBreak,
 };
 
 // ============================================================================
@@ -169,6 +183,8 @@ pub use risk::{
     SharpeRatio, SortinoRatio, CalmarRatio, MaxDrawdown, ValueAtRisk, VaRMethod,
     ConditionalVaR, Beta, Alpha, TreynorRatio, InformationRatio, OmegaRatio, GainLossRatio,
     SterlingRatio, BurkeRatio, UlcerPerformanceIndex, PainIndex, RecoveryFactor, TailRatio,
+    ConditionalDrawdown, RiskAdjustedReturn, ReturnVariance,
+    DrawdownDuration, RecoveryRatio, VolatilityRiskRatio,
     DownsideDeviation, UpsidePotentialRatio, KappaRatio,
     WinRate, ProfitFactor, Expectancy,
 };
@@ -179,10 +195,14 @@ pub use risk::{
 pub use dsp::{
     MESA, MAMA, SineWave, HilbertTransform, CyberCycle, CGOscillator,
     LaguerreRSI, RoofingFilter, Supersmoother, Decycler,
+    DominantCyclePeriod, CycleAmplitude, CyclePhase,
+    TrendCycleDecomposition, CycleMomentum, CycleTurningPoint,
     SpectralDensity, PhaseIndicator, InstantaneousFrequency,
     AdaptiveBandwidthFilter, ZeroLagIndicator, SignalToNoiseRatio,
     AutoCorrelationPeriod, TrendStrengthFFT, CycleDeviationAmplitude,
     PhaseAccumulator, SpectralNoiseRatio, AdaptiveCycleFilter,
+    AdaptiveFrequencyFilter, TrendPhaseAnalysis, CycleModeIndicator,
+    SignalStrengthMeter, FrequencyResponseIndicator, PhaseSynchronization,
 };
 
 // ============================================================================
@@ -202,6 +222,12 @@ pub use composite::{
     MomentumStrengthIndex, MarketConditionScore, PriceActionScore,
     QualityMomentumFactor, ValueMomentumComposite, RiskAdjustedTrend,
     BreakoutStrengthIndex, TrendReversalProbability, MultiFactorAlphaScore,
+    TrendVolatilityIndex, TrendVolatilityIndexConfig, TrendVolatilityIndexOutput,
+    MomentumQualityScore, MomentumQualityScoreConfig, MomentumQualityScoreOutput,
+    MarketPhaseIndicator, MarketPhaseIndicatorConfig, MarketPhaseIndicatorOutput, MarketPhase,
+    PriceTrendStrength, PriceTrendStrengthConfig, PriceTrendStrengthOutput,
+    AdaptiveMarketIndicator, AdaptiveMarketIndicatorConfig, AdaptiveMarketIndicatorOutput,
+    CompositeSignalStrength, CompositeSignalStrengthConfig, CompositeSignalStrengthOutput,
 };
 
 // ============================================================================
@@ -254,6 +280,9 @@ pub use demark::{
     TDTrendFactor, TDTrendFactorOutput, TDTrendFactorConfig, TrendState,
     TDCamouflage, TDCLOP, TDMovingAverageQualifier,
     TDRiskLevel, TDMomentum, TDDifferential,
+    TDLine, TDLineOutput, TDRange, TDRangeOutput,
+    TDChannel, TDChannelOutput, TDQualifier, TDQualifierOutput,
+    TDAlignment, TDAlignmentOutput, TDExhaustion, TDExhaustionOutput,
 };
 
 // ============================================================================
@@ -280,8 +309,8 @@ pub use crypto::{
     SOPR, SOPROutput, SOPRSignal,
     HashRibbons, HashRibbonsOutput, HashRibbonsPhase,
     FearGreedIndex, FearGreedOutput, FearGreedLevel, FearGreedWeights,
-    PuellMultiple, ReserveRisk, StockToFlow, ThermocapMultiple,
-    CoinDaysDestroyed, RealizedCapAge,
+    HashRateMomentum, MinerCapitulation, WhaleAccumulation,
+    RetailSentimentProxy, InstitutionalFlowProxy, NetworkActivityProxy,
     ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,
     NetworkValueMomentum, TransactionVelocityProxy, CryptoMomentumScore,
 };

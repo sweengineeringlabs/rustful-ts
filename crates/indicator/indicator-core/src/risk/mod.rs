@@ -33,6 +33,8 @@ pub use gain_loss::GainLossRatio;
 pub use extended::{
     SterlingRatio, BurkeRatio, UlcerPerformanceIndex,
     PainIndex, RecoveryFactor, TailRatio,
+    ConditionalDrawdown, RiskAdjustedReturn, ReturnVariance,
+    DrawdownDuration, RecoveryRatio, VolatilityRiskRatio,
 };
 pub use advanced::{
     DownsideDeviation, UpsidePotentialRatio, KappaRatio,
