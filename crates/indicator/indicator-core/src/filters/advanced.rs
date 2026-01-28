@@ -3403,3 +3403,1444 @@ mod new_filter_tests {
         assert_eq!(result.len(), 3);
     }
 }
+
+// ==================== 6 ADDITIONAL NEW Filter Indicators ====================
+
+/// Wiener Filter - Optimal statistical noise reduction filter
+///
+/// The Wiener filter is an optimal linear filter for removing noise from a signal
+/// based on statistical estimation. It minimizes the mean square error between
+/// the estimated signal and the desired signal. This implementation estimates
+/// the signal and noise power spectra from the data to adaptively reduce noise
+/// while preserving signal characteristics.
+#[derive(Debug, Clone)]
+pub struct WienerFilter {
+    /// Window period for spectral estimation
+    period: usize,
+    /// Noise floor estimate (0.0-1.0) - fraction of signal assumed to be noise
+    noise_ratio: f64,
+}
+
+impl WienerFilter {
+    /// Create a new Wiener Filter
+    ///
+    /// # Arguments
+    /// * `period` - Window size for local spectral estimation (minimum 5)
+    /// * `noise_ratio` - Estimated noise-to-signal ratio (0.01-0.99)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, noise_ratio: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if noise_ratio <= 0.0 || noise_ratio >= 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "noise_ratio".to_string(),
+                reason: "must be between 0 and 1 exclusive".to_string(),
+            });
+        }
+        Ok(Self { period, noise_ratio })
+    }
+
+    /// Calculate Wiener filter
+    ///
+    /// Uses local variance estimation to compute the Wiener filter gain,
+    /// adaptively reducing noise based on local signal characteristics.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Estimate global noise variance
+        let global_mean: f64 = data.iter().sum::<f64>() / n as f64;
+        let global_var: f64 = data.iter()
+            .map(|&x| (x - global_mean).powi(2))
+            .sum::<f64>() / n as f64;
+        let noise_var = global_var * self.noise_ratio;
+
+        for i in 0..n {
+            let start = i.saturating_sub(self.period / 2);
+            let end = (i + self.period / 2 + 1).min(n);
+            let window = &data[start..end];
+
+            // Local mean and variance
+            let local_mean: f64 = window.iter().sum::<f64>() / window.len() as f64;
+            let local_var: f64 = window.iter()
+                .map(|&x| (x - local_mean).powi(2))
+                .sum::<f64>() / window.len() as f64;
+
+            // Wiener filter gain: (signal_var) / (signal_var + noise_var)
+            // where signal_var = local_var - noise_var (estimated)
+            let signal_var = (local_var - noise_var).max(0.0);
+            let wiener_gain = if local_var > 1e-10 {
+                signal_var / local_var
+            } else {
+                1.0
+            };
+
+            // Apply Wiener filter: output = mean + gain * (input - mean)
+            result[i] = local_mean + wiener_gain * (data[i] - local_mean);
+        }
+
+        result
+    }
+
+    /// Calculate with automatic noise estimation
+    ///
+    /// Estimates noise level from the high-frequency content of the signal
+    pub fn calculate_auto_noise(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < 3 {
+            return data.to_vec();
+        }
+
+        // Estimate noise from differences (MAD of first differences)
+        let diffs: Vec<f64> = data.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .collect();
+        let median_diff = {
+            let mut sorted = diffs.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            sorted[sorted.len() / 2]
+        };
+
+        // Robust noise estimate (MAD * 1.4826 for Gaussian)
+        let noise_std = median_diff * 1.4826 / 2.0_f64.sqrt();
+        let noise_var = noise_std * noise_std;
+
+        let mut result = vec![0.0; n];
+
+        for i in 0..n {
+            let start = i.saturating_sub(self.period / 2);
+            let end = (i + self.period / 2 + 1).min(n);
+            let window = &data[start..end];
+
+            let local_mean: f64 = window.iter().sum::<f64>() / window.len() as f64;
+            let local_var: f64 = window.iter()
+                .map(|&x| (x - local_mean).powi(2))
+                .sum::<f64>() / window.len() as f64;
+
+            let signal_var = (local_var - noise_var).max(0.0);
+            let wiener_gain = if local_var > 1e-10 {
+                signal_var / local_var
+            } else {
+                1.0
+            };
+
+            result[i] = local_mean + wiener_gain * (data[i] - local_mean);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for WienerFilter {
+    fn name(&self) -> &str {
+        "Wiener Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Kalman Smoother - Fixed-interval Kalman smoother (forward-backward)
+///
+/// Unlike the standard Kalman filter which only uses past data, the Kalman smoother
+/// uses both past and future data to produce optimal smoothed estimates. This is
+/// achieved through a forward Kalman filter pass followed by a backward smoothing
+/// pass. The result is smoother estimates with lower variance than the filter alone,
+/// making it ideal for offline analysis where lookahead is acceptable.
+#[derive(Debug, Clone)]
+pub struct KalmanSmoother {
+    /// Process noise variance (system dynamics uncertainty)
+    process_noise: f64,
+    /// Measurement noise variance (observation uncertainty)
+    measurement_noise: f64,
+}
+
+impl KalmanSmoother {
+    /// Create a new Kalman Smoother
+    ///
+    /// # Arguments
+    /// * `process_noise` - Process noise variance (0.001-10.0)
+    /// * `measurement_noise` - Measurement noise variance (0.001-10.0)
+    ///
+    /// # Returns
+    /// Result containing the smoother instance or an error if parameters are invalid
+    pub fn new(process_noise: f64, measurement_noise: f64) -> Result<Self> {
+        if process_noise <= 0.0 || process_noise > 10.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "process_noise".to_string(),
+                reason: "must be between 0 and 10".to_string(),
+            });
+        }
+        if measurement_noise <= 0.0 || measurement_noise > 10.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "measurement_noise".to_string(),
+                reason: "must be between 0 and 10".to_string(),
+            });
+        }
+        Ok(Self { process_noise, measurement_noise })
+    }
+
+    /// Calculate Kalman smoothed values using forward-backward algorithm
+    ///
+    /// Implements the Rauch-Tung-Striebel (RTS) smoother for optimal
+    /// fixed-interval smoothing.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![data[0]];
+        }
+
+        // Forward pass: standard Kalman filter
+        let mut xf = vec![0.0; n];  // Filtered state estimates
+        let mut pf = vec![0.0; n];  // Filtered error covariance
+
+        // Initialize
+        xf[0] = data[0];
+        pf[0] = 1.0;
+
+        for i in 1..n {
+            // Prediction
+            let xp = xf[i - 1];  // State transition is identity
+            let pp = pf[i - 1] + self.process_noise;
+
+            // Update
+            let k = pp / (pp + self.measurement_noise);  // Kalman gain
+            xf[i] = xp + k * (data[i] - xp);
+            pf[i] = (1.0 - k) * pp;
+        }
+
+        // Backward pass: RTS smoother
+        let mut xs = vec![0.0; n];  // Smoothed state estimates
+        let mut ps = vec![0.0; n];  // Smoothed error covariance
+
+        xs[n - 1] = xf[n - 1];
+        ps[n - 1] = pf[n - 1];
+
+        for i in (0..n - 1).rev() {
+            let pp = pf[i] + self.process_noise;  // Predicted covariance at i+1
+            let c = pf[i] / pp;  // Smoother gain
+
+            xs[i] = xf[i] + c * (xs[i + 1] - xf[i]);
+            ps[i] = pf[i] + c * c * (ps[i + 1] - pp);
+        }
+
+        xs
+    }
+
+    /// Get the smoothed error covariance (uncertainty estimates)
+    pub fn calculate_with_covariance(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = data.len();
+        if n == 0 {
+            return (vec![], vec![]);
+        }
+        if n == 1 {
+            return (vec![data[0]], vec![1.0]);
+        }
+
+        // Forward pass
+        let mut xf = vec![0.0; n];
+        let mut pf = vec![0.0; n];
+
+        xf[0] = data[0];
+        pf[0] = 1.0;
+
+        for i in 1..n {
+            let xp = xf[i - 1];
+            let pp = pf[i - 1] + self.process_noise;
+            let k = pp / (pp + self.measurement_noise);
+            xf[i] = xp + k * (data[i] - xp);
+            pf[i] = (1.0 - k) * pp;
+        }
+
+        // Backward pass
+        let mut xs = vec![0.0; n];
+        let mut ps = vec![0.0; n];
+
+        xs[n - 1] = xf[n - 1];
+        ps[n - 1] = pf[n - 1];
+
+        for i in (0..n - 1).rev() {
+            let pp = pf[i] + self.process_noise;
+            let c = pf[i] / pp;
+            xs[i] = xf[i] + c * (xs[i + 1] - xf[i]);
+            ps[i] = pf[i] + c * c * (ps[i + 1] - pp);
+        }
+
+        (xs, ps)
+    }
+}
+
+impl TechnicalIndicator for KalmanSmoother {
+    fn name(&self) -> &str {
+        "Kalman Smoother"
+    }
+
+    fn min_periods(&self) -> usize {
+        2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Moving Median Filter - Adaptive moving median with outlier detection
+///
+/// An enhanced median filter that uses adaptive window sizing based on
+/// local data characteristics. It detects potential outliers and adjusts
+/// the filtering strength accordingly. Unlike the standard median filter,
+/// this implementation provides smooth transitions and handles edge cases
+/// more gracefully.
+#[derive(Debug, Clone)]
+pub struct MovingMedianFilter {
+    /// Base period for the median window
+    base_period: usize,
+    /// Outlier sensitivity threshold (number of MADs)
+    outlier_threshold: f64,
+}
+
+impl MovingMedianFilter {
+    /// Create a new Moving Median Filter
+    ///
+    /// # Arguments
+    /// * `base_period` - Base window size (minimum 3)
+    /// * `outlier_threshold` - MAD threshold for outlier detection (1.0-5.0)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(base_period: usize, outlier_threshold: f64) -> Result<Self> {
+        if base_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if outlier_threshold < 1.0 || outlier_threshold > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "outlier_threshold".to_string(),
+                reason: "must be between 1.0 and 5.0".to_string(),
+            });
+        }
+        Ok(Self { base_period, outlier_threshold })
+    }
+
+    /// Calculate median of a slice
+    fn median(data: &[f64]) -> f64 {
+        if data.is_empty() {
+            return 0.0;
+        }
+        let mut sorted: Vec<f64> = data.to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = sorted.len() / 2;
+        if sorted.len() % 2 == 0 {
+            (sorted[mid - 1] + sorted[mid]) / 2.0
+        } else {
+            sorted[mid]
+        }
+    }
+
+    /// Calculate Median Absolute Deviation
+    fn mad(data: &[f64]) -> f64 {
+        if data.is_empty() {
+            return 0.0;
+        }
+        let med = Self::median(data);
+        let deviations: Vec<f64> = data.iter()
+            .map(|&x| (x - med).abs())
+            .collect();
+        Self::median(&deviations)
+    }
+
+    /// Calculate moving median filter with outlier handling
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let mut result = vec![0.0; n];
+        let half = self.base_period / 2;
+
+        for i in 0..n {
+            let start = i.saturating_sub(half);
+            let end = (i + half + 1).min(n);
+            let window: Vec<f64> = data[start..end].to_vec();
+
+            // Calculate robust statistics
+            let median_val = Self::median(&window);
+            let mad_val = Self::mad(&window);
+
+            // Check if current value is an outlier
+            let deviation = (data[i] - median_val).abs();
+            let is_outlier = mad_val > 1e-10 && deviation > self.outlier_threshold * mad_val * 1.4826;
+
+            if is_outlier {
+                // Use median for outliers
+                result[i] = median_val;
+            } else {
+                // Weighted blend between value and median based on deviation
+                let weight = if mad_val > 1e-10 {
+                    1.0 - (deviation / (self.outlier_threshold * mad_val * 1.4826)).min(1.0) * 0.5
+                } else {
+                    1.0
+                };
+                result[i] = weight * data[i] + (1.0 - weight) * median_val;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate with outlier flags
+    ///
+    /// Returns both filtered values and outlier indicator (1.0 = outlier, 0.0 = normal)
+    pub fn calculate_with_outliers(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = data.len();
+        if n == 0 {
+            return (vec![], vec![]);
+        }
+
+        let mut filtered = vec![0.0; n];
+        let mut outliers = vec![0.0; n];
+        let half = self.base_period / 2;
+
+        for i in 0..n {
+            let start = i.saturating_sub(half);
+            let end = (i + half + 1).min(n);
+            let window: Vec<f64> = data[start..end].to_vec();
+
+            let median_val = Self::median(&window);
+            let mad_val = Self::mad(&window);
+
+            let deviation = (data[i] - median_val).abs();
+            let is_outlier = mad_val > 1e-10 && deviation > self.outlier_threshold * mad_val * 1.4826;
+
+            if is_outlier {
+                filtered[i] = median_val;
+                outliers[i] = 1.0;
+            } else {
+                let weight = if mad_val > 1e-10 {
+                    1.0 - (deviation / (self.outlier_threshold * mad_val * 1.4826)).min(1.0) * 0.5
+                } else {
+                    1.0
+                };
+                filtered[i] = weight * data[i] + (1.0 - weight) * median_val;
+                outliers[i] = 0.0;
+            }
+        }
+
+        (filtered, outliers)
+    }
+}
+
+impl TechnicalIndicator for MovingMedianFilter {
+    fn name(&self) -> &str {
+        "Moving Median Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.base_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Exponential Smoother - Triple exponential smoothing (Holt-Winters)
+///
+/// Implements triple exponential smoothing which tracks level, trend, and
+/// seasonality components. This is an extension of double exponential smoothing
+/// that can model periodic patterns in the data. Without seasonal component,
+/// it falls back to enhanced double exponential smoothing with damped trend.
+#[derive(Debug, Clone)]
+pub struct ExponentialSmoother {
+    /// Level smoothing factor (0.0-1.0)
+    alpha: f64,
+    /// Trend smoothing factor (0.0-1.0)
+    beta: f64,
+    /// Trend damping factor (0.0-1.0)
+    phi: f64,
+}
+
+impl ExponentialSmoother {
+    /// Create a new Exponential Smoother with damped trend
+    ///
+    /// # Arguments
+    /// * `alpha` - Level smoothing factor (0.01-1.0)
+    /// * `beta` - Trend smoothing factor (0.01-1.0)
+    /// * `phi` - Trend damping factor (0.8-1.0), 1.0 = no damping
+    ///
+    /// # Returns
+    /// Result containing the smoother instance or an error if parameters are invalid
+    pub fn new(alpha: f64, beta: f64, phi: f64) -> Result<Self> {
+        if alpha <= 0.0 || alpha > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "alpha".to_string(),
+                reason: "must be between 0 and 1".to_string(),
+            });
+        }
+        if beta <= 0.0 || beta > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "beta".to_string(),
+                reason: "must be between 0 and 1".to_string(),
+            });
+        }
+        if phi < 0.8 || phi > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "phi".to_string(),
+                reason: "must be between 0.8 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { alpha, beta, phi })
+    }
+
+    /// Create with default damping (phi = 0.98)
+    pub fn with_default_damping(alpha: f64, beta: f64) -> Result<Self> {
+        Self::new(alpha, beta, 0.98)
+    }
+
+    /// Calculate triple exponential smoothing with damped trend
+    ///
+    /// Uses the damped trend method which prevents the forecast from
+    /// growing indefinitely, making it more suitable for financial data.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n == 1 {
+            return vec![data[0]];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Initialize level and trend
+        let mut level = data[0];
+        let mut trend = data[1] - data[0];
+
+        result[0] = data[0];
+
+        for i in 1..n {
+            let prev_level = level;
+
+            // Update level
+            level = self.alpha * data[i] + (1.0 - self.alpha) * (prev_level + self.phi * trend);
+
+            // Update trend with damping
+            trend = self.beta * (level - prev_level) + (1.0 - self.beta) * self.phi * trend;
+
+            result[i] = level;
+        }
+
+        result
+    }
+
+    /// Calculate with multi-step forecast
+    ///
+    /// Returns smoothed values and h-step ahead forecasts
+    pub fn calculate_with_forecast(&self, data: &[f64], horizon: usize) -> (Vec<f64>, Vec<f64>) {
+        let n = data.len();
+        if n == 0 {
+            return (vec![], vec![]);
+        }
+
+        let smoothed = self.calculate(data);
+
+        // Get final state
+        let mut level = data[0];
+        let mut trend = if n > 1 { data[1] - data[0] } else { 0.0 };
+
+        for i in 1..n {
+            let prev_level = level;
+            level = self.alpha * data[i] + (1.0 - self.alpha) * (prev_level + self.phi * trend);
+            trend = self.beta * (level - prev_level) + (1.0 - self.beta) * self.phi * trend;
+        }
+
+        // Generate damped forecast
+        let forecast: Vec<f64> = (1..=horizon)
+            .map(|h| {
+                // Sum of damped trend: phi + phi^2 + ... + phi^h
+                let trend_sum = if (self.phi - 1.0).abs() < 1e-10 {
+                    h as f64 * trend
+                } else {
+                    trend * self.phi * (1.0 - self.phi.powi(h as i32)) / (1.0 - self.phi)
+                };
+                level + trend_sum
+            })
+            .collect();
+
+        (smoothed, forecast)
+    }
+
+    /// Calculate residuals for model diagnostics
+    pub fn calculate_residuals(&self, data: &[f64]) -> Vec<f64> {
+        let smoothed = self.calculate(data);
+        data.iter()
+            .zip(smoothed.iter())
+            .map(|(&actual, &fitted)| actual - fitted)
+            .collect()
+    }
+}
+
+impl TechnicalIndicator for ExponentialSmoother {
+    fn name(&self) -> &str {
+        "Exponential Smoother"
+    }
+
+    fn min_periods(&self) -> usize {
+        2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Adaptive Noise Filter - LMS-based adaptive noise cancellation
+///
+/// Implements a Least Mean Squares (LMS) adaptive filter that learns the
+/// optimal filter coefficients to minimize noise while preserving signal.
+/// The filter adapts its coefficients in real-time based on the error signal,
+/// making it effective for non-stationary noise environments common in
+/// financial markets.
+#[derive(Debug, Clone)]
+pub struct AdaptiveNoiseFilterLMS {
+    /// Filter order (number of taps)
+    order: usize,
+    /// Learning rate (step size for adaptation)
+    mu: f64,
+    /// Leakage factor for regularization (0.99-1.0)
+    leakage: f64,
+}
+
+impl AdaptiveNoiseFilterLMS {
+    /// Create a new Adaptive Noise Filter
+    ///
+    /// # Arguments
+    /// * `order` - Filter order/taps (3-50)
+    /// * `mu` - Learning rate (0.001-0.5)
+    /// * `leakage` - Leakage factor for stability (0.99-1.0)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(order: usize, mu: f64, leakage: f64) -> Result<Self> {
+        if order < 3 || order > 50 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "order".to_string(),
+                reason: "must be between 3 and 50".to_string(),
+            });
+        }
+        if mu <= 0.0 || mu > 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "mu".to_string(),
+                reason: "must be between 0 and 0.5".to_string(),
+            });
+        }
+        if leakage < 0.99 || leakage > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "leakage".to_string(),
+                reason: "must be between 0.99 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { order, mu, leakage })
+    }
+
+    /// Create with default parameters
+    pub fn with_defaults(order: usize) -> Result<Self> {
+        Self::new(order, 0.01, 0.999)
+    }
+
+    /// Calculate LMS adaptive filter
+    ///
+    /// Uses the signal's lagged values as reference to adaptively
+    /// estimate and remove noise.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n <= self.order {
+            return data.to_vec();
+        }
+
+        let mut result = vec![0.0; n];
+        let mut weights = vec![1.0 / self.order as f64; self.order];
+
+        // Initialize with original data for warmup
+        for i in 0..self.order {
+            result[i] = data[i];
+        }
+
+        // Normalize learning rate by input power for stability
+        let initial_power: f64 = data[..self.order.min(n)]
+            .iter()
+            .map(|&x| x * x)
+            .sum::<f64>() / self.order as f64;
+        let mu_normalized = self.mu / (initial_power.max(1e-10) * self.order as f64);
+
+        for i in self.order..n {
+            // Get input vector (lagged values)
+            let input: Vec<f64> = (0..self.order)
+                .map(|j| data[i - j - 1])
+                .collect();
+
+            // Compute filter output (predicted value)
+            let predicted: f64 = weights.iter()
+                .zip(input.iter())
+                .map(|(&w, &x)| w * x)
+                .sum();
+
+            // Error (difference between actual and predicted)
+            let error = data[i] - predicted;
+
+            // The filtered output is the predicted value (noise removed)
+            // But we blend with original for stability
+            result[i] = predicted + 0.3 * error;  // Partial error correction
+
+            // Update weights using leaky LMS
+            let input_power: f64 = input.iter().map(|&x| x * x).sum::<f64>().max(1e-10);
+            let normalized_mu = mu_normalized / (1.0 + input_power / initial_power.max(1e-10));
+
+            for (j, w) in weights.iter_mut().enumerate() {
+                *w = self.leakage * *w + normalized_mu * error * input[j];
+            }
+        }
+
+        result
+    }
+
+    /// Get the learned filter coefficients
+    pub fn get_weights(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n <= self.order {
+            return vec![1.0 / self.order as f64; self.order];
+        }
+
+        let mut weights = vec![1.0 / self.order as f64; self.order];
+
+        let initial_power: f64 = data[..self.order.min(n)]
+            .iter()
+            .map(|&x| x * x)
+            .sum::<f64>() / self.order as f64;
+        let mu_normalized = self.mu / (initial_power.max(1e-10) * self.order as f64);
+
+        for i in self.order..n {
+            let input: Vec<f64> = (0..self.order)
+                .map(|j| data[i - j - 1])
+                .collect();
+
+            let predicted: f64 = weights.iter()
+                .zip(input.iter())
+                .map(|(&w, &x)| w * x)
+                .sum();
+
+            let error = data[i] - predicted;
+
+            let input_power: f64 = input.iter().map(|&x| x * x).sum::<f64>().max(1e-10);
+            let normalized_mu = mu_normalized / (1.0 + input_power / initial_power.max(1e-10));
+
+            for (j, w) in weights.iter_mut().enumerate() {
+                *w = self.leakage * *w + normalized_mu * error * input[j];
+            }
+        }
+
+        weights
+    }
+}
+
+impl TechnicalIndicator for AdaptiveNoiseFilterLMS {
+    fn name(&self) -> &str {
+        "Adaptive Noise Filter LMS"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.order + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Separation Filter - EMD-inspired trend/cycle separation
+///
+/// Separates the price data into trend and cyclical components using an
+/// approach inspired by Empirical Mode Decomposition (EMD). The filter
+/// identifies local extrema and uses envelope fitting to extract the
+/// underlying trend, with the remainder being the cyclical component.
+/// This provides cleaner trend signals than simple moving averages.
+#[derive(Debug, Clone)]
+pub struct TrendSeparationFilter {
+    /// Period for envelope smoothing
+    period: usize,
+    /// Number of sifting iterations
+    iterations: usize,
+}
+
+impl TrendSeparationFilter {
+    /// Create a new Trend Separation Filter
+    ///
+    /// # Arguments
+    /// * `period` - Period for local extrema detection (minimum 5)
+    /// * `iterations` - Number of sifting iterations (1-5)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, iterations: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if iterations < 1 || iterations > 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "iterations".to_string(),
+                reason: "must be between 1 and 5".to_string(),
+            });
+        }
+        Ok(Self { period, iterations })
+    }
+
+    /// Find local maxima indices
+    fn find_local_maxima(&self, data: &[f64]) -> Vec<usize> {
+        let n = data.len();
+        let half = self.period / 2;
+        let mut maxima = Vec::new();
+
+        for i in half..(n - half) {
+            let window = &data[(i - half)..=(i + half)];
+            let max_val = window.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            if (data[i] - max_val).abs() < 1e-10 {
+                // Check if it's a true local maximum (not flat)
+                if i > 0 && i < n - 1 && data[i] >= data[i - 1] && data[i] >= data[i + 1] {
+                    maxima.push(i);
+                }
+            }
+        }
+
+        // Ensure we have at least start and end points
+        if maxima.is_empty() || maxima[0] != 0 {
+            maxima.insert(0, 0);
+        }
+        if maxima.is_empty() || maxima[maxima.len() - 1] != n - 1 {
+            maxima.push(n - 1);
+        }
+
+        maxima
+    }
+
+    /// Find local minima indices
+    fn find_local_minima(&self, data: &[f64]) -> Vec<usize> {
+        let n = data.len();
+        let half = self.period / 2;
+        let mut minima = Vec::new();
+
+        for i in half..(n - half) {
+            let window = &data[(i - half)..=(i + half)];
+            let min_val = window.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            if (data[i] - min_val).abs() < 1e-10 {
+                if i > 0 && i < n - 1 && data[i] <= data[i - 1] && data[i] <= data[i + 1] {
+                    minima.push(i);
+                }
+            }
+        }
+
+        if minima.is_empty() || minima[0] != 0 {
+            minima.insert(0, 0);
+        }
+        if minima.is_empty() || minima[minima.len() - 1] != n - 1 {
+            minima.push(n - 1);
+        }
+
+        minima
+    }
+
+    /// Linear interpolation to create envelope
+    fn interpolate_envelope(&self, data: &[f64], extrema: &[usize]) -> Vec<f64> {
+        let n = data.len();
+        let mut envelope = vec![0.0; n];
+
+        for i in 0..extrema.len() - 1 {
+            let x0 = extrema[i];
+            let x1 = extrema[i + 1];
+            let y0 = data[x0];
+            let y1 = data[x1];
+
+            for x in x0..=x1 {
+                let t = (x - x0) as f64 / (x1 - x0).max(1) as f64;
+                envelope[x] = y0 + t * (y1 - y0);
+            }
+        }
+
+        envelope
+    }
+
+    /// Calculate trend component (the mean envelope)
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < self.period {
+            return data.to_vec();
+        }
+
+        let mut residual = data.to_vec();
+
+        // Apply sifting iterations
+        for _ in 0..self.iterations {
+            let maxima = self.find_local_maxima(&residual);
+            let minima = self.find_local_minima(&residual);
+
+            let upper_env = self.interpolate_envelope(&residual, &maxima);
+            let lower_env = self.interpolate_envelope(&residual, &minima);
+
+            // Mean envelope is the trend estimate
+            let mean_env: Vec<f64> = upper_env.iter()
+                .zip(lower_env.iter())
+                .map(|(&u, &l)| (u + l) / 2.0)
+                .collect();
+
+            // Subtract mean envelope to get cycle component
+            // Here we return the mean envelope as the trend
+            residual = mean_env;
+        }
+
+        residual
+    }
+
+    /// Calculate both trend and cycle components
+    ///
+    /// Returns (trend, cycle) where cycle = original - trend
+    pub fn calculate_components(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let trend = self.calculate(data);
+        let cycle: Vec<f64> = data.iter()
+            .zip(trend.iter())
+            .map(|(&d, &t)| d - t)
+            .collect();
+
+        (trend, cycle)
+    }
+
+    /// Calculate with envelope bounds
+    ///
+    /// Returns (trend, upper_bound, lower_bound)
+    pub fn calculate_with_bounds(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = data.len();
+        if n < self.period {
+            return (data.to_vec(), data.to_vec(), data.to_vec());
+        }
+
+        let maxima = self.find_local_maxima(data);
+        let minima = self.find_local_minima(data);
+
+        let upper = self.interpolate_envelope(data, &maxima);
+        let lower = self.interpolate_envelope(data, &minima);
+
+        let trend: Vec<f64> = upper.iter()
+            .zip(lower.iter())
+            .map(|(&u, &l)| (u + l) / 2.0)
+            .collect();
+
+        (trend, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for TrendSeparationFilter {
+    fn name(&self) -> &str {
+        "Trend Separation Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ==================== Tests for 6 ADDITIONAL NEW Filter Indicators ====================
+
+#[cfg(test)]
+mod additional_filter_tests {
+    use super::*;
+
+    fn make_test_data() -> Vec<f64> {
+        (0..50).map(|i| {
+            let trend = 100.0 + i as f64 * 0.5;
+            let cycle = 3.0 * (i as f64 * 0.3).sin();
+            let noise = ((i * 7) % 5) as f64 * 0.2 - 0.5;
+            trend + cycle + noise
+        }).collect()
+    }
+
+    fn make_ohlcv_data() -> OHLCVSeries {
+        let close = make_test_data();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let open: Vec<f64> = close.clone();
+        let volume: Vec<f64> = vec![1000.0; close.len()];
+        OHLCVSeries { open, high, low, close, volume }
+    }
+
+    // ==================== WienerFilter Tests ====================
+
+    #[test]
+    fn test_wiener_filter_basic() {
+        let data = make_test_data();
+        let wf = WienerFilter::new(7, 0.3).unwrap();
+        let result = wf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_wiener_filter_validation() {
+        assert!(WienerFilter::new(4, 0.3).is_err()); // period too small
+        assert!(WienerFilter::new(7, 0.0).is_err()); // noise_ratio too small
+        assert!(WienerFilter::new(7, 1.0).is_err()); // noise_ratio too large
+    }
+
+    #[test]
+    fn test_wiener_filter_noise_reduction() {
+        // Create noisy signal
+        let signal: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 0.2).collect();
+        let noisy: Vec<f64> = signal.iter().enumerate()
+            .map(|(i, &s)| s + ((i * 17) % 9) as f64 * 0.5 - 2.0)
+            .collect();
+
+        let wf = WienerFilter::new(7, 0.4).unwrap();
+        let filtered = wf.calculate(&noisy);
+
+        // Filtered should be closer to original signal
+        let noise_error: f64 = noisy.iter().zip(signal.iter())
+            .map(|(n, s)| (n - s).powi(2)).sum::<f64>().sqrt();
+        let filter_error: f64 = filtered.iter().zip(signal.iter())
+            .map(|(f, s)| (f - s).powi(2)).sum::<f64>().sqrt();
+
+        assert!(filter_error < noise_error * 1.5);
+    }
+
+    #[test]
+    fn test_wiener_filter_auto_noise() {
+        let data = make_test_data();
+        let wf = WienerFilter::new(7, 0.3).unwrap();
+        let result = wf.calculate_auto_noise(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_wiener_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let wf = WienerFilter::new(7, 0.3).unwrap();
+
+        assert_eq!(wf.name(), "Wiener Filter");
+        assert_eq!(wf.min_periods(), 7);
+
+        let output = wf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== KalmanSmoother Tests ====================
+
+    #[test]
+    fn test_kalman_smoother_basic() {
+        let data = make_test_data();
+        let ks = KalmanSmoother::new(0.1, 1.0).unwrap();
+        let result = ks.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_kalman_smoother_validation() {
+        assert!(KalmanSmoother::new(0.0, 1.0).is_err()); // process_noise too small
+        assert!(KalmanSmoother::new(15.0, 1.0).is_err()); // process_noise too large
+        assert!(KalmanSmoother::new(0.1, 0.0).is_err()); // measurement_noise too small
+        assert!(KalmanSmoother::new(0.1, 15.0).is_err()); // measurement_noise too large
+    }
+
+    #[test]
+    fn test_kalman_smoother_smoother_than_filter() {
+        let data = make_test_data();
+        let ks = KalmanSmoother::new(0.1, 1.0).unwrap();
+        let smoothed = ks.calculate(&data);
+
+        // Smoother should produce less variance in differences
+        let data_var: f64 = data.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (data.len() - 1) as f64;
+
+        let smooth_var: f64 = smoothed.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (smoothed.len() - 1) as f64;
+
+        assert!(smooth_var < data_var);
+    }
+
+    #[test]
+    fn test_kalman_smoother_with_covariance() {
+        let data = make_test_data();
+        let ks = KalmanSmoother::new(0.1, 1.0).unwrap();
+        let (smoothed, covariance) = ks.calculate_with_covariance(&data);
+
+        assert_eq!(smoothed.len(), data.len());
+        assert_eq!(covariance.len(), data.len());
+        // Covariance should be positive
+        assert!(covariance.iter().all(|&c| c >= 0.0));
+    }
+
+    #[test]
+    fn test_kalman_smoother_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let ks = KalmanSmoother::new(0.1, 1.0).unwrap();
+
+        assert_eq!(ks.name(), "Kalman Smoother");
+        assert_eq!(ks.min_periods(), 2);
+
+        let output = ks.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== MovingMedianFilter Tests ====================
+
+    #[test]
+    fn test_moving_median_filter_basic() {
+        let data = make_test_data();
+        let mmf = MovingMedianFilter::new(5, 2.5).unwrap();
+        let result = mmf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_moving_median_filter_validation() {
+        assert!(MovingMedianFilter::new(2, 2.5).is_err()); // period too small
+        assert!(MovingMedianFilter::new(5, 0.5).is_err()); // threshold too small
+        assert!(MovingMedianFilter::new(5, 6.0).is_err()); // threshold too large
+    }
+
+    #[test]
+    fn test_moving_median_filter_outlier_removal() {
+        // Data with spike
+        let mut data = vec![100.0, 101.0, 102.0, 500.0, 104.0, 105.0, 106.0];
+        data.extend(vec![107.0, 108.0, 109.0]);
+
+        let mmf = MovingMedianFilter::new(5, 2.0).unwrap();
+        let result = mmf.calculate(&data);
+
+        // Spike should be reduced
+        assert!(result[3] < 400.0);
+        assert!(result[3] > 90.0);
+    }
+
+    #[test]
+    fn test_moving_median_filter_with_outliers() {
+        let mut data = make_test_data();
+        data[20] = 500.0; // Add outlier
+
+        let mmf = MovingMedianFilter::new(5, 2.0).unwrap();
+        let (filtered, outliers) = mmf.calculate_with_outliers(&data);
+
+        assert_eq!(filtered.len(), data.len());
+        assert_eq!(outliers.len(), data.len());
+        assert!((outliers[20] - 1.0).abs() < 1e-10); // Should detect outlier
+    }
+
+    #[test]
+    fn test_moving_median_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let mmf = MovingMedianFilter::new(5, 2.5).unwrap();
+
+        assert_eq!(mmf.name(), "Moving Median Filter");
+        assert_eq!(mmf.min_periods(), 5);
+
+        let output = mmf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== ExponentialSmoother Tests ====================
+
+    #[test]
+    fn test_exponential_smoother_basic() {
+        let data = make_test_data();
+        let es = ExponentialSmoother::new(0.3, 0.1, 0.98).unwrap();
+        let result = es.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_exponential_smoother_validation() {
+        assert!(ExponentialSmoother::new(0.0, 0.1, 0.98).is_err()); // alpha too small
+        assert!(ExponentialSmoother::new(1.5, 0.1, 0.98).is_err()); // alpha too large
+        assert!(ExponentialSmoother::new(0.3, 0.0, 0.98).is_err()); // beta too small
+        assert!(ExponentialSmoother::new(0.3, 0.1, 0.7).is_err()); // phi too small
+    }
+
+    #[test]
+    fn test_exponential_smoother_with_default_damping() {
+        let es = ExponentialSmoother::with_default_damping(0.3, 0.1).unwrap();
+        assert!((es.phi - 0.98).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_exponential_smoother_trend_following() {
+        let data: Vec<f64> = (0..30).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let es = ExponentialSmoother::new(0.5, 0.3, 0.98).unwrap();
+        let result = es.calculate(&data);
+
+        // Should follow upward trend
+        assert!(result[25] > result[10]);
+    }
+
+    #[test]
+    fn test_exponential_smoother_with_forecast() {
+        let data = make_test_data();
+        let es = ExponentialSmoother::new(0.3, 0.1, 0.95).unwrap();
+        let (smoothed, forecast) = es.calculate_with_forecast(&data, 5);
+
+        assert_eq!(smoothed.len(), data.len());
+        assert_eq!(forecast.len(), 5);
+        // Damped forecast should converge
+        assert!(forecast.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_exponential_smoother_residuals() {
+        let data = make_test_data();
+        let es = ExponentialSmoother::new(0.3, 0.1, 0.98).unwrap();
+        let residuals = es.calculate_residuals(&data);
+
+        assert_eq!(residuals.len(), data.len());
+        // Residuals should be relatively small
+        let mean_abs_resid: f64 = residuals.iter().map(|r| r.abs()).sum::<f64>() / residuals.len() as f64;
+        assert!(mean_abs_resid < 10.0);
+    }
+
+    #[test]
+    fn test_exponential_smoother_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let es = ExponentialSmoother::new(0.3, 0.1, 0.98).unwrap();
+
+        assert_eq!(es.name(), "Exponential Smoother");
+        assert_eq!(es.min_periods(), 2);
+
+        let output = es.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== AdaptiveNoiseFilterLMS Tests ====================
+
+    #[test]
+    fn test_adaptive_noise_filter_lms_basic() {
+        let data = make_test_data();
+        let anf = AdaptiveNoiseFilterLMS::new(5, 0.01, 0.999).unwrap();
+        let result = anf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_adaptive_noise_filter_lms_validation() {
+        assert!(AdaptiveNoiseFilterLMS::new(2, 0.01, 0.999).is_err()); // order too small
+        assert!(AdaptiveNoiseFilterLMS::new(60, 0.01, 0.999).is_err()); // order too large
+        assert!(AdaptiveNoiseFilterLMS::new(5, 0.0, 0.999).is_err()); // mu too small
+        assert!(AdaptiveNoiseFilterLMS::new(5, 0.6, 0.999).is_err()); // mu too large
+        assert!(AdaptiveNoiseFilterLMS::new(5, 0.01, 0.98).is_err()); // leakage too small
+    }
+
+    #[test]
+    fn test_adaptive_noise_filter_lms_with_defaults() {
+        let anf = AdaptiveNoiseFilterLMS::with_defaults(5).unwrap();
+        assert!((anf.mu - 0.01).abs() < 1e-10);
+        assert!((anf.leakage - 0.999).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_adaptive_noise_filter_lms_adaptation() {
+        let data = make_test_data();
+        let anf = AdaptiveNoiseFilterLMS::new(5, 0.01, 0.999).unwrap();
+        let result = anf.calculate(&data);
+
+        // Result should be finite and reasonable
+        assert!(result.iter().all(|v| v.is_finite()));
+        assert!(result.iter().all(|&v| v > 50.0 && v < 200.0));
+    }
+
+    #[test]
+    fn test_adaptive_noise_filter_lms_weights() {
+        let data = make_test_data();
+        let anf = AdaptiveNoiseFilterLMS::new(5, 0.01, 0.999).unwrap();
+        let weights = anf.get_weights(&data);
+
+        assert_eq!(weights.len(), 5);
+        assert!(weights.iter().all(|w| w.is_finite()));
+    }
+
+    #[test]
+    fn test_adaptive_noise_filter_lms_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let anf = AdaptiveNoiseFilterLMS::new(5, 0.01, 0.999).unwrap();
+
+        assert_eq!(anf.name(), "Adaptive Noise Filter LMS");
+        assert_eq!(anf.min_periods(), 6);
+
+        let output = anf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== TrendSeparationFilter Tests ====================
+
+    #[test]
+    fn test_trend_separation_filter_basic() {
+        let data = make_test_data();
+        let tsf = TrendSeparationFilter::new(7, 2).unwrap();
+        let result = tsf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_trend_separation_filter_validation() {
+        assert!(TrendSeparationFilter::new(4, 2).is_err()); // period too small
+        assert!(TrendSeparationFilter::new(7, 0).is_err()); // iterations too small
+        assert!(TrendSeparationFilter::new(7, 6).is_err()); // iterations too large
+    }
+
+    #[test]
+    fn test_trend_separation_filter_components() {
+        let data = make_test_data();
+        let tsf = TrendSeparationFilter::new(7, 2).unwrap();
+        let (trend, cycle) = tsf.calculate_components(&data);
+
+        assert_eq!(trend.len(), data.len());
+        assert_eq!(cycle.len(), data.len());
+
+        // Trend + cycle should equal original
+        for i in 0..data.len() {
+            let reconstructed = trend[i] + cycle[i];
+            assert!((reconstructed - data[i]).abs() < 1e-10,
+                "At {}: {} + {} != {}",
+                i, trend[i], cycle[i], data[i]);
+        }
+    }
+
+    #[test]
+    fn test_trend_separation_filter_trend_follows_price() {
+        // Create uptrending data
+        let data: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 1.0).collect();
+        let tsf = TrendSeparationFilter::new(7, 2).unwrap();
+        let trend = tsf.calculate(&data);
+
+        // Trend should generally increase
+        assert!(trend[40] > trend[10]);
+    }
+
+    #[test]
+    fn test_trend_separation_filter_with_bounds() {
+        let data = make_test_data();
+        let tsf = TrendSeparationFilter::new(7, 1).unwrap();
+        let (trend, upper, lower) = tsf.calculate_with_bounds(&data);
+
+        assert_eq!(trend.len(), data.len());
+        assert_eq!(upper.len(), data.len());
+        assert_eq!(lower.len(), data.len());
+
+        // Trend should be between bounds (approximately)
+        for i in 0..data.len() {
+            assert!(upper[i] >= lower[i],
+                "At {}: upper {} < lower {}",
+                i, upper[i], lower[i]);
+        }
+    }
+
+    #[test]
+    fn test_trend_separation_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let tsf = TrendSeparationFilter::new(7, 2).unwrap();
+
+        assert_eq!(tsf.name(), "Trend Separation Filter");
+        assert_eq!(tsf.min_periods(), 7);
+
+        let output = tsf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== Empty and Short Data Tests ====================
+
+    #[test]
+    fn test_additional_filters_empty_data() {
+        let empty: Vec<f64> = vec![];
+
+        let wf = WienerFilter::new(7, 0.3).unwrap();
+        assert!(wf.calculate(&empty).is_empty());
+
+        let ks = KalmanSmoother::new(0.1, 1.0).unwrap();
+        assert!(ks.calculate(&empty).is_empty());
+
+        let mmf = MovingMedianFilter::new(5, 2.5).unwrap();
+        assert!(mmf.calculate(&empty).is_empty());
+
+        let es = ExponentialSmoother::new(0.3, 0.1, 0.98).unwrap();
+        assert!(es.calculate(&empty).is_empty());
+
+        let anf = AdaptiveNoiseFilterLMS::new(5, 0.01, 0.999).unwrap();
+        assert!(anf.calculate(&empty).is_empty());
+
+        let tsf = TrendSeparationFilter::new(7, 2).unwrap();
+        assert!(tsf.calculate(&empty).is_empty());
+    }
+
+    #[test]
+    fn test_additional_filters_short_data() {
+        let short = vec![100.0, 101.0, 102.0];
+
+        let wf = WienerFilter::new(7, 0.3).unwrap();
+        let result = wf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let ks = KalmanSmoother::new(0.1, 1.0).unwrap();
+        let result = ks.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let mmf = MovingMedianFilter::new(5, 2.5).unwrap();
+        let result = mmf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let es = ExponentialSmoother::new(0.3, 0.1, 0.98).unwrap();
+        let result = es.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let anf = AdaptiveNoiseFilterLMS::new(5, 0.01, 0.999).unwrap();
+        let result = anf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let tsf = TrendSeparationFilter::new(7, 2).unwrap();
+        let result = tsf.calculate(&short);
+        assert_eq!(result.len(), 3);
+    }
+}

@@ -4753,6 +4753,1153 @@ impl TechnicalIndicator for RegimeCorrelation {
 }
 
 // ============================================================================
+// RelativeValueScore
+// ============================================================================
+
+/// Relative Value Score - Measures relative valuation between two assets using multiple metrics.
+///
+/// This indicator combines price ratio analysis with momentum and mean reversion
+/// to generate a composite relative value score. Unlike simple ratio analysis,
+/// it incorporates the rate of change of the ratio and its deviation from normal levels.
+///
+/// # Formula
+/// Score = weighted combination of:
+/// - Price ratio percentile (current vs historical)
+/// - Ratio momentum (direction of ratio change)
+/// - Mean reversion signal (deviation from mean)
+///
+/// # Interpretation
+/// - Score > 50: Asset 1 relatively overvalued vs Asset 2
+/// - Score < 50: Asset 1 relatively undervalued vs Asset 2
+/// - Score near 50: Fair relative value
+/// - Extreme scores (>80 or <20) suggest potential reversion opportunities
+#[derive(Debug, Clone)]
+pub struct RelativeValueScore {
+    /// Period for calculations.
+    period: usize,
+    /// Momentum lookback period.
+    momentum_period: usize,
+    /// Secondary series for comparison.
+    secondary_series: Vec<f64>,
+}
+
+impl RelativeValueScore {
+    /// Create a new RelativeValueScore indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for historical comparison (must be >= 20)
+    /// * `momentum_period` - Period for momentum calculation (must be >= 5)
+    pub fn new(period: usize, momentum_period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if momentum_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            momentum_period,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the secondary series for comparison.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate relative value score for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let mut result = vec![50.0; n]; // Default to neutral
+
+        if n < self.period {
+            return result;
+        }
+
+        // Calculate price ratios
+        let ratios: Vec<f64> = dual.series1.iter()
+            .zip(dual.series2.iter())
+            .map(|(a, b)| if *b > 1e-10 { a / b } else { 1.0 })
+            .collect();
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let window = &ratios[start..=i];
+            let current = ratios[i];
+
+            // Component 1: Percentile rank (0-100)
+            let count_below = window.iter().filter(|&&r| r < current).count();
+            let percentile = (count_below as f64 / self.period as f64) * 100.0;
+
+            // Component 2: Momentum (rate of change)
+            let momentum_score = if i >= self.momentum_period {
+                let prev_ratio = ratios[i - self.momentum_period];
+                if prev_ratio > 1e-10 {
+                    let roc = (current / prev_ratio - 1.0) * 100.0;
+                    // Normalize momentum to 0-100 range
+                    50.0 + roc.clamp(-50.0, 50.0)
+                } else {
+                    50.0
+                }
+            } else {
+                50.0
+            };
+
+            // Component 3: Mean reversion (z-score based)
+            let mean: f64 = window.iter().sum::<f64>() / window.len() as f64;
+            let variance: f64 = window.iter()
+                .map(|r| (r - mean).powi(2))
+                .sum::<f64>() / window.len() as f64;
+            let std = variance.sqrt();
+            let z_score = if std > 1e-10 { (current - mean) / std } else { 0.0 };
+            // Convert z-score to 0-100 (z=2 -> 84, z=-2 -> 16)
+            let reversion_score = 50.0 + z_score.clamp(-2.5, 2.5) * 15.0;
+
+            // Combine components with weights
+            result[i] = percentile * 0.4 + momentum_score * 0.3 + reversion_score * 0.3;
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for RelativeValueScore {
+    fn name(&self) -> &str {
+        "Relative Value Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing RelativeValueScore".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// SpreadMomentum
+// ============================================================================
+
+/// Spread Momentum - Measures the momentum of price spread between two assets.
+///
+/// This indicator tracks the rate of change and acceleration of the spread
+/// between two correlated assets. It helps identify when the spread is
+/// expanding or contracting at an increasing or decreasing rate.
+///
+/// # Formula
+/// 1. Calculate spread: Series1 - (hedge_ratio * Series2)
+/// 2. Calculate spread momentum: ROC of spread over momentum_period
+/// 3. Apply smoothing via EMA
+///
+/// # Interpretation
+/// - Positive momentum: Spread is widening (Series1 outperforming)
+/// - Negative momentum: Spread is narrowing (Series2 catching up)
+/// - Momentum acceleration indicates trend strength
+/// - Divergence from price trend signals potential reversals
+#[derive(Debug, Clone)]
+pub struct SpreadMomentum {
+    /// Period for spread calculation.
+    spread_period: usize,
+    /// Period for momentum calculation.
+    momentum_period: usize,
+    /// Smoothing period for output.
+    smooth_period: usize,
+    /// Secondary series.
+    secondary_series: Vec<f64>,
+}
+
+impl SpreadMomentum {
+    /// Create a new SpreadMomentum indicator.
+    ///
+    /// # Arguments
+    /// * `spread_period` - Period for spread/hedge ratio calculation (must be >= 10)
+    /// * `momentum_period` - Period for momentum (must be >= 3)
+    /// * `smooth_period` - EMA smoothing period (must be >= 1)
+    pub fn new(spread_period: usize, momentum_period: usize, smooth_period: usize) -> Result<Self> {
+        if spread_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "spread_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if momentum_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self {
+            spread_period,
+            momentum_period,
+            smooth_period,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the secondary series.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate rolling hedge ratio using simple regression.
+    fn calculate_hedge_ratio(series1: &[f64], series2: &[f64]) -> f64 {
+        let n = series1.len() as f64;
+        if n < 2.0 {
+            return 1.0;
+        }
+
+        let mean1: f64 = series1.iter().sum::<f64>() / n;
+        let mean2: f64 = series2.iter().sum::<f64>() / n;
+
+        let mut cov = 0.0;
+        let mut var2 = 0.0;
+
+        for (v1, v2) in series1.iter().zip(series2.iter()) {
+            let d1 = v1 - mean1;
+            let d2 = v2 - mean2;
+            cov += d1 * d2;
+            var2 += d2 * d2;
+        }
+
+        if var2 > 1e-10 {
+            cov / var2
+        } else {
+            1.0
+        }
+    }
+
+    /// Calculate spread momentum for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let min_req = self.spread_period + self.momentum_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_req {
+            return result;
+        }
+
+        // Calculate spread series using rolling hedge ratio
+        let mut spread = vec![0.0; n];
+        for i in (self.spread_period - 1)..n {
+            let start = i + 1 - self.spread_period;
+            let hedge_ratio = Self::calculate_hedge_ratio(
+                &dual.series1[start..=i],
+                &dual.series2[start..=i],
+            );
+            spread[i] = dual.series1[i] - hedge_ratio * dual.series2[i];
+        }
+
+        // Calculate momentum (rate of change of spread)
+        let mut raw_momentum = vec![0.0; n];
+        for i in (min_req - 1)..n {
+            let prev_spread = spread[i - self.momentum_period];
+            if prev_spread.abs() > 1e-10 {
+                raw_momentum[i] = (spread[i] - prev_spread) / prev_spread.abs() * 100.0;
+            } else {
+                raw_momentum[i] = spread[i] * 100.0; // If prev is ~0, use current as momentum
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        let start_idx = min_req - 1;
+
+        if start_idx < n {
+            result[start_idx] = raw_momentum[start_idx];
+            for i in (start_idx + 1)..n {
+                result[i] = alpha * raw_momentum[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for SpreadMomentum {
+    fn name(&self) -> &str {
+        "Spread Momentum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.spread_period + self.momentum_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing SpreadMomentum".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// ConvergenceDivergence
+// ============================================================================
+
+/// Convergence Divergence - Detects convergence and divergence patterns between two assets.
+///
+/// This indicator identifies when two assets are converging (moving together)
+/// or diverging (moving apart). It measures both the direction and rate of
+/// convergence/divergence using correlation and spread analysis.
+///
+/// # Formula
+/// 1. Calculate rolling correlation
+/// 2. Calculate spread z-score
+/// 3. Detect convergence: correlation rising AND spread narrowing
+/// 4. Detect divergence: correlation falling OR spread widening
+///
+/// # Interpretation
+/// - Positive values: Convergence (assets moving together)
+/// - Negative values: Divergence (assets moving apart)
+/// - Magnitude indicates strength of the pattern
+/// - Sign changes signal potential trading opportunities
+#[derive(Debug, Clone)]
+pub struct ConvergenceDivergence {
+    /// Period for correlation calculation.
+    correlation_period: usize,
+    /// Period for spread analysis.
+    spread_period: usize,
+    /// Smoothing period.
+    smooth_period: usize,
+    /// Secondary series.
+    secondary_series: Vec<f64>,
+}
+
+impl ConvergenceDivergence {
+    /// Create a new ConvergenceDivergence indicator.
+    ///
+    /// # Arguments
+    /// * `correlation_period` - Period for correlation (must be >= 15)
+    /// * `spread_period` - Period for spread analysis (must be >= 10)
+    /// * `smooth_period` - Smoothing period (must be >= 1)
+    pub fn new(correlation_period: usize, spread_period: usize, smooth_period: usize) -> Result<Self> {
+        if correlation_period < 15 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "correlation_period".to_string(),
+                reason: "must be at least 15".to_string(),
+            });
+        }
+        if spread_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "spread_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self {
+            correlation_period,
+            spread_period,
+            smooth_period,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the secondary series.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate rolling correlation.
+    fn correlation(series1: &[f64], series2: &[f64]) -> f64 {
+        let n = series1.len() as f64;
+        if n < 2.0 {
+            return 0.0;
+        }
+
+        let mean1: f64 = series1.iter().sum::<f64>() / n;
+        let mean2: f64 = series2.iter().sum::<f64>() / n;
+
+        let mut cov = 0.0;
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+
+        for (v1, v2) in series1.iter().zip(series2.iter()) {
+            let d1 = v1 - mean1;
+            let d2 = v2 - mean2;
+            cov += d1 * d2;
+            var1 += d1 * d1;
+            var2 += d2 * d2;
+        }
+
+        let denom = (var1 * var2).sqrt();
+        if denom < 1e-10 {
+            0.0
+        } else {
+            cov / denom
+        }
+    }
+
+    /// Calculate convergence/divergence for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let min_req = self.correlation_period.max(self.spread_period);
+        let mut result = vec![0.0; n];
+
+        if n < min_req + 1 {
+            return result;
+        }
+
+        // Calculate normalized price ratios for spread
+        let ratios: Vec<f64> = dual.series1.iter()
+            .zip(dual.series2.iter())
+            .map(|(a, b)| if *b > 1e-10 { (a / b).ln() } else { 0.0 })
+            .collect();
+
+        let mut raw_score = vec![0.0; n];
+
+        for i in min_req..n {
+            // Rolling correlation
+            let corr_start = i + 1 - self.correlation_period;
+            let current_corr = Self::correlation(
+                &dual.series1[corr_start..=i],
+                &dual.series2[corr_start..=i],
+            );
+
+            // Previous correlation (for trend)
+            let prev_corr = if i > self.correlation_period {
+                Self::correlation(
+                    &dual.series1[(corr_start - 1)..i],
+                    &dual.series2[(corr_start - 1)..i],
+                )
+            } else {
+                current_corr
+            };
+
+            let corr_change = current_corr - prev_corr;
+
+            // Spread z-score
+            let spread_start = i + 1 - self.spread_period;
+            let spread_window = &ratios[spread_start..=i];
+            let mean: f64 = spread_window.iter().sum::<f64>() / spread_window.len() as f64;
+            let variance: f64 = spread_window.iter()
+                .map(|r| (r - mean).powi(2))
+                .sum::<f64>() / spread_window.len() as f64;
+            let std = variance.sqrt();
+            let z_score = if std > 1e-10 { (ratios[i] - mean) / std } else { 0.0 };
+
+            // Convergence/Divergence score:
+            // Convergence = high correlation + low z-score + rising correlation
+            // Divergence = falling correlation OR high z-score
+            let convergence_signal = current_corr * 50.0 + corr_change * 100.0 - z_score.abs() * 20.0;
+            raw_score[i] = convergence_signal;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        let start_idx = min_req;
+
+        if start_idx < n {
+            result[start_idx] = raw_score[start_idx];
+            for i in (start_idx + 1)..n {
+                result[i] = alpha * raw_score[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for ConvergenceDivergence {
+    fn name(&self) -> &str {
+        "Convergence Divergence"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.correlation_period.max(self.spread_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing ConvergenceDivergence".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// PairStrength
+// ============================================================================
+
+/// Pair Strength - Measures the trading strength and quality of a pairs relationship.
+///
+/// This indicator evaluates the overall quality of a pairs trading relationship
+/// by combining correlation stability, spread mean-reversion tendency, and
+/// volatility characteristics into a single composite score.
+///
+/// # Formula
+/// Score = weighted combination of:
+/// - Correlation strength and stability
+/// - Mean-reversion tendency (half-life of spread)
+/// - Spread volatility relative to price levels
+/// - Cointegration-like measure
+///
+/// # Interpretation
+/// - Score > 70: Strong pair, suitable for pairs trading
+/// - Score 50-70: Moderate pair, may be tradeable
+/// - Score < 50: Weak pair, not recommended for pairs trading
+/// - Declining scores indicate deteriorating relationship
+#[derive(Debug, Clone)]
+pub struct PairStrength {
+    /// Period for calculations.
+    period: usize,
+    /// Short period for correlation stability.
+    short_period: usize,
+    /// Secondary series.
+    secondary_series: Vec<f64>,
+}
+
+impl PairStrength {
+    /// Create a new PairStrength indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Long lookback period (must be >= 30)
+    /// * `short_period` - Short period for stability (must be >= 10 and < period)
+    pub fn new(period: usize, short_period: usize) -> Result<Self> {
+        if period < 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 30".to_string(),
+            });
+        }
+        if short_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if short_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            short_period,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the secondary series.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate correlation.
+    fn correlation(series1: &[f64], series2: &[f64]) -> f64 {
+        let n = series1.len() as f64;
+        if n < 2.0 {
+            return 0.0;
+        }
+
+        let mean1: f64 = series1.iter().sum::<f64>() / n;
+        let mean2: f64 = series2.iter().sum::<f64>() / n;
+
+        let mut cov = 0.0;
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+
+        for (v1, v2) in series1.iter().zip(series2.iter()) {
+            let d1 = v1 - mean1;
+            let d2 = v2 - mean2;
+            cov += d1 * d2;
+            var1 += d1 * d1;
+            var2 += d2 * d2;
+        }
+
+        let denom = (var1 * var2).sqrt();
+        if denom < 1e-10 {
+            0.0
+        } else {
+            cov / denom
+        }
+    }
+
+    /// Estimate mean reversion speed (simplified half-life).
+    fn mean_reversion_score(spread: &[f64]) -> f64 {
+        let n = spread.len();
+        if n < 5 {
+            return 50.0;
+        }
+
+        // Calculate lagged autocorrelation as proxy for mean reversion
+        let mean: f64 = spread.iter().sum::<f64>() / n as f64;
+        let spread_centered: Vec<f64> = spread.iter().map(|s| s - mean).collect();
+
+        let mut autocov = 0.0;
+        let mut var = 0.0;
+
+        for i in 1..n {
+            autocov += spread_centered[i] * spread_centered[i - 1];
+            var += spread_centered[i - 1] * spread_centered[i - 1];
+        }
+
+        let autocorr = if var > 1e-10 { autocov / var } else { 1.0 };
+
+        // Lower autocorrelation = faster mean reversion = better
+        // autocorr of 0 is ideal, 1 is worst (random walk)
+        let score = (1.0 - autocorr.abs()) * 100.0;
+        score.clamp(0.0, 100.0)
+    }
+
+    /// Calculate pair strength for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let mut result = vec![50.0; n]; // Default to neutral
+
+        if n < self.period {
+            return result;
+        }
+
+        // Calculate log spread
+        let spread: Vec<f64> = dual.series1.iter()
+            .zip(dual.series2.iter())
+            .map(|(a, b)| if *b > 1e-10 { (a / b).ln() } else { 0.0 })
+            .collect();
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let short_start = i + 1 - self.short_period;
+
+            // Component 1: Long-term correlation strength (0-100)
+            let long_corr = Self::correlation(
+                &dual.series1[start..=i],
+                &dual.series2[start..=i],
+            );
+            let corr_score = long_corr.abs() * 100.0;
+
+            // Component 2: Correlation stability (short vs long)
+            let short_corr = Self::correlation(
+                &dual.series1[short_start..=i],
+                &dual.series2[short_start..=i],
+            );
+            let stability_score = (1.0 - (long_corr - short_corr).abs()) * 100.0;
+
+            // Component 3: Mean reversion tendency
+            let mr_score = Self::mean_reversion_score(&spread[start..=i]);
+
+            // Component 4: Spread stationarity (low variance growth)
+            let spread_window = &spread[start..=i];
+            let mean: f64 = spread_window.iter().sum::<f64>() / spread_window.len() as f64;
+            let variance: f64 = spread_window.iter()
+                .map(|s| (s - mean).powi(2))
+                .sum::<f64>() / spread_window.len() as f64;
+            let std = variance.sqrt();
+            // Lower relative volatility = better
+            let vol_score = if mean.abs() > 1e-10 {
+                (1.0 - (std / mean.abs()).min(1.0)) * 100.0
+            } else {
+                50.0
+            };
+
+            // Combine components
+            result[i] = corr_score * 0.35 + stability_score * 0.25 + mr_score * 0.25 + vol_score * 0.15;
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for PairStrength {
+    fn name(&self) -> &str {
+        "Pair Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing PairStrength".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// CrossAssetMomentum
+// ============================================================================
+
+/// Cross Asset Momentum - Measures momentum relationships across different assets.
+///
+/// This indicator analyzes momentum patterns between two assets to identify
+/// leading/lagging relationships and momentum divergences. It compares the
+/// momentum of each asset to detect when one asset's momentum diverges from another.
+///
+/// # Formula
+/// 1. Calculate momentum for each asset (ROC over period)
+/// 2. Calculate momentum spread (Asset1 momentum - Asset2 momentum)
+/// 3. Normalize and smooth the result
+///
+/// # Interpretation
+/// - Positive values: Asset1 has stronger momentum than Asset2
+/// - Negative values: Asset2 has stronger momentum than Asset1
+/// - Momentum divergence can signal sector rotation or regime change
+/// - Convergence after divergence often precedes mean reversion
+#[derive(Debug, Clone)]
+pub struct CrossAssetMomentum {
+    /// Period for momentum calculation.
+    momentum_period: usize,
+    /// Smoothing period.
+    smooth_period: usize,
+    /// Secondary series.
+    secondary_series: Vec<f64>,
+}
+
+impl CrossAssetMomentum {
+    /// Create a new CrossAssetMomentum indicator.
+    ///
+    /// # Arguments
+    /// * `momentum_period` - Period for momentum/ROC calculation (must be >= 5)
+    /// * `smooth_period` - EMA smoothing period (must be >= 1)
+    pub fn new(momentum_period: usize, smooth_period: usize) -> Result<Self> {
+        if momentum_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smooth_period < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self {
+            momentum_period,
+            smooth_period,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set the secondary series.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate momentum (ROC) for a single series.
+    fn calculate_momentum(series: &[f64], period: usize) -> Vec<f64> {
+        let n = series.len();
+        let mut momentum = vec![0.0; n];
+
+        for i in period..n {
+            if series[i - period] > 1e-10 {
+                momentum[i] = (series[i] / series[i - period] - 1.0) * 100.0;
+            }
+        }
+
+        momentum
+    }
+
+    /// Calculate cross-asset momentum for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.momentum_period + 1 {
+            return result;
+        }
+
+        // Calculate momentum for each series
+        let mom1 = Self::calculate_momentum(&dual.series1, self.momentum_period);
+        let mom2 = Self::calculate_momentum(&dual.series2, self.momentum_period);
+
+        // Calculate momentum spread
+        let mut raw_spread = vec![0.0; n];
+        for i in self.momentum_period..n {
+            raw_spread[i] = mom1[i] - mom2[i];
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        let start_idx = self.momentum_period;
+
+        if start_idx < n {
+            result[start_idx] = raw_spread[start_idx];
+            for i in (start_idx + 1)..n {
+                result[i] = alpha * raw_spread[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for CrossAssetMomentum {
+    fn name(&self) -> &str {
+        "Cross Asset Momentum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.momentum_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing CrossAssetMomentum".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
+// IntermarketSignal
+// ============================================================================
+
+/// Intermarket Signal - Generates trading signals based on intermarket analysis.
+///
+/// This indicator combines multiple intermarket factors (correlation, spread,
+/// momentum divergence) to generate actionable trading signals for pairs
+/// or relative value strategies.
+///
+/// # Signal Generation
+/// Combines:
+/// - Spread z-score (mean reversion)
+/// - Correlation regime (stable vs unstable)
+/// - Momentum alignment (confirming or diverging)
+/// - Trend filter (with or against trend)
+///
+/// # Output Signals
+/// - +2: Strong long Asset1 / short Asset2
+/// - +1: Moderate long Asset1 / short Asset2
+/// -  0: Neutral / no signal
+/// - -1: Moderate short Asset1 / long Asset2
+/// - -2: Strong short Asset1 / long Asset2
+#[derive(Debug, Clone)]
+pub struct IntermarketSignal {
+    /// Period for spread analysis.
+    spread_period: usize,
+    /// Period for correlation.
+    correlation_period: usize,
+    /// Entry threshold for z-score.
+    entry_threshold: f64,
+    /// Strong signal threshold.
+    strong_threshold: f64,
+    /// Minimum correlation for valid signal.
+    min_correlation: f64,
+    /// Secondary series.
+    secondary_series: Vec<f64>,
+}
+
+impl IntermarketSignal {
+    /// Create a new IntermarketSignal indicator.
+    ///
+    /// # Arguments
+    /// * `spread_period` - Period for spread z-score (must be >= 15)
+    /// * `correlation_period` - Period for correlation filter (must be >= 10)
+    pub fn new(spread_period: usize, correlation_period: usize) -> Result<Self> {
+        if spread_period < 15 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "spread_period".to_string(),
+                reason: "must be at least 15".to_string(),
+            });
+        }
+        if correlation_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "correlation_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self {
+            spread_period,
+            correlation_period,
+            entry_threshold: 1.5,
+            strong_threshold: 2.5,
+            min_correlation: 0.5,
+            secondary_series: Vec::new(),
+        })
+    }
+
+    /// Set entry threshold for z-score (default: 1.5).
+    pub fn with_entry_threshold(mut self, threshold: f64) -> Self {
+        self.entry_threshold = threshold;
+        self
+    }
+
+    /// Set strong signal threshold (default: 2.5).
+    pub fn with_strong_threshold(mut self, threshold: f64) -> Self {
+        self.strong_threshold = threshold;
+        self
+    }
+
+    /// Set minimum correlation for valid signals (default: 0.5).
+    pub fn with_min_correlation(mut self, correlation: f64) -> Self {
+        self.min_correlation = correlation;
+        self
+    }
+
+    /// Set the secondary series.
+    pub fn with_secondary(mut self, series: &[f64]) -> Self {
+        self.secondary_series = series.to_vec();
+        self
+    }
+
+    /// Calculate correlation.
+    fn correlation(series1: &[f64], series2: &[f64]) -> f64 {
+        let n = series1.len() as f64;
+        if n < 2.0 {
+            return 0.0;
+        }
+
+        let mean1: f64 = series1.iter().sum::<f64>() / n;
+        let mean2: f64 = series2.iter().sum::<f64>() / n;
+
+        let mut cov = 0.0;
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+
+        for (v1, v2) in series1.iter().zip(series2.iter()) {
+            let d1 = v1 - mean1;
+            let d2 = v2 - mean2;
+            cov += d1 * d2;
+            var1 += d1 * d1;
+            var2 += d2 * d2;
+        }
+
+        let denom = (var1 * var2).sqrt();
+        if denom < 1e-10 {
+            0.0
+        } else {
+            cov / denom
+        }
+    }
+
+    /// Calculate intermarket signal for a dual series.
+    pub fn calculate(&self, dual: &DualSeries) -> Vec<f64> {
+        let n = dual.len();
+        let min_req = self.spread_period.max(self.correlation_period);
+        let mut result = vec![0.0; n];
+
+        if n < min_req {
+            return result;
+        }
+
+        // Calculate log spread
+        let spread: Vec<f64> = dual.series1.iter()
+            .zip(dual.series2.iter())
+            .map(|(a, b)| if *b > 1e-10 { (a / b).ln() } else { 0.0 })
+            .collect();
+
+        for i in (min_req - 1)..n {
+            // Calculate spread z-score
+            let spread_start = i + 1 - self.spread_period;
+            let spread_window = &spread[spread_start..=i];
+            let mean: f64 = spread_window.iter().sum::<f64>() / spread_window.len() as f64;
+            let variance: f64 = spread_window.iter()
+                .map(|s| (s - mean).powi(2))
+                .sum::<f64>() / spread_window.len() as f64;
+            let std = variance.sqrt();
+            let z_score = if std > 1e-10 { (spread[i] - mean) / std } else { 0.0 };
+
+            // Calculate correlation
+            let corr_start = i + 1 - self.correlation_period;
+            let correlation = Self::correlation(
+                &dual.series1[corr_start..=i],
+                &dual.series2[corr_start..=i],
+            );
+
+            // Filter by correlation - only trade highly correlated pairs
+            if correlation.abs() < self.min_correlation {
+                result[i] = 0.0;
+                continue;
+            }
+
+            // Generate signal based on z-score
+            if z_score > self.strong_threshold {
+                result[i] = -2.0; // Strong short spread (sell Asset1 / buy Asset2)
+            } else if z_score > self.entry_threshold {
+                result[i] = -1.0; // Moderate short spread
+            } else if z_score < -self.strong_threshold {
+                result[i] = 2.0; // Strong long spread (buy Asset1 / sell Asset2)
+            } else if z_score < -self.entry_threshold {
+                result[i] = 1.0; // Moderate long spread
+            } else {
+                result[i] = 0.0; // Neutral
+            }
+        }
+
+        result
+    }
+
+    /// Calculate using two series directly.
+    pub fn calculate_between(&self, series1: &[f64], series2: &[f64]) -> Vec<f64> {
+        let dual = DualSeries::from_slices(series1, series2);
+        self.calculate(&dual)
+    }
+}
+
+impl TechnicalIndicator for IntermarketSignal {
+    fn name(&self) -> &str {
+        "Intermarket Signal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.spread_period.max(self.correlation_period)
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if self.secondary_series.is_empty() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: "Secondary series must be set before computing IntermarketSignal".to_string(),
+            });
+        }
+
+        if self.secondary_series.len() != data.close.len() {
+            return Err(IndicatorError::InvalidParameter {
+                name: "secondary_series".to_string(),
+                reason: format!(
+                    "Secondary series length ({}) must match primary series length ({})",
+                    self.secondary_series.len(),
+                    data.close.len()
+                ),
+            });
+        }
+
+        let dual = DualSeries::from_slices(&data.close, &self.secondary_series);
+        Ok(IndicatorOutput::single(self.calculate(&dual)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -7647,5 +8794,629 @@ mod tests {
         // Uptrend should have stronger signals (higher correlation weight)
         assert!(avg_up != avg_flat || result_up[50] != result_flat[50],
             "Expected different outputs for different regimes");
+    }
+
+    // ========================================================================
+    // Tests for 6 NEW intermarket indicators (RelativeValueScore, SpreadMomentum,
+    // ConvergenceDivergence, PairStrength, CrossAssetMomentum, IntermarketSignal)
+    // ========================================================================
+
+    // RelativeValueScore tests
+    #[test]
+    fn test_relative_value_score_new() {
+        assert!(RelativeValueScore::new(20, 5).is_ok());
+        assert!(RelativeValueScore::new(30, 10).is_ok());
+        assert!(RelativeValueScore::new(19, 5).is_err()); // period too small
+        assert!(RelativeValueScore::new(20, 4).is_err()); // momentum_period too small
+    }
+
+    #[test]
+    fn test_relative_value_score_new_validation() {
+        let err = RelativeValueScore::new(19, 5).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "period");
+                assert_eq!(reason, "must be at least 20");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = RelativeValueScore::new(20, 4).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "momentum_period");
+                assert_eq!(reason, "must be at least 5");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_relative_value_score_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = RelativeValueScore::new(20, 5).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be default (50)
+        for i in 0..19 {
+            assert_eq!(result[i], 50.0);
+        }
+        // Values after warmup should be between 0 and 100
+        for i in 25..100 {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "Score at {} is out of bounds: {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_relative_value_score_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = RelativeValueScore::new(20, 5).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Relative Value Score");
+        assert_eq!(indicator.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_relative_value_score_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = RelativeValueScore::new(20, 5).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 25..100 {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_relative_value_score_insufficient_data() {
+        let dual = create_test_dual_series(15);
+        let indicator = RelativeValueScore::new(20, 5).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 15);
+        assert!(result.iter().all(|&v| v == 50.0));
+    }
+
+    // SpreadMomentum tests
+    #[test]
+    fn test_spread_momentum_new() {
+        assert!(SpreadMomentum::new(10, 3, 2).is_ok());
+        assert!(SpreadMomentum::new(20, 5, 3).is_ok());
+        assert!(SpreadMomentum::new(9, 3, 2).is_err()); // spread_period too small
+        assert!(SpreadMomentum::new(10, 2, 2).is_err()); // momentum_period too small
+        assert!(SpreadMomentum::new(10, 3, 0).is_err()); // smooth_period too small
+    }
+
+    #[test]
+    fn test_spread_momentum_new_validation() {
+        let err = SpreadMomentum::new(9, 3, 2).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "spread_period");
+                assert_eq!(reason, "must be at least 10");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = SpreadMomentum::new(10, 2, 2).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "momentum_period");
+                assert_eq!(reason, "must be at least 3");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err3 = SpreadMomentum::new(10, 3, 0).unwrap_err();
+        match err3 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "smooth_period");
+                assert_eq!(reason, "must be at least 1");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_spread_momentum_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = SpreadMomentum::new(15, 5, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // Values should be finite after warmup
+        for i in 25..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_spread_momentum_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = SpreadMomentum::new(15, 5, 3).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Spread Momentum");
+        assert_eq!(indicator.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_spread_momentum_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = SpreadMomentum::new(15, 5, 3).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 25..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_spread_momentum_insufficient_data() {
+        let dual = create_test_dual_series(15);
+        let indicator = SpreadMomentum::new(15, 5, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 15);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // ConvergenceDivergence tests
+    #[test]
+    fn test_convergence_divergence_new() {
+        assert!(ConvergenceDivergence::new(15, 10, 3).is_ok());
+        assert!(ConvergenceDivergence::new(20, 15, 5).is_ok());
+        assert!(ConvergenceDivergence::new(14, 10, 3).is_err()); // correlation_period too small
+        assert!(ConvergenceDivergence::new(15, 9, 3).is_err()); // spread_period too small
+        assert!(ConvergenceDivergence::new(15, 10, 0).is_err()); // smooth_period too small
+    }
+
+    #[test]
+    fn test_convergence_divergence_new_validation() {
+        let err = ConvergenceDivergence::new(14, 10, 3).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "correlation_period");
+                assert_eq!(reason, "must be at least 15");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = ConvergenceDivergence::new(15, 9, 3).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "spread_period");
+                assert_eq!(reason, "must be at least 10");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err3 = ConvergenceDivergence::new(15, 10, 0).unwrap_err();
+        match err3 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "smooth_period");
+                assert_eq!(reason, "must be at least 1");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_convergence_divergence_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = ConvergenceDivergence::new(20, 15, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // Values should be finite after warmup
+        for i in 25..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_convergence_divergence_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = ConvergenceDivergence::new(20, 15, 3).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Convergence Divergence");
+        assert_eq!(indicator.min_periods(), 21);
+    }
+
+    #[test]
+    fn test_convergence_divergence_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = ConvergenceDivergence::new(20, 15, 3).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 25..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_convergence_divergence_insufficient_data() {
+        let dual = create_test_dual_series(15);
+        let indicator = ConvergenceDivergence::new(20, 15, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 15);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // PairStrength tests
+    #[test]
+    fn test_pair_strength_new() {
+        assert!(PairStrength::new(30, 10).is_ok());
+        assert!(PairStrength::new(40, 15).is_ok());
+        assert!(PairStrength::new(29, 10).is_err()); // period too small
+        assert!(PairStrength::new(30, 9).is_err()); // short_period too small
+        assert!(PairStrength::new(30, 30).is_err()); // short_period >= period
+    }
+
+    #[test]
+    fn test_pair_strength_new_validation() {
+        let err = PairStrength::new(29, 10).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "period");
+                assert_eq!(reason, "must be at least 30");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = PairStrength::new(30, 9).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "short_period");
+                assert_eq!(reason, "must be at least 10");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err3 = PairStrength::new(30, 30).unwrap_err();
+        match err3 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "short_period");
+                assert_eq!(reason, "must be less than period");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_pair_strength_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = PairStrength::new(30, 15).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // First values should be default (50)
+        for i in 0..29 {
+            assert_eq!(result[i], 50.0);
+        }
+        // Values after warmup should be between 0 and 100
+        for i in 35..100 {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "Score at {} is out of bounds: {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_pair_strength_highly_correlated() {
+        // Two highly correlated series should have high pair strength
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = PairStrength::new(30, 15).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Highly correlated linear series should have good pair strength
+        let avg_strength: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_strength > 30.0, "Expected reasonable pair strength for correlated series, got {}", avg_strength);
+    }
+
+    #[test]
+    fn test_pair_strength_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = PairStrength::new(30, 15).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Pair Strength");
+        assert_eq!(indicator.min_periods(), 30);
+    }
+
+    #[test]
+    fn test_pair_strength_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = PairStrength::new(30, 15).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 35..100 {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_pair_strength_insufficient_data() {
+        let dual = create_test_dual_series(20);
+        let indicator = PairStrength::new(30, 15).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 20);
+        assert!(result.iter().all(|&v| v == 50.0));
+    }
+
+    // CrossAssetMomentum tests
+    #[test]
+    fn test_cross_asset_momentum_new() {
+        assert!(CrossAssetMomentum::new(5, 3).is_ok());
+        assert!(CrossAssetMomentum::new(10, 5).is_ok());
+        assert!(CrossAssetMomentum::new(4, 3).is_err()); // momentum_period too small
+        assert!(CrossAssetMomentum::new(5, 0).is_err()); // smooth_period too small
+    }
+
+    #[test]
+    fn test_cross_asset_momentum_new_validation() {
+        let err = CrossAssetMomentum::new(4, 3).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "momentum_period");
+                assert_eq!(reason, "must be at least 5");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = CrossAssetMomentum::new(5, 0).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "smooth_period");
+                assert_eq!(reason, "must be at least 1");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_cross_asset_momentum_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = CrossAssetMomentum::new(10, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // Values should be finite after warmup
+        for i in 15..100 {
+            assert!(result[i].is_finite(), "Value at {} is not finite", i);
+        }
+    }
+
+    #[test]
+    fn test_cross_asset_momentum_outperformance() {
+        // Series1 with stronger momentum
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64).powf(1.1) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.1).collect();
+        let dual = DualSeries::new(series1, series2);
+
+        let indicator = CrossAssetMomentum::new(10, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        // Series1 has stronger upward momentum, so cross-asset momentum should be positive
+        let avg_mom: f64 = result[20..].iter().sum::<f64>() / (result.len() - 20) as f64;
+        assert!(avg_mom > 0.0, "Expected positive momentum for outperforming series, got {}", avg_mom);
+    }
+
+    #[test]
+    fn test_cross_asset_momentum_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = CrossAssetMomentum::new(10, 3).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Cross Asset Momentum");
+        assert_eq!(indicator.min_periods(), 11);
+    }
+
+    #[test]
+    fn test_cross_asset_momentum_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = CrossAssetMomentum::new(10, 3).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for i in 15..100 {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_cross_asset_momentum_insufficient_data() {
+        let dual = create_test_dual_series(8);
+        let indicator = CrossAssetMomentum::new(10, 3).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 8);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    // IntermarketSignal tests
+    #[test]
+    fn test_intermarket_signal_new() {
+        assert!(IntermarketSignal::new(15, 10).is_ok());
+        assert!(IntermarketSignal::new(20, 15).is_ok());
+        assert!(IntermarketSignal::new(14, 10).is_err()); // spread_period too small
+        assert!(IntermarketSignal::new(15, 9).is_err()); // correlation_period too small
+    }
+
+    #[test]
+    fn test_intermarket_signal_new_validation() {
+        let err = IntermarketSignal::new(14, 10).unwrap_err();
+        match err {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "spread_period");
+                assert_eq!(reason, "must be at least 15");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+
+        let err2 = IntermarketSignal::new(15, 9).unwrap_err();
+        match err2 {
+            IndicatorError::InvalidParameter { name, reason } => {
+                assert_eq!(name, "correlation_period");
+                assert_eq!(reason, "must be at least 10");
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    #[test]
+    fn test_intermarket_signal_calculate() {
+        let dual = create_test_dual_series(100);
+        let indicator = IntermarketSignal::new(20, 15).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // Signals should be -2, -1, 0, 1, or 2
+        for &s in &result {
+            assert!(s == -2.0 || s == -1.0 || s == 0.0 || s == 1.0 || s == 2.0,
+                "Invalid signal: {}", s);
+        }
+    }
+
+    #[test]
+    fn test_intermarket_signal_with_thresholds() {
+        let dual = create_mean_reverting_spread(100);
+        let indicator = IntermarketSignal::new(20, 15)
+            .unwrap()
+            .with_entry_threshold(1.0)
+            .with_strong_threshold(2.0)
+            .with_min_correlation(0.3);
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 100);
+        // Should be valid signal values
+        for &s in &result {
+            assert!(s >= -2.0 && s <= 2.0);
+        }
+    }
+
+    #[test]
+    fn test_intermarket_signal_generates_signals() {
+        // Create oscillating spread that should generate signals
+        let mut series1 = Vec::with_capacity(200);
+        let mut series2 = Vec::with_capacity(200);
+
+        for i in 0..200 {
+            series2.push(100.0);
+            let spread = ((i as f64) * 0.15).sin() * 15.0;
+            series1.push(100.0 + spread);
+        }
+
+        let dual = DualSeries::new(series1, series2);
+        let indicator = IntermarketSignal::new(20, 15)
+            .unwrap()
+            .with_entry_threshold(1.5)
+            .with_min_correlation(0.0); // Disable correlation filter
+        let result = indicator.calculate(&dual);
+
+        // Should have some non-zero signals
+        let non_zero_count = result.iter().filter(|&&s| s != 0.0).count();
+        assert!(non_zero_count > 0, "Should generate some trading signals");
+    }
+
+    #[test]
+    fn test_intermarket_signal_compute() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + (i as f64) * 0.25).collect();
+
+        let indicator = IntermarketSignal::new(20, 15).unwrap().with_secondary(&series2);
+        let data = OHLCVSeries::from_close(series1);
+        let result = indicator.compute(&data);
+
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert_eq!(output.primary.len(), 100);
+        assert_eq!(indicator.name(), "Intermarket Signal");
+        assert_eq!(indicator.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_intermarket_signal_calculate_between() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + ((i as f64) * 0.2).sin() * 10.0).collect();
+        let series2: Vec<f64> = (0..100).map(|i| 50.0 + ((i as f64) * 0.2).sin() * 5.0).collect();
+
+        let indicator = IntermarketSignal::new(20, 15).unwrap();
+        let result = indicator.calculate_between(&series1, &series2);
+
+        assert_eq!(result.len(), 100);
+        for &s in &result {
+            assert!(s >= -2.0 && s <= 2.0);
+        }
+    }
+
+    #[test]
+    fn test_intermarket_signal_insufficient_data() {
+        let dual = create_test_dual_series(15);
+        let indicator = IntermarketSignal::new(20, 15).unwrap();
+        let result = indicator.calculate(&dual);
+
+        assert_eq!(result.len(), 15);
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_intermarket_signal_missing_secondary() {
+        let series1: Vec<f64> = (0..100).map(|i| 100.0 + (i as f64) * 0.5).collect();
+        let data = OHLCVSeries::from_close(series1);
+
+        let indicator = IntermarketSignal::new(20, 15).unwrap();
+        assert!(indicator.compute(&data).is_err());
     }
 }

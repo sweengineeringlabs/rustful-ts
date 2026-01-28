@@ -3397,6 +3397,732 @@ impl TechnicalIndicator for PriceStructure {
 }
 
 // ============================================================================
+// GapFillAnalysis
+// ============================================================================
+
+/// Gap Fill Analysis - Detects and analyzes price gap fill patterns
+///
+/// Tracks open gaps (up and down) and detects when price action fills
+/// those gaps, providing gap fill signals and measuring fill completion
+/// percentage. Gap fills are important reversal and continuation signals.
+#[derive(Debug, Clone)]
+pub struct GapFillAnalysis {
+    /// Minimum gap size as percentage of price
+    min_gap_percent: f64,
+    /// Maximum bars to track a gap before expiring
+    max_gap_age: usize,
+}
+
+impl GapFillAnalysis {
+    /// Create a new GapFillAnalysis indicator.
+    ///
+    /// # Arguments
+    /// * `min_gap_percent` - Minimum gap size as percentage (0.1-5.0)
+    /// * `max_gap_age` - Maximum bars to track gap before expiring (5-100)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(min_gap_percent: f64, max_gap_age: usize) -> Result<Self> {
+        if min_gap_percent < 0.1 || min_gap_percent > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_gap_percent".to_string(),
+                reason: "must be between 0.1 and 5.0".to_string(),
+            });
+        }
+        if max_gap_age < 5 || max_gap_age > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_gap_age".to_string(),
+                reason: "must be between 5 and 100".to_string(),
+            });
+        }
+        Ok(Self { min_gap_percent, max_gap_age })
+    }
+
+    /// Calculate gap fill signals.
+    ///
+    /// Returns:
+    /// * +1: Gap up filled (bearish signal)
+    /// * -1: Gap down filled (bullish signal)
+    /// * 0: No gap fill
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Track active gaps: (bar_index, gap_high, gap_low, is_gap_up)
+        let mut active_gaps: Vec<(usize, f64, f64, bool)> = Vec::new();
+
+        for i in 1..n {
+            // Detect new gap up: current low > previous high
+            if low[i] > high[i - 1] {
+                let gap_pct = (low[i] - high[i - 1]) / close[i - 1] * 100.0;
+                if gap_pct >= self.min_gap_percent {
+                    // Gap up: gap zone is from previous high to current low
+                    active_gaps.push((i, low[i], high[i - 1], true));
+                }
+            }
+            // Detect new gap down: current high < previous low
+            else if high[i] < low[i - 1] {
+                let gap_pct = (low[i - 1] - high[i]) / close[i - 1] * 100.0;
+                if gap_pct >= self.min_gap_percent {
+                    // Gap down: gap zone is from current high to previous low
+                    active_gaps.push((i, low[i - 1], high[i], false));
+                }
+            }
+
+            // Check if any gaps are filled and remove expired gaps
+            let mut gaps_to_remove: Vec<usize> = Vec::new();
+
+            for (idx, &(gap_bar, gap_top, gap_bottom, is_gap_up)) in active_gaps.iter().enumerate() {
+                // Check if gap is expired
+                if i - gap_bar > self.max_gap_age {
+                    gaps_to_remove.push(idx);
+                    continue;
+                }
+
+                // Check for gap fill
+                if is_gap_up {
+                    // Gap up is filled when price drops into the gap zone
+                    if low[i] <= gap_bottom {
+                        result[i] = 1.0; // Gap up filled - bearish
+                        gaps_to_remove.push(idx);
+                    }
+                } else {
+                    // Gap down is filled when price rises into the gap zone
+                    if high[i] >= gap_top {
+                        result[i] = -1.0; // Gap down filled - bullish
+                        gaps_to_remove.push(idx);
+                    }
+                }
+            }
+
+            // Remove filled or expired gaps (in reverse order to maintain indices)
+            for idx in gaps_to_remove.into_iter().rev() {
+                if idx < active_gaps.len() {
+                    active_gaps.remove(idx);
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for GapFillAnalysis {
+    fn name(&self) -> &str {
+        "Gap Fill Analysis"
+    }
+
+    fn min_periods(&self) -> usize {
+        2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// InsideBarBreakout
+// ============================================================================
+
+/// Inside Bar Breakout - Detects inside bar breakout patterns with direction
+///
+/// Identifies inside bars (where high/low is within previous bar's range)
+/// and then detects breakouts from these consolidation patterns. Inside bar
+/// breakouts are powerful continuation or reversal signals.
+#[derive(Debug, Clone)]
+pub struct InsideBarBreakout {
+    /// Minimum number of consecutive inside bars before breakout
+    min_inside_bars: usize,
+    /// Breakout confirmation percentage beyond range
+    breakout_percent: f64,
+}
+
+impl InsideBarBreakout {
+    /// Create a new InsideBarBreakout indicator.
+    ///
+    /// # Arguments
+    /// * `min_inside_bars` - Minimum consecutive inside bars (1-5)
+    /// * `breakout_percent` - Confirmation percentage beyond range (0.1-2.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(min_inside_bars: usize, breakout_percent: f64) -> Result<Self> {
+        if min_inside_bars < 1 || min_inside_bars > 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_inside_bars".to_string(),
+                reason: "must be between 1 and 5".to_string(),
+            });
+        }
+        if breakout_percent < 0.1 || breakout_percent > 2.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "breakout_percent".to_string(),
+                reason: "must be between 0.1 and 2.0".to_string(),
+            });
+        }
+        Ok(Self { min_inside_bars, breakout_percent })
+    }
+
+    /// Calculate inside bar breakout signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish breakout (price breaks above inside bar range)
+    /// * -1: Bearish breakout (price breaks below inside bar range)
+    /// * 0: No breakout signal
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < 2 {
+            return result;
+        }
+
+        // Track mother bar and inside bar count
+        let mut mother_bar_idx: Option<usize> = None;
+        let mut inside_bar_count = 0usize;
+
+        for i in 1..n {
+            if let Some(mb_idx) = mother_bar_idx {
+                let mother_high = high[mb_idx];
+                let mother_low = low[mb_idx];
+
+                // Check if current bar is still inside
+                if high[i] <= mother_high && low[i] >= mother_low {
+                    inside_bar_count += 1;
+                } else {
+                    // Potential breakout - check if we had enough inside bars
+                    if inside_bar_count >= self.min_inside_bars {
+                        let range = mother_high - mother_low;
+                        let breakout_threshold = range * self.breakout_percent / 100.0;
+
+                        // Bullish breakout
+                        if high[i] > mother_high + breakout_threshold {
+                            result[i] = 1.0;
+                        }
+                        // Bearish breakout
+                        else if low[i] < mother_low - breakout_threshold {
+                            result[i] = -1.0;
+                        }
+                    }
+
+                    // Reset - current bar becomes new potential mother bar
+                    mother_bar_idx = Some(i);
+                    inside_bar_count = 0;
+                }
+            } else {
+                // Check if current bar is inside previous bar
+                if high[i] <= high[i - 1] && low[i] >= low[i - 1] {
+                    mother_bar_idx = Some(i - 1);
+                    inside_bar_count = 1;
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for InsideBarBreakout {
+    fn name(&self) -> &str {
+        "Inside Bar Breakout"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.min_inside_bars + 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// OutsideBarReversal
+// ============================================================================
+
+/// Outside Bar Reversal - Detects outside bar reversal setups with confirmation
+///
+/// Identifies outside bars (engulfing the previous bar's range) and analyzes
+/// them for reversal potential based on trend context and close position.
+/// Outside bars at trend extremes are powerful reversal signals.
+#[derive(Debug, Clone)]
+pub struct OutsideBarReversal {
+    /// Lookback period for trend determination
+    trend_lookback: usize,
+    /// Minimum close position for reversal (0=low, 1=high)
+    min_close_position: f64,
+}
+
+impl OutsideBarReversal {
+    /// Create a new OutsideBarReversal indicator.
+    ///
+    /// # Arguments
+    /// * `trend_lookback` - Lookback period for trend (5-50)
+    /// * `min_close_position` - Minimum close position ratio (0.5-0.9)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(trend_lookback: usize, min_close_position: f64) -> Result<Self> {
+        if trend_lookback < 5 || trend_lookback > 50 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_lookback".to_string(),
+                reason: "must be between 5 and 50".to_string(),
+            });
+        }
+        if min_close_position < 0.5 || min_close_position > 0.9 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_close_position".to_string(),
+                reason: "must be between 0.5 and 0.9".to_string(),
+            });
+        }
+        Ok(Self { trend_lookback, min_close_position })
+    }
+
+    /// Calculate outside bar reversal signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish outside bar reversal (at downtrend extreme)
+    /// * -1: Bearish outside bar reversal (at uptrend extreme)
+    /// * 0: No reversal signal
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.trend_lookback..n {
+            // Check for outside bar
+            if i >= 1 && high[i] > high[i - 1] && low[i] < low[i - 1] {
+                let range = high[i] - low[i];
+                if range < 1e-10 {
+                    continue;
+                }
+
+                // Calculate close position (0 = at low, 1 = at high)
+                let close_position = (close[i] - low[i]) / range;
+
+                // Determine trend direction using lookback period
+                let lookback_start = i - self.trend_lookback;
+                let lookback_high = high[lookback_start..i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let lookback_low = low[lookback_start..i].iter().cloned().fold(f64::INFINITY, f64::min);
+
+                let is_at_high = high[i] >= lookback_high;
+                let is_at_low = low[i] <= lookback_low;
+
+                // Bullish reversal: outside bar at low with close near high
+                if is_at_low && close_position >= self.min_close_position {
+                    result[i] = 1.0;
+                }
+                // Bearish reversal: outside bar at high with close near low
+                else if is_at_high && close_position <= (1.0 - self.min_close_position) {
+                    result[i] = -1.0;
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for OutsideBarReversal {
+    fn name(&self) -> &str {
+        "Outside Bar Reversal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.trend_lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// PinBarScanner
+// ============================================================================
+
+/// Pin Bar Scanner - Advanced pin bar detection with trend context
+///
+/// Detects pin bars (hammers and shooting stars) with configurable wick
+/// ratios and trend context analysis. Pin bars are powerful reversal
+/// candlestick patterns when found at key levels.
+#[derive(Debug, Clone)]
+pub struct PinBarScanner {
+    /// Minimum wick to body ratio
+    min_wick_ratio: f64,
+    /// Maximum body to range ratio
+    max_body_ratio: f64,
+    /// Lookback for trend context
+    trend_lookback: usize,
+}
+
+impl PinBarScanner {
+    /// Create a new PinBarScanner indicator.
+    ///
+    /// # Arguments
+    /// * `min_wick_ratio` - Minimum wick/body ratio (2.0-5.0)
+    /// * `max_body_ratio` - Maximum body/range ratio (0.1-0.4)
+    /// * `trend_lookback` - Lookback for trend context (5-30)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(min_wick_ratio: f64, max_body_ratio: f64, trend_lookback: usize) -> Result<Self> {
+        if min_wick_ratio < 2.0 || min_wick_ratio > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_wick_ratio".to_string(),
+                reason: "must be between 2.0 and 5.0".to_string(),
+            });
+        }
+        if max_body_ratio < 0.1 || max_body_ratio > 0.4 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_body_ratio".to_string(),
+                reason: "must be between 0.1 and 0.4".to_string(),
+            });
+        }
+        if trend_lookback < 5 || trend_lookback > 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_lookback".to_string(),
+                reason: "must be between 5 and 30".to_string(),
+            });
+        }
+        Ok(Self { min_wick_ratio, max_body_ratio, trend_lookback })
+    }
+
+    /// Calculate pin bar signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish pin bar (hammer at support)
+    /// * -1: Bearish pin bar (shooting star at resistance)
+    /// * 0: No pin bar signal
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.trend_lookback..n {
+            let range = high[i] - low[i];
+            if range < 1e-10 {
+                continue;
+            }
+
+            let body = (close[i] - open[i]).abs();
+            let body_ratio = body / range;
+
+            // Skip if body is too large
+            if body_ratio > self.max_body_ratio {
+                continue;
+            }
+
+            let is_bullish_candle = close[i] > open[i];
+            let body_top = if is_bullish_candle { close[i] } else { open[i] };
+            let body_bottom = if is_bullish_candle { open[i] } else { close[i] };
+
+            let upper_wick = high[i] - body_top;
+            let lower_wick = body_bottom - low[i];
+
+            // Calculate trend context
+            let lookback_start = i - self.trend_lookback;
+            let trend_change = close[i - 1] - close[lookback_start];
+            let is_downtrend = trend_change < 0.0;
+            let is_uptrend = trend_change > 0.0;
+
+            // Bullish pin bar (hammer): long lower wick, small upper wick, in downtrend
+            if body > 1e-10 && lower_wick / body >= self.min_wick_ratio && upper_wick < lower_wick * 0.3 {
+                if is_downtrend {
+                    result[i] = 1.0;
+                }
+            }
+            // Bearish pin bar (shooting star): long upper wick, small lower wick, in uptrend
+            else if body > 1e-10 && upper_wick / body >= self.min_wick_ratio && lower_wick < upper_wick * 0.3 {
+                if is_uptrend {
+                    result[i] = -1.0;
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PinBarScanner {
+    fn name(&self) -> &str {
+        "Pin Bar Scanner"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.trend_lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
+// EngulfingSetup
+// ============================================================================
+
+/// Engulfing Setup - Engulfing pattern with volume and trend confirmation
+///
+/// Detects bullish and bearish engulfing patterns with additional
+/// confirmation from volume analysis and trend context. Engulfing patterns
+/// are strong reversal signals when accompanied by high volume.
+#[derive(Debug, Clone)]
+pub struct EngulfingSetup {
+    /// Minimum body engulfment ratio
+    min_engulf_ratio: f64,
+    /// Volume multiplier for confirmation
+    volume_multiplier: f64,
+    /// Lookback for average volume calculation
+    volume_lookback: usize,
+}
+
+impl EngulfingSetup {
+    /// Create a new EngulfingSetup indicator.
+    ///
+    /// # Arguments
+    /// * `min_engulf_ratio` - Minimum engulfment ratio (1.1-3.0)
+    /// * `volume_multiplier` - Volume spike multiplier (1.0-3.0)
+    /// * `volume_lookback` - Lookback for average volume (5-30)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(min_engulf_ratio: f64, volume_multiplier: f64, volume_lookback: usize) -> Result<Self> {
+        if min_engulf_ratio < 1.1 || min_engulf_ratio > 3.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_engulf_ratio".to_string(),
+                reason: "must be between 1.1 and 3.0".to_string(),
+            });
+        }
+        if volume_multiplier < 1.0 || volume_multiplier > 3.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_multiplier".to_string(),
+                reason: "must be between 1.0 and 3.0".to_string(),
+            });
+        }
+        if volume_lookback < 5 || volume_lookback > 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_lookback".to_string(),
+                reason: "must be between 5 and 30".to_string(),
+            });
+        }
+        Ok(Self { min_engulf_ratio, volume_multiplier, volume_lookback })
+    }
+
+    /// Calculate engulfing setup signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish engulfing with volume confirmation
+    /// * -1: Bearish engulfing with volume confirmation
+    /// * 0: No engulfing signal
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.volume_lookback..n {
+            if i < 1 {
+                continue;
+            }
+
+            // Current candle
+            let curr_body = (close[i] - open[i]).abs();
+            let curr_is_bullish = close[i] > open[i];
+
+            // Previous candle
+            let prev_body = (close[i - 1] - open[i - 1]).abs();
+            let prev_is_bullish = close[i - 1] > open[i - 1];
+
+            if prev_body < 1e-10 {
+                continue;
+            }
+
+            // Check engulfment ratio
+            let engulf_ratio = curr_body / prev_body;
+            if engulf_ratio < self.min_engulf_ratio {
+                continue;
+            }
+
+            // Calculate average volume
+            let lookback_start = i.saturating_sub(self.volume_lookback);
+            let avg_volume: f64 = volume[lookback_start..i].iter().sum::<f64>()
+                / (i - lookback_start) as f64;
+
+            let volume_confirmed = avg_volume > 1e-10 && volume[i] >= avg_volume * self.volume_multiplier;
+
+            // Bullish engulfing: previous bearish, current bullish, engulfs body
+            if !prev_is_bullish && curr_is_bullish {
+                let prev_body_low = close[i - 1].min(open[i - 1]);
+                let prev_body_high = close[i - 1].max(open[i - 1]);
+                let curr_body_low = close[i].min(open[i]);
+                let curr_body_high = close[i].max(open[i]);
+
+                if curr_body_low <= prev_body_low && curr_body_high >= prev_body_high {
+                    if volume_confirmed {
+                        result[i] = 1.0;
+                    }
+                }
+            }
+            // Bearish engulfing: previous bullish, current bearish, engulfs body
+            else if prev_is_bullish && !curr_is_bullish {
+                let prev_body_low = close[i - 1].min(open[i - 1]);
+                let prev_body_high = close[i - 1].max(open[i - 1]);
+                let curr_body_low = close[i].min(open[i]);
+                let curr_body_high = close[i].max(open[i]);
+
+                if curr_body_low <= prev_body_low && curr_body_high >= prev_body_high {
+                    if volume_confirmed {
+                        result[i] = -1.0;
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for EngulfingSetup {
+    fn name(&self) -> &str {
+        "Engulfing Setup"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volume_lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// DojiReversal
+// ============================================================================
+
+/// Doji Reversal - Doji reversal pattern with context analysis
+///
+/// Detects doji candlesticks (small body relative to range) and analyzes
+/// their reversal potential based on position within trend and subsequent
+/// confirmation. Dojis represent indecision and potential reversals.
+#[derive(Debug, Clone)]
+pub struct DojiReversal {
+    /// Maximum body to range ratio for doji classification
+    max_body_ratio: f64,
+    /// Lookback period for trend analysis
+    trend_lookback: usize,
+    /// Require confirmation candle
+    require_confirmation: bool,
+}
+
+impl DojiReversal {
+    /// Create a new DojiReversal indicator.
+    ///
+    /// # Arguments
+    /// * `max_body_ratio` - Maximum body/range ratio for doji (0.05-0.2)
+    /// * `trend_lookback` - Lookback for trend context (5-30)
+    /// * `require_confirmation` - Whether to require confirming candle
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(max_body_ratio: f64, trend_lookback: usize, require_confirmation: bool) -> Result<Self> {
+        if max_body_ratio < 0.05 || max_body_ratio > 0.2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_body_ratio".to_string(),
+                reason: "must be between 0.05 and 0.2".to_string(),
+            });
+        }
+        if trend_lookback < 5 || trend_lookback > 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_lookback".to_string(),
+                reason: "must be between 5 and 30".to_string(),
+            });
+        }
+        Ok(Self { max_body_ratio, trend_lookback, require_confirmation })
+    }
+
+    /// Calculate doji reversal signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish doji reversal (doji at downtrend extreme)
+    /// * -1: Bearish doji reversal (doji at uptrend extreme)
+    /// * 0: No reversal signal
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let min_idx = if self.require_confirmation {
+            self.trend_lookback + 1
+        } else {
+            self.trend_lookback
+        };
+
+        for i in min_idx..n {
+            let doji_idx = if self.require_confirmation { i - 1 } else { i };
+
+            let range = high[doji_idx] - low[doji_idx];
+            if range < 1e-10 {
+                continue;
+            }
+
+            let body = (close[doji_idx] - open[doji_idx]).abs();
+            let body_ratio = body / range;
+
+            // Check if it's a doji
+            if body_ratio > self.max_body_ratio {
+                continue;
+            }
+
+            // Calculate trend context
+            let lookback_start = doji_idx.saturating_sub(self.trend_lookback);
+            let trend_change = close[doji_idx] - close[lookback_start];
+
+            // Find extreme levels in lookback
+            let lookback_high = high[lookback_start..=doji_idx].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let lookback_low = low[lookback_start..=doji_idx].iter().cloned().fold(f64::INFINITY, f64::min);
+
+            let at_high = high[doji_idx] >= lookback_high * 0.99;
+            let at_low = low[doji_idx] <= lookback_low * 1.01;
+
+            // Check confirmation if required
+            let confirmed = if self.require_confirmation && i > doji_idx {
+                let confirm_bullish = close[i] > high[doji_idx];
+                let confirm_bearish = close[i] < low[doji_idx];
+                (confirm_bullish, confirm_bearish)
+            } else {
+                (true, true)
+            };
+
+            // Bullish doji reversal: doji at low in downtrend
+            if trend_change < 0.0 && at_low && confirmed.0 {
+                result[i] = 1.0;
+            }
+            // Bearish doji reversal: doji at high in uptrend
+            else if trend_change > 0.0 && at_high && confirmed.1 {
+                result[i] = -1.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for DojiReversal {
+    fn name(&self) -> &str {
+        "Doji Reversal"
+    }
+
+    fn min_periods(&self) -> usize {
+        if self.require_confirmation {
+            self.trend_lookback + 2
+        } else {
+            self.trend_lookback + 1
+        }
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -5029,6 +5755,414 @@ mod tests {
 
         let ps = PriceStructure::new(20, 3).unwrap();
         let result = ps.calculate(&short_data.high, &short_data.low);
+        assert_eq!(result.len(), 3);
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+    }
+
+    // ========== GapFillAnalysis Tests ==========
+
+    #[test]
+    fn test_gap_fill_analysis_new_valid() {
+        let indicator = GapFillAnalysis::new(0.5, 20);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_gap_fill_analysis_invalid_gap_percent() {
+        assert!(GapFillAnalysis::new(0.05, 20).is_err());
+        assert!(GapFillAnalysis::new(6.0, 20).is_err());
+    }
+
+    #[test]
+    fn test_gap_fill_analysis_invalid_max_age() {
+        assert!(GapFillAnalysis::new(0.5, 3).is_err());
+        assert!(GapFillAnalysis::new(0.5, 150).is_err());
+    }
+
+    #[test]
+    fn test_gap_fill_analysis_calculate() {
+        let data = make_test_data();
+        let indicator = GapFillAnalysis::new(0.5, 20).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_gap_fill_analysis_min_periods() {
+        let indicator = GapFillAnalysis::new(0.5, 20).unwrap();
+        assert_eq!(indicator.min_periods(), 2);
+    }
+
+    #[test]
+    fn test_gap_fill_analysis_name() {
+        let indicator = GapFillAnalysis::new(0.5, 20).unwrap();
+        assert_eq!(indicator.name(), "Gap Fill Analysis");
+    }
+
+    #[test]
+    fn test_gap_fill_analysis_compute() {
+        let data = make_test_data();
+        let indicator = GapFillAnalysis::new(0.5, 20).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== InsideBarBreakout Tests ==========
+
+    #[test]
+    fn test_inside_bar_breakout_new_valid() {
+        let indicator = InsideBarBreakout::new(2, 0.5);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_inside_bar_breakout_invalid_min_bars() {
+        assert!(InsideBarBreakout::new(0, 0.5).is_err());
+        assert!(InsideBarBreakout::new(10, 0.5).is_err());
+    }
+
+    #[test]
+    fn test_inside_bar_breakout_invalid_breakout_percent() {
+        assert!(InsideBarBreakout::new(2, 0.05).is_err());
+        assert!(InsideBarBreakout::new(2, 3.0).is_err());
+    }
+
+    #[test]
+    fn test_inside_bar_breakout_calculate() {
+        let data = make_test_data();
+        let indicator = InsideBarBreakout::new(1, 0.5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_inside_bar_breakout_min_periods() {
+        let indicator = InsideBarBreakout::new(2, 0.5).unwrap();
+        assert_eq!(indicator.min_periods(), 4);
+    }
+
+    #[test]
+    fn test_inside_bar_breakout_name() {
+        let indicator = InsideBarBreakout::new(2, 0.5).unwrap();
+        assert_eq!(indicator.name(), "Inside Bar Breakout");
+    }
+
+    #[test]
+    fn test_inside_bar_breakout_compute() {
+        let data = make_test_data();
+        let indicator = InsideBarBreakout::new(1, 0.5).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== OutsideBarReversal Tests ==========
+
+    #[test]
+    fn test_outside_bar_reversal_new_valid() {
+        let indicator = OutsideBarReversal::new(10, 0.7);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_outside_bar_reversal_invalid_trend_lookback() {
+        assert!(OutsideBarReversal::new(3, 0.7).is_err());
+        assert!(OutsideBarReversal::new(60, 0.7).is_err());
+    }
+
+    #[test]
+    fn test_outside_bar_reversal_invalid_close_position() {
+        assert!(OutsideBarReversal::new(10, 0.3).is_err());
+        assert!(OutsideBarReversal::new(10, 0.95).is_err());
+    }
+
+    #[test]
+    fn test_outside_bar_reversal_calculate() {
+        let data = make_test_data();
+        let indicator = OutsideBarReversal::new(10, 0.7).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_outside_bar_reversal_min_periods() {
+        let indicator = OutsideBarReversal::new(15, 0.7).unwrap();
+        assert_eq!(indicator.min_periods(), 16);
+    }
+
+    #[test]
+    fn test_outside_bar_reversal_name() {
+        let indicator = OutsideBarReversal::new(10, 0.7).unwrap();
+        assert_eq!(indicator.name(), "Outside Bar Reversal");
+    }
+
+    #[test]
+    fn test_outside_bar_reversal_compute() {
+        let data = make_test_data();
+        let indicator = OutsideBarReversal::new(10, 0.7).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== PinBarScanner Tests ==========
+
+    #[test]
+    fn test_pin_bar_scanner_new_valid() {
+        let indicator = PinBarScanner::new(2.5, 0.25, 10);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_pin_bar_scanner_invalid_wick_ratio() {
+        assert!(PinBarScanner::new(1.5, 0.25, 10).is_err());
+        assert!(PinBarScanner::new(6.0, 0.25, 10).is_err());
+    }
+
+    #[test]
+    fn test_pin_bar_scanner_invalid_body_ratio() {
+        assert!(PinBarScanner::new(2.5, 0.05, 10).is_err());
+        assert!(PinBarScanner::new(2.5, 0.5, 10).is_err());
+    }
+
+    #[test]
+    fn test_pin_bar_scanner_invalid_trend_lookback() {
+        assert!(PinBarScanner::new(2.5, 0.25, 3).is_err());
+        assert!(PinBarScanner::new(2.5, 0.25, 40).is_err());
+    }
+
+    #[test]
+    fn test_pin_bar_scanner_calculate() {
+        let data = make_test_data();
+        let indicator = PinBarScanner::new(2.5, 0.25, 10).unwrap();
+        let result = indicator.calculate(&data.open, &data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_pin_bar_scanner_min_periods() {
+        let indicator = PinBarScanner::new(2.5, 0.25, 15).unwrap();
+        assert_eq!(indicator.min_periods(), 16);
+    }
+
+    #[test]
+    fn test_pin_bar_scanner_name() {
+        let indicator = PinBarScanner::new(2.5, 0.25, 10).unwrap();
+        assert_eq!(indicator.name(), "Pin Bar Scanner");
+    }
+
+    #[test]
+    fn test_pin_bar_scanner_compute() {
+        let data = make_test_data();
+        let indicator = PinBarScanner::new(2.5, 0.25, 10).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== EngulfingSetup Tests ==========
+
+    #[test]
+    fn test_engulfing_setup_new_valid() {
+        let indicator = EngulfingSetup::new(1.5, 1.5, 10);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_engulfing_setup_invalid_engulf_ratio() {
+        assert!(EngulfingSetup::new(1.0, 1.5, 10).is_err());
+        assert!(EngulfingSetup::new(4.0, 1.5, 10).is_err());
+    }
+
+    #[test]
+    fn test_engulfing_setup_invalid_volume_multiplier() {
+        assert!(EngulfingSetup::new(1.5, 0.5, 10).is_err());
+        assert!(EngulfingSetup::new(1.5, 4.0, 10).is_err());
+    }
+
+    #[test]
+    fn test_engulfing_setup_invalid_volume_lookback() {
+        assert!(EngulfingSetup::new(1.5, 1.5, 3).is_err());
+        assert!(EngulfingSetup::new(1.5, 1.5, 40).is_err());
+    }
+
+    #[test]
+    fn test_engulfing_setup_calculate() {
+        let data = make_test_data();
+        let indicator = EngulfingSetup::new(1.5, 1.5, 10).unwrap();
+        let result = indicator.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_engulfing_setup_min_periods() {
+        let indicator = EngulfingSetup::new(1.5, 1.5, 15).unwrap();
+        assert_eq!(indicator.min_periods(), 16);
+    }
+
+    #[test]
+    fn test_engulfing_setup_name() {
+        let indicator = EngulfingSetup::new(1.5, 1.5, 10).unwrap();
+        assert_eq!(indicator.name(), "Engulfing Setup");
+    }
+
+    #[test]
+    fn test_engulfing_setup_compute() {
+        let data = make_test_data();
+        let indicator = EngulfingSetup::new(1.5, 1.5, 10).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== DojiReversal Tests ==========
+
+    #[test]
+    fn test_doji_reversal_new_valid() {
+        let indicator = DojiReversal::new(0.1, 10, true);
+        assert!(indicator.is_ok());
+
+        let indicator2 = DojiReversal::new(0.1, 10, false);
+        assert!(indicator2.is_ok());
+    }
+
+    #[test]
+    fn test_doji_reversal_invalid_body_ratio() {
+        assert!(DojiReversal::new(0.02, 10, true).is_err());
+        assert!(DojiReversal::new(0.3, 10, true).is_err());
+    }
+
+    #[test]
+    fn test_doji_reversal_invalid_trend_lookback() {
+        assert!(DojiReversal::new(0.1, 3, true).is_err());
+        assert!(DojiReversal::new(0.1, 40, true).is_err());
+    }
+
+    #[test]
+    fn test_doji_reversal_calculate() {
+        let data = make_test_data();
+        let indicator = DojiReversal::new(0.1, 10, false).unwrap();
+        let result = indicator.calculate(&data.open, &data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_doji_reversal_with_confirmation() {
+        let data = make_test_data();
+        let indicator = DojiReversal::new(0.1, 10, true).unwrap();
+        let result = indicator.calculate(&data.open, &data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_doji_reversal_min_periods() {
+        let indicator_no_confirm = DojiReversal::new(0.1, 10, false).unwrap();
+        assert_eq!(indicator_no_confirm.min_periods(), 11);
+
+        let indicator_with_confirm = DojiReversal::new(0.1, 10, true).unwrap();
+        assert_eq!(indicator_with_confirm.min_periods(), 12);
+    }
+
+    #[test]
+    fn test_doji_reversal_name() {
+        let indicator = DojiReversal::new(0.1, 10, true).unwrap();
+        assert_eq!(indicator.name(), "Doji Reversal");
+    }
+
+    #[test]
+    fn test_doji_reversal_compute() {
+        let data = make_test_data();
+        let indicator = DojiReversal::new(0.1, 10, false).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== Edge Cases for New Pattern Indicators ==========
+
+    #[test]
+    fn test_new_pattern_indicators_empty_data() {
+        let empty_data = OHLCVSeries {
+            open: vec![],
+            high: vec![],
+            low: vec![],
+            close: vec![],
+            volume: vec![],
+        };
+
+        let gfa = GapFillAnalysis::new(0.5, 20).unwrap();
+        assert_eq!(gfa.calculate(&empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let ibb = InsideBarBreakout::new(1, 0.5).unwrap();
+        assert_eq!(ibb.calculate(&empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let obr = OutsideBarReversal::new(10, 0.7).unwrap();
+        assert_eq!(obr.calculate(&empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let pbs = PinBarScanner::new(2.5, 0.25, 10).unwrap();
+        assert_eq!(pbs.calculate(&empty_data.open, &empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+
+        let es = EngulfingSetup::new(1.5, 1.5, 10).unwrap();
+        assert_eq!(es.calculate(&empty_data.open, &empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+
+        let dr = DojiReversal::new(0.1, 10, false).unwrap();
+        assert_eq!(dr.calculate(&empty_data.open, &empty_data.high, &empty_data.low, &empty_data.close).len(), 0);
+    }
+
+    #[test]
+    fn test_new_pattern_indicators_short_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0, 102.0],
+            high: vec![101.0, 102.0, 103.0],
+            low: vec![99.0, 100.0, 101.0],
+            close: vec![100.5, 101.5, 102.5],
+            volume: vec![1000.0, 1100.0, 1200.0],
+        };
+
+        let gfa = GapFillAnalysis::new(0.5, 20).unwrap();
+        let result = gfa.calculate(&short_data.high, &short_data.low, &short_data.close);
+        assert_eq!(result.len(), 3);
+
+        let ibb = InsideBarBreakout::new(1, 0.5).unwrap();
+        let result = ibb.calculate(&short_data.high, &short_data.low, &short_data.close);
+        assert_eq!(result.len(), 3);
+
+        let obr = OutsideBarReversal::new(10, 0.7).unwrap();
+        let result = obr.calculate(&short_data.high, &short_data.low, &short_data.close);
         assert_eq!(result.len(), 3);
         for val in &result {
             assert_eq!(*val, 0.0);

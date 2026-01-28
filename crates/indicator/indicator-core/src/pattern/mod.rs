@@ -78,4 +78,6 @@ pub use advanced::{
     ReversalPatternScore, PatternSymmetry, TrendContinuationStrength,
     SwingPointDetector, SupportResistanceStrength, PriceActionMomentum,
     CandleRangeAnalysis, TrendLineBreak, PriceStructure,
+    GapFillAnalysis, InsideBarBreakout, OutsideBarReversal,
+    PinBarScanner, EngulfingSetup, DojiReversal,
 };

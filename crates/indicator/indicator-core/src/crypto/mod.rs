@@ -25,6 +25,9 @@ pub use advanced::{
     MarketSentimentProxy, CryptoCyclePhase, AdaptiveCryptoMA,
     CryptoVolatilityRank, AltcoinSeasonIndex, CryptoMarketBreadth,
     CryptoMomentumWave, CryptoTrendPhase, CryptoRiskIndex,
+    // New 6 crypto indicators
+    CryptoStrengthIndex, CryptoVolatilityScore, CryptoTrendScore,
+    CryptoOverboughtOversold, CryptoMomentumIndex, CryptoRiskScore,
 };
 pub use extended::{
     ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,

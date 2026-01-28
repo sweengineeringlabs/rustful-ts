@@ -5149,6 +5149,1052 @@ impl TechnicalIndicator for CryptoRiskIndex {
 }
 
 // ============================================================================
+// CryptoStrengthIndex - Composite crypto market strength measure
+// ============================================================================
+
+/// Crypto Strength Index
+///
+/// Measures the overall strength of a cryptocurrency by combining multiple
+/// factors including price momentum, volume trends, and volatility-adjusted
+/// performance. Higher values indicate stronger market conditions.
+///
+/// Components:
+/// - Price momentum (rate of change)
+/// - Volume trend strength
+/// - Volatility-adjusted returns
+/// - Consistency of price movement
+///
+/// Score ranges from 0 to 100:
+/// - 80-100: Very Strong
+/// - 60-80: Strong
+/// - 40-60: Moderate
+/// - 20-40: Weak
+/// - 0-20: Very Weak
+#[derive(Debug, Clone)]
+pub struct CryptoStrengthIndex {
+    /// Period for momentum calculation
+    momentum_period: usize,
+    /// Period for volatility calculation
+    volatility_period: usize,
+    /// Smoothing period for final output
+    smooth_period: usize,
+}
+
+impl CryptoStrengthIndex {
+    /// Creates a new CryptoStrengthIndex
+    ///
+    /// # Arguments
+    /// * `momentum_period` - Period for momentum calculation (minimum 5)
+    /// * `volatility_period` - Period for volatility measurement (minimum 5)
+    /// * `smooth_period` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns error if parameters are out of valid range
+    pub fn new(momentum_period: usize, volatility_period: usize, smooth_period: usize) -> Result<Self> {
+        if momentum_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smooth_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { momentum_period, volatility_period, smooth_period })
+    }
+
+    /// Calculate crypto strength index (0 to 100)
+    ///
+    /// # Arguments
+    /// * `close` - Closing prices
+    /// * `volume` - Trading volumes
+    ///
+    /// # Returns
+    /// Vector of strength scores
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(volume.len());
+        let mut result = vec![0.0; n];
+        let lookback = self.momentum_period.max(self.volatility_period);
+
+        for i in lookback..n {
+            let mom_start = i.saturating_sub(self.momentum_period);
+            let vol_start = i.saturating_sub(self.volatility_period);
+
+            // 1. Price Momentum Component (0-30)
+            let price_return = if close[mom_start] > 1e-10 {
+                (close[i] / close[mom_start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let momentum_score = ((price_return + 30.0) / 60.0).clamp(0.0, 1.0) * 30.0;
+
+            // 2. Volume Trend Component (0-25)
+            let early_vol: f64 = volume[mom_start..(mom_start + self.momentum_period / 2).min(i)].iter().sum();
+            let late_vol: f64 = volume[(i - self.momentum_period / 2)..=i].iter().sum();
+            let vol_trend = if early_vol > 1e-10 {
+                (late_vol / early_vol - 0.5).clamp(0.0, 2.0) / 2.0
+            } else {
+                0.5
+            };
+            let volume_score = vol_trend * 25.0;
+
+            // 3. Volatility-Adjusted Return Component (0-25)
+            let mut returns_sq = 0.0;
+            for j in (vol_start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    let ret = close[j] / close[j - 1] - 1.0;
+                    returns_sq += ret * ret;
+                }
+            }
+            let volatility = (returns_sq / self.volatility_period as f64).sqrt();
+            let sharpe_like = if volatility > 1e-10 {
+                (price_return / 100.0) / volatility
+            } else {
+                0.0
+            };
+            let risk_adj_score = ((sharpe_like + 2.0) / 4.0).clamp(0.0, 1.0) * 25.0;
+
+            // 4. Consistency Component (0-20)
+            let mut up_days = 0;
+            let mut total_days = 0;
+            for j in (mom_start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_days += 1;
+                }
+                total_days += 1;
+            }
+            let consistency = if total_days > 0 {
+                up_days as f64 / total_days as f64
+            } else {
+                0.5
+            };
+            let consistency_score = consistency * 20.0;
+
+            result[i] = momentum_score + volume_score + risk_adj_score + consistency_score;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        for i in 1..n {
+            result[i] = alpha * result[i] + (1.0 - alpha) * result[i - 1];
+        }
+
+        result
+    }
+
+    /// Classify strength level
+    pub fn classify_strength(&self, score: f64) -> &'static str {
+        match score {
+            s if s >= 80.0 => "Very Strong",
+            s if s >= 60.0 => "Strong",
+            s if s >= 40.0 => "Moderate",
+            s if s >= 20.0 => "Weak",
+            _ => "Very Weak",
+        }
+    }
+
+    /// Returns true if showing strong conditions
+    pub fn is_strong(&self, score: f64) -> bool {
+        score >= 60.0
+    }
+}
+
+impl TechnicalIndicator for CryptoStrengthIndex {
+    fn name(&self) -> &str {
+        "Crypto Strength Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.momentum_period.max(self.volatility_period) + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// CryptoVolatilityScore - Normalized volatility score for crypto
+// ============================================================================
+
+/// Crypto Volatility Score
+///
+/// Calculates a normalized volatility score specifically designed for
+/// cryptocurrency markets, which typically exhibit higher volatility
+/// than traditional assets. Combines multiple volatility measures.
+///
+/// Components:
+/// - Realized volatility (close-to-close)
+/// - Intraday range volatility (Parkinson)
+/// - Volume-weighted volatility
+/// - Volatility persistence
+///
+/// Score ranges from 0 to 100:
+/// - 80-100: Extreme Volatility
+/// - 60-80: High Volatility
+/// - 40-60: Moderate Volatility
+/// - 20-40: Low Volatility
+/// - 0-20: Very Low Volatility
+#[derive(Debug, Clone)]
+pub struct CryptoVolatilityScore {
+    /// Period for volatility calculation
+    period: usize,
+    /// Baseline period for normalization
+    baseline_period: usize,
+}
+
+impl CryptoVolatilityScore {
+    /// Creates a new CryptoVolatilityScore
+    ///
+    /// # Arguments
+    /// * `period` - Short-term volatility period (minimum 5)
+    /// * `baseline_period` - Long-term baseline period (must be > period)
+    ///
+    /// # Errors
+    /// Returns error if parameters are out of valid range
+    pub fn new(period: usize, baseline_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if baseline_period <= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "baseline_period".to_string(),
+                reason: "must be greater than period".to_string(),
+            });
+        }
+        Ok(Self { period, baseline_period })
+    }
+
+    /// Calculate crypto volatility score (0 to 100)
+    ///
+    /// # Arguments
+    /// * `close` - Closing prices
+    /// * `high` - High prices
+    /// * `low` - Low prices
+    /// * `volume` - Trading volumes
+    ///
+    /// # Returns
+    /// Vector of volatility scores
+    pub fn calculate(&self, close: &[f64], high: &[f64], low: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+
+        for i in self.baseline_period..n {
+            let short_start = i.saturating_sub(self.period);
+            let long_start = i.saturating_sub(self.baseline_period);
+
+            // 1. Realized Volatility Component (0-30)
+            let mut short_returns_sq = 0.0;
+            for j in (short_start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    let ret = (close[j] / close[j - 1]).ln();
+                    short_returns_sq += ret * ret;
+                }
+            }
+            let short_rv = (short_returns_sq / self.period as f64).sqrt() * (365.0_f64).sqrt() * 100.0;
+            let rv_score = (short_rv / 150.0).min(1.0) * 30.0; // 150% annualized = max
+
+            // 2. Parkinson Volatility Component (0-25)
+            let mut range_sq = 0.0;
+            for j in short_start..=i {
+                if low[j] > 1e-10 {
+                    let hl_ratio = (high[j] / low[j]).ln();
+                    range_sq += hl_ratio * hl_ratio;
+                }
+            }
+            let parkinson = (range_sq / (4.0 * 0.693 * self.period as f64)).sqrt() * (365.0_f64).sqrt() * 100.0;
+            let parkinson_score = (parkinson / 150.0).min(1.0) * 25.0;
+
+            // 3. Volume-Weighted Volatility Component (0-25)
+            let avg_vol: f64 = volume[long_start..=i].iter().sum::<f64>() / (i - long_start + 1) as f64;
+            let recent_vol: f64 = volume[short_start..=i].iter().sum::<f64>() / (i - short_start + 1) as f64;
+            let vol_ratio = if avg_vol > 1e-10 { recent_vol / avg_vol } else { 1.0 };
+            let vol_weight_score = ((vol_ratio - 0.5).max(0.0) * 2.0).min(1.0) * 25.0;
+
+            // 4. Volatility Persistence Component (0-20)
+            let mut long_returns_sq = 0.0;
+            for j in (long_start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    let ret = (close[j] / close[j - 1]).ln();
+                    long_returns_sq += ret * ret;
+                }
+            }
+            let long_rv = (long_returns_sq / self.baseline_period as f64).sqrt();
+            let short_rv_raw = (short_returns_sq / self.period as f64).sqrt();
+            let persistence = if long_rv > 1e-10 {
+                (short_rv_raw / long_rv).clamp(0.5, 2.0) - 0.5
+            } else {
+                0.5
+            };
+            let persistence_score = (persistence / 1.5).min(1.0) * 20.0;
+
+            result[i] = rv_score + parkinson_score + vol_weight_score + persistence_score;
+        }
+
+        result
+    }
+
+    /// Classify volatility level
+    pub fn classify_volatility(&self, score: f64) -> &'static str {
+        match score {
+            s if s >= 80.0 => "Extreme Volatility",
+            s if s >= 60.0 => "High Volatility",
+            s if s >= 40.0 => "Moderate Volatility",
+            s if s >= 20.0 => "Low Volatility",
+            _ => "Very Low Volatility",
+        }
+    }
+
+    /// Returns true if volatility is elevated
+    pub fn is_high_volatility(&self, score: f64) -> bool {
+        score >= 60.0
+    }
+
+    /// Returns position size adjustment based on volatility
+    pub fn position_size_factor(&self, score: f64) -> f64 {
+        match score {
+            s if s >= 80.0 => 0.25,
+            s if s >= 60.0 => 0.5,
+            s if s >= 40.0 => 0.75,
+            _ => 1.0,
+        }
+    }
+}
+
+impl TechnicalIndicator for CryptoVolatilityScore {
+    fn name(&self) -> &str {
+        "Crypto Volatility Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.baseline_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.high, &data.low, &data.volume)))
+    }
+}
+
+// ============================================================================
+// CryptoTrendScore - Trend scoring for cryptocurrency
+// ============================================================================
+
+/// Crypto Trend Score
+///
+/// Evaluates the trend quality and direction for cryptocurrency assets.
+/// Combines trend direction, strength, and consistency into a single
+/// directional score.
+///
+/// Components:
+/// - Multi-timeframe trend alignment
+/// - Price position relative to moving averages
+/// - Trend momentum
+/// - Higher high/lower low patterns
+///
+/// Score ranges from -100 to +100:
+/// - +60 to +100: Strong Uptrend
+/// - +20 to +60: Moderate Uptrend
+/// - -20 to +20: Sideways/No Trend
+/// - -60 to -20: Moderate Downtrend
+/// - -100 to -60: Strong Downtrend
+#[derive(Debug, Clone)]
+pub struct CryptoTrendScore {
+    /// Short-term trend period
+    short_period: usize,
+    /// Medium-term trend period
+    medium_period: usize,
+    /// Long-term trend period
+    long_period: usize,
+}
+
+impl CryptoTrendScore {
+    /// Creates a new CryptoTrendScore
+    ///
+    /// # Arguments
+    /// * `short_period` - Short-term period (minimum 5)
+    /// * `medium_period` - Medium-term period (must be > short)
+    /// * `long_period` - Long-term period (must be > medium)
+    ///
+    /// # Errors
+    /// Returns error if parameters are out of valid range
+    pub fn new(short_period: usize, medium_period: usize, long_period: usize) -> Result<Self> {
+        if short_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if medium_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "medium_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if long_period <= medium_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than medium_period".to_string(),
+            });
+        }
+        Ok(Self { short_period, medium_period, long_period })
+    }
+
+    /// Calculate EMA helper
+    fn calc_ema(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut ema = vec![0.0; n];
+        if n == 0 || period == 0 {
+            return ema;
+        }
+
+        let alpha = 2.0 / (period as f64 + 1.0);
+        ema[0] = data[0];
+        for i in 1..n {
+            ema[i] = alpha * data[i] + (1.0 - alpha) * ema[i - 1];
+        }
+        ema
+    }
+
+    /// Calculate crypto trend score (-100 to +100)
+    ///
+    /// # Arguments
+    /// * `close` - Closing prices
+    /// * `high` - High prices
+    /// * `low` - Low prices
+    ///
+    /// # Returns
+    /// Vector of trend scores
+    pub fn calculate(&self, close: &[f64], high: &[f64], low: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut result = vec![0.0; n];
+
+        let short_ema = self.calc_ema(close, self.short_period);
+        let medium_ema = self.calc_ema(close, self.medium_period);
+        let long_ema = self.calc_ema(close, self.long_period);
+
+        for i in self.long_period..n {
+            // 1. MA Alignment Component (-30 to +30)
+            let short_above_medium = if short_ema[i] > medium_ema[i] { 10.0 } else { -10.0 };
+            let medium_above_long = if medium_ema[i] > long_ema[i] { 10.0 } else { -10.0 };
+            let price_above_short = if close[i] > short_ema[i] { 10.0 } else { -10.0 };
+            let ma_alignment = short_above_medium + medium_above_long + price_above_short;
+
+            // 2. Price Position Component (-25 to +25)
+            let long_start = i.saturating_sub(self.long_period);
+            let period_high = high[long_start..=i].iter().cloned().fold(f64::MIN, f64::max);
+            let period_low = low[long_start..=i].iter().cloned().fold(f64::MAX, f64::min);
+            let range = period_high - period_low;
+            let position = if range > 1e-10 {
+                (close[i] - period_low) / range
+            } else {
+                0.5
+            };
+            let position_score = (position * 2.0 - 1.0) * 25.0;
+
+            // 3. Trend Momentum Component (-25 to +25)
+            let short_mom = if close[i.saturating_sub(self.short_period)] > 1e-10 {
+                (close[i] / close[i.saturating_sub(self.short_period)] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let momentum_score = (short_mom / 20.0).clamp(-1.0, 1.0) * 25.0;
+
+            // 4. Higher High/Lower Low Pattern (-20 to +20)
+            let mut hh_count = 0;
+            let mut ll_count = 0;
+            let check_period = self.short_period.min(i);
+            for j in 1..check_period {
+                let idx = i - j;
+                if idx > 0 {
+                    if high[idx] > high[idx - 1] { hh_count += 1; }
+                    if low[idx] < low[idx - 1] { ll_count += 1; }
+                }
+            }
+            let hh_ll_ratio = if check_period > 1 {
+                (hh_count as f64 - ll_count as f64) / (check_period - 1) as f64
+            } else {
+                0.0
+            };
+            let pattern_score = hh_ll_ratio * 20.0;
+
+            result[i] = (ma_alignment + position_score + momentum_score + pattern_score).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+
+    /// Classify trend direction and strength
+    pub fn classify_trend(&self, score: f64) -> &'static str {
+        match score {
+            s if s >= 60.0 => "Strong Uptrend",
+            s if s >= 20.0 => "Moderate Uptrend",
+            s if s >= -20.0 => "Sideways",
+            s if s >= -60.0 => "Moderate Downtrend",
+            _ => "Strong Downtrend",
+        }
+    }
+
+    /// Returns true if in uptrend
+    pub fn is_uptrend(&self, score: f64) -> bool {
+        score >= 20.0
+    }
+
+    /// Returns true if in downtrend
+    pub fn is_downtrend(&self, score: f64) -> bool {
+        score <= -20.0
+    }
+}
+
+impl TechnicalIndicator for CryptoTrendScore {
+    fn name(&self) -> &str {
+        "Crypto Trend Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.high, &data.low)))
+    }
+}
+
+// ============================================================================
+// CryptoOverboughtOversold - OB/OS indicator for crypto markets
+// ============================================================================
+
+/// Crypto Overbought/Oversold Indicator
+///
+/// Identifies overbought and oversold conditions specifically calibrated
+/// for cryptocurrency markets, which often exhibit more extreme readings
+/// than traditional assets.
+///
+/// Components:
+/// - RSI-style momentum
+/// - Price deviation from mean
+/// - Volume-weighted extremes
+/// - Mean reversion probability
+///
+/// Score ranges from 0 to 100:
+/// - 80-100: Extremely Overbought
+/// - 65-80: Overbought
+/// - 35-65: Neutral
+/// - 20-35: Oversold
+/// - 0-20: Extremely Oversold
+#[derive(Debug, Clone)]
+pub struct CryptoOverboughtOversold {
+    /// RSI calculation period
+    rsi_period: usize,
+    /// Bollinger/deviation period
+    deviation_period: usize,
+    /// Volume analysis period
+    volume_period: usize,
+}
+
+impl CryptoOverboughtOversold {
+    /// Creates a new CryptoOverboughtOversold indicator
+    ///
+    /// # Arguments
+    /// * `rsi_period` - Period for RSI-style calculation (minimum 5)
+    /// * `deviation_period` - Period for deviation calculation (minimum 10)
+    /// * `volume_period` - Period for volume analysis (minimum 5)
+    ///
+    /// # Errors
+    /// Returns error if parameters are out of valid range
+    pub fn new(rsi_period: usize, deviation_period: usize, volume_period: usize) -> Result<Self> {
+        if rsi_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "rsi_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if deviation_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "deviation_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if volume_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { rsi_period, deviation_period, volume_period })
+    }
+
+    /// Calculate overbought/oversold score (0 to 100)
+    ///
+    /// # Arguments
+    /// * `close` - Closing prices
+    /// * `volume` - Trading volumes
+    ///
+    /// # Returns
+    /// Vector of OB/OS scores (50 = neutral, >65 = OB, <35 = OS)
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(volume.len());
+        let mut result = vec![50.0; n]; // Default to neutral
+        let lookback = self.rsi_period.max(self.deviation_period).max(self.volume_period);
+
+        for i in lookback..n {
+            // 1. RSI-Style Component (0-40, centered at 20)
+            let mut gains = 0.0;
+            let mut losses = 0.0;
+            for j in (i - self.rsi_period + 1)..=i {
+                let change = close[j] - close[j - 1];
+                if change > 0.0 {
+                    gains += change;
+                } else {
+                    losses -= change;
+                }
+            }
+            let avg_gain = gains / self.rsi_period as f64;
+            let avg_loss = losses / self.rsi_period as f64;
+            let rs = if avg_loss > 1e-10 { avg_gain / avg_loss } else { 100.0 };
+            let rsi = 100.0 - (100.0 / (1.0 + rs));
+            let rsi_component = rsi * 0.4;
+
+            // 2. Price Deviation Component (0-35, centered at 17.5)
+            let dev_start = i.saturating_sub(self.deviation_period);
+            let mean: f64 = close[dev_start..=i].iter().sum::<f64>() / (i - dev_start + 1) as f64;
+            let variance: f64 = close[dev_start..=i].iter()
+                .map(|x| (x - mean).powi(2))
+                .sum::<f64>() / (i - dev_start + 1) as f64;
+            let std_dev = variance.sqrt();
+            let z_score = if std_dev > 1e-10 {
+                (close[i] - mean) / std_dev
+            } else {
+                0.0
+            };
+            // Map z-score (-3 to +3) to (0 to 35)
+            let deviation_component = ((z_score + 3.0) / 6.0).clamp(0.0, 1.0) * 35.0;
+
+            // 3. Volume-Weighted Extreme Component (0-25, centered at 12.5)
+            let vol_start = i.saturating_sub(self.volume_period);
+            let avg_vol: f64 = volume[vol_start..=i].iter().sum::<f64>() / (i - vol_start + 1) as f64;
+            let vol_ratio = if avg_vol > 1e-10 { volume[i] / avg_vol } else { 1.0 };
+
+            // High volume on price extremes intensifies the signal
+            let price_direction = if i > 0 {
+                (close[i] - close[i - 1]).signum()
+            } else {
+                0.0
+            };
+            let vol_intensity = (vol_ratio - 1.0).max(0.0) * price_direction;
+            let volume_component = 12.5 + (vol_intensity * 5.0).clamp(-12.5, 12.5);
+
+            result[i] = (rsi_component + deviation_component + volume_component).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+
+    /// Classify overbought/oversold level
+    pub fn classify_level(&self, score: f64) -> &'static str {
+        match score {
+            s if s >= 80.0 => "Extremely Overbought",
+            s if s >= 65.0 => "Overbought",
+            s if s >= 35.0 => "Neutral",
+            s if s >= 20.0 => "Oversold",
+            _ => "Extremely Oversold",
+        }
+    }
+
+    /// Returns true if overbought
+    pub fn is_overbought(&self, score: f64) -> bool {
+        score >= 65.0
+    }
+
+    /// Returns true if oversold
+    pub fn is_oversold(&self, score: f64) -> bool {
+        score <= 35.0
+    }
+
+    /// Returns true if at extreme levels
+    pub fn is_extreme(&self, score: f64) -> bool {
+        score >= 80.0 || score <= 20.0
+    }
+}
+
+impl TechnicalIndicator for CryptoOverboughtOversold {
+    fn name(&self) -> &str {
+        "Crypto Overbought/Oversold"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.rsi_period.max(self.deviation_period).max(self.volume_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// CryptoMomentumIndex - Momentum index for crypto (different from MomentumScore)
+// ============================================================================
+
+/// Crypto Momentum Index
+///
+/// A comprehensive momentum indicator designed for cryptocurrency markets.
+/// Unlike simple rate-of-change, this combines multiple momentum factors
+/// with volume confirmation and volatility normalization.
+///
+/// Components:
+/// - Multi-timeframe momentum
+/// - Acceleration/deceleration
+/// - Volume-confirmed momentum
+/// - Volatility-adjusted momentum
+///
+/// Score ranges from -100 to +100:
+/// - +70 to +100: Extreme Bullish Momentum
+/// - +30 to +70: Strong Bullish Momentum
+/// - -30 to +30: Weak/No Momentum
+/// - -70 to -30: Strong Bearish Momentum
+/// - -100 to -70: Extreme Bearish Momentum
+#[derive(Debug, Clone)]
+pub struct CryptoMomentumIndex {
+    /// Fast momentum period
+    fast_period: usize,
+    /// Slow momentum period
+    slow_period: usize,
+    /// Volume confirmation period
+    volume_period: usize,
+}
+
+impl CryptoMomentumIndex {
+    /// Creates a new CryptoMomentumIndex
+    ///
+    /// # Arguments
+    /// * `fast_period` - Fast momentum period (minimum 3)
+    /// * `slow_period` - Slow momentum period (must be > fast)
+    /// * `volume_period` - Volume analysis period (minimum 5)
+    ///
+    /// # Errors
+    /// Returns error if parameters are out of valid range
+    pub fn new(fast_period: usize, slow_period: usize, volume_period: usize) -> Result<Self> {
+        if fast_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if slow_period <= fast_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "slow_period".to_string(),
+                reason: "must be greater than fast_period".to_string(),
+            });
+        }
+        if volume_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { fast_period, slow_period, volume_period })
+    }
+
+    /// Calculate crypto momentum index (-100 to +100)
+    ///
+    /// # Arguments
+    /// * `close` - Closing prices
+    /// * `volume` - Trading volumes
+    ///
+    /// # Returns
+    /// Vector of momentum index values
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(volume.len());
+        let mut result = vec![0.0; n];
+        let lookback = self.slow_period.max(self.volume_period);
+
+        for i in lookback..n {
+            // 1. Fast Momentum Component (-30 to +30)
+            let fast_start = i.saturating_sub(self.fast_period);
+            let fast_mom = if close[fast_start] > 1e-10 {
+                (close[i] / close[fast_start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let fast_component = (fast_mom / 15.0).clamp(-1.0, 1.0) * 30.0;
+
+            // 2. Slow Momentum Component (-25 to +25)
+            let slow_start = i.saturating_sub(self.slow_period);
+            let slow_mom = if close[slow_start] > 1e-10 {
+                (close[i] / close[slow_start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let slow_component = (slow_mom / 30.0).clamp(-1.0, 1.0) * 25.0;
+
+            // 3. Acceleration Component (-20 to +20)
+            let mid_point = (fast_start + i) / 2;
+            let first_half_mom = if close[fast_start] > 1e-10 && mid_point > fast_start {
+                (close[mid_point] / close[fast_start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let second_half_mom = if close[mid_point] > 1e-10 {
+                (close[i] / close[mid_point] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let acceleration = second_half_mom - first_half_mom;
+            let accel_component = (acceleration / 10.0).clamp(-1.0, 1.0) * 20.0;
+
+            // 4. Volume Confirmation Component (-25 to +25)
+            let vol_start = i.saturating_sub(self.volume_period);
+            let avg_vol: f64 = volume[vol_start..=i].iter().sum::<f64>() / (i - vol_start + 1) as f64;
+            let vol_ratio = if avg_vol > 1e-10 { volume[i] / avg_vol } else { 1.0 };
+
+            // Volume should confirm momentum direction
+            let mom_direction = fast_mom.signum();
+            let vol_confirmation = if vol_ratio > 1.0 {
+                (vol_ratio - 1.0).min(1.0) * mom_direction * 25.0
+            } else {
+                // Low volume weakens the signal
+                (1.0 - vol_ratio) * -mom_direction.signum() * 10.0
+            };
+
+            result[i] = (fast_component + slow_component + accel_component + vol_confirmation).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+
+    /// Classify momentum level
+    pub fn classify_momentum(&self, score: f64) -> &'static str {
+        match score {
+            s if s >= 70.0 => "Extreme Bullish",
+            s if s >= 30.0 => "Strong Bullish",
+            s if s >= -30.0 => "Weak/Neutral",
+            s if s >= -70.0 => "Strong Bearish",
+            _ => "Extreme Bearish",
+        }
+    }
+
+    /// Returns true if momentum is bullish
+    pub fn is_bullish(&self, score: f64) -> bool {
+        score >= 30.0
+    }
+
+    /// Returns true if momentum is bearish
+    pub fn is_bearish(&self, score: f64) -> bool {
+        score <= -30.0
+    }
+
+    /// Returns true if momentum is extreme (either direction)
+    pub fn is_extreme(&self, score: f64) -> bool {
+        score.abs() >= 70.0
+    }
+}
+
+impl TechnicalIndicator for CryptoMomentumIndex {
+    fn name(&self) -> &str {
+        "Crypto Momentum Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.slow_period.max(self.volume_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// CryptoRiskScore - Risk scoring for crypto positions
+// ============================================================================
+
+/// Crypto Risk Score
+///
+/// Calculates a comprehensive risk score for cryptocurrency positions,
+/// combining multiple risk factors to help with position sizing and
+/// risk management decisions.
+///
+/// Components:
+/// - Volatility risk
+/// - Drawdown risk
+/// - Liquidity risk (volume-based)
+/// - Momentum exhaustion risk
+///
+/// Score ranges from 0 to 100:
+/// - 80-100: Extreme Risk
+/// - 60-80: High Risk
+/// - 40-60: Moderate Risk
+/// - 20-40: Low Risk
+/// - 0-20: Very Low Risk
+#[derive(Debug, Clone)]
+pub struct CryptoRiskScore {
+    /// Volatility measurement period
+    volatility_period: usize,
+    /// Drawdown measurement period
+    drawdown_period: usize,
+    /// Smoothing period
+    smooth_period: usize,
+}
+
+impl CryptoRiskScore {
+    /// Creates a new CryptoRiskScore
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for volatility calculation (minimum 5)
+    /// * `drawdown_period` - Period for drawdown analysis (minimum 10)
+    /// * `smooth_period` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns error if parameters are out of valid range
+    pub fn new(volatility_period: usize, drawdown_period: usize, smooth_period: usize) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if drawdown_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "drawdown_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smooth_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { volatility_period, drawdown_period, smooth_period })
+    }
+
+    /// Calculate crypto risk score (0 to 100)
+    ///
+    /// # Arguments
+    /// * `close` - Closing prices
+    /// * `high` - High prices
+    /// * `low` - Low prices
+    /// * `volume` - Trading volumes
+    ///
+    /// # Returns
+    /// Vector of risk scores
+    pub fn calculate(&self, close: &[f64], high: &[f64], low: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let lookback = self.volatility_period.max(self.drawdown_period);
+
+        for i in lookback..n {
+            let vol_start = i.saturating_sub(self.volatility_period);
+            let dd_start = i.saturating_sub(self.drawdown_period);
+
+            // 1. Volatility Risk Component (0-30)
+            let mut returns_sq = 0.0;
+            for j in (vol_start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    let ret = (close[j] / close[j - 1]).ln();
+                    returns_sq += ret * ret;
+                }
+            }
+            let volatility = (returns_sq / self.volatility_period as f64).sqrt() * (365.0_f64).sqrt() * 100.0;
+            let vol_risk = (volatility / 200.0).min(1.0) * 30.0; // 200% annualized = max
+
+            // 2. Drawdown Risk Component (0-30)
+            let period_high = high[dd_start..=i].iter().cloned().fold(f64::MIN, f64::max);
+            let current_drawdown = if period_high > 1e-10 {
+                (period_high - close[i]) / period_high
+            } else {
+                0.0
+            };
+            let dd_risk = (current_drawdown / 0.5).min(1.0) * 30.0; // 50% drawdown = max
+
+            // 3. Liquidity Risk Component (0-20)
+            let avg_vol: f64 = volume[dd_start..=i].iter().sum::<f64>() / (i - dd_start + 1) as f64;
+            let recent_vol: f64 = volume[vol_start..=i].iter().sum::<f64>() / (i - vol_start + 1) as f64;
+            let vol_decline = if avg_vol > 1e-10 {
+                1.0 - (recent_vol / avg_vol).min(1.0)
+            } else {
+                0.0
+            };
+            let liquidity_risk = vol_decline.max(0.0) * 20.0;
+
+            // 4. Momentum Exhaustion Risk Component (0-20)
+            let momentum = if close[dd_start] > 1e-10 {
+                (close[i] / close[dd_start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            // Extreme momentum (either direction) suggests exhaustion risk
+            let exhaustion_risk = (momentum.abs() / 50.0).min(1.0) * 20.0;
+
+            result[i] = vol_risk + dd_risk + liquidity_risk + exhaustion_risk;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        for i in 1..n {
+            result[i] = alpha * result[i] + (1.0 - alpha) * result[i - 1];
+        }
+
+        result
+    }
+
+    /// Classify risk level
+    pub fn classify_risk(&self, score: f64) -> &'static str {
+        match score {
+            s if s >= 80.0 => "Extreme Risk",
+            s if s >= 60.0 => "High Risk",
+            s if s >= 40.0 => "Moderate Risk",
+            s if s >= 20.0 => "Low Risk",
+            _ => "Very Low Risk",
+        }
+    }
+
+    /// Returns position size multiplier based on risk
+    pub fn position_multiplier(&self, score: f64) -> f64 {
+        match score {
+            s if s >= 80.0 => 0.25,
+            s if s >= 60.0 => 0.5,
+            s if s >= 40.0 => 0.75,
+            _ => 1.0,
+        }
+    }
+
+    /// Returns true if risk requires caution
+    pub fn requires_caution(&self, score: f64) -> bool {
+        score >= 60.0
+    }
+
+    /// Returns true if at crisis-level risk
+    pub fn is_crisis_level(&self, score: f64) -> bool {
+        score >= 85.0
+    }
+}
+
+impl TechnicalIndicator for CryptoRiskScore {
+    fn name(&self) -> &str {
+        "Crypto Risk Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volatility_period.max(self.drawdown_period) + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.high, &data.low, &data.volume)))
+    }
+}
+
+// ============================================================================
 // Tests for New Crypto Indicators
 // ============================================================================
 
@@ -5630,5 +6676,389 @@ mod tests_new_crypto_indicators {
         for i in 20..result.len() {
             assert!(result[i] < 50.0, "Momentum at {} should not be extremely positive in downtrend", i);
         }
+    }
+
+    // ========== CryptoStrengthIndex Tests ==========
+
+    #[test]
+    fn test_crypto_strength_index_new() {
+        assert!(CryptoStrengthIndex::new(10, 14, 3).is_ok());
+        assert!(CryptoStrengthIndex::new(3, 14, 3).is_err()); // momentum_period too small
+        assert!(CryptoStrengthIndex::new(10, 3, 3).is_err()); // volatility_period too small
+        assert!(CryptoStrengthIndex::new(10, 14, 1).is_err()); // smooth_period too small
+    }
+
+    #[test]
+    fn test_crypto_strength_index_calculate() {
+        let (close, _, _, volume) = make_test_data();
+        let csi = CryptoStrengthIndex::new(10, 14, 3).unwrap();
+        let result = csi.calculate(&close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for i in 20..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0, "Value at {} is {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_crypto_strength_index_classify() {
+        let csi = CryptoStrengthIndex::new(10, 14, 3).unwrap();
+        assert_eq!(csi.classify_strength(90.0), "Very Strong");
+        assert_eq!(csi.classify_strength(70.0), "Strong");
+        assert_eq!(csi.classify_strength(50.0), "Moderate");
+        assert_eq!(csi.classify_strength(30.0), "Weak");
+        assert_eq!(csi.classify_strength(10.0), "Very Weak");
+    }
+
+    #[test]
+    fn test_crypto_strength_index_is_strong() {
+        let csi = CryptoStrengthIndex::new(10, 14, 3).unwrap();
+        assert!(!csi.is_strong(50.0));
+        assert!(csi.is_strong(65.0));
+    }
+
+    #[test]
+    fn test_crypto_strength_index_trait() {
+        let data = make_ohlcv_series();
+        let csi = CryptoStrengthIndex::new(10, 14, 3).unwrap();
+
+        assert_eq!(csi.name(), "Crypto Strength Index");
+        assert_eq!(csi.min_periods(), 17);
+
+        let output = csi.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========== CryptoVolatilityScore Tests ==========
+
+    #[test]
+    fn test_crypto_volatility_score_new() {
+        assert!(CryptoVolatilityScore::new(10, 30).is_ok());
+        assert!(CryptoVolatilityScore::new(3, 30).is_err()); // period too small
+        assert!(CryptoVolatilityScore::new(10, 10).is_err()); // baseline not > period
+    }
+
+    #[test]
+    fn test_crypto_volatility_score_calculate() {
+        let (close, high, low, volume) = make_test_data();
+        let cvs = CryptoVolatilityScore::new(10, 30).unwrap();
+        let result = cvs.calculate(&close, &high, &low, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0, "Value at {} is {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_crypto_volatility_score_classify() {
+        let cvs = CryptoVolatilityScore::new(10, 30).unwrap();
+        assert_eq!(cvs.classify_volatility(90.0), "Extreme Volatility");
+        assert_eq!(cvs.classify_volatility(70.0), "High Volatility");
+        assert_eq!(cvs.classify_volatility(50.0), "Moderate Volatility");
+        assert_eq!(cvs.classify_volatility(30.0), "Low Volatility");
+        assert_eq!(cvs.classify_volatility(10.0), "Very Low Volatility");
+    }
+
+    #[test]
+    fn test_crypto_volatility_score_high_vol() {
+        let cvs = CryptoVolatilityScore::new(10, 30).unwrap();
+        assert!(!cvs.is_high_volatility(50.0));
+        assert!(cvs.is_high_volatility(65.0));
+    }
+
+    #[test]
+    fn test_crypto_volatility_score_position_factor() {
+        let cvs = CryptoVolatilityScore::new(10, 30).unwrap();
+        assert_eq!(cvs.position_size_factor(90.0), 0.25);
+        assert_eq!(cvs.position_size_factor(70.0), 0.5);
+        assert_eq!(cvs.position_size_factor(50.0), 0.75);
+        assert_eq!(cvs.position_size_factor(30.0), 1.0);
+    }
+
+    #[test]
+    fn test_crypto_volatility_score_trait() {
+        let data = make_ohlcv_series();
+        let cvs = CryptoVolatilityScore::new(10, 30).unwrap();
+
+        assert_eq!(cvs.name(), "Crypto Volatility Score");
+        assert_eq!(cvs.min_periods(), 31);
+
+        let output = cvs.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========== CryptoTrendScore Tests ==========
+
+    #[test]
+    fn test_crypto_trend_score_new() {
+        assert!(CryptoTrendScore::new(7, 21, 50).is_ok());
+        assert!(CryptoTrendScore::new(3, 21, 50).is_err()); // short_period too small
+        assert!(CryptoTrendScore::new(7, 7, 50).is_err()); // medium not > short
+        assert!(CryptoTrendScore::new(7, 21, 21).is_err()); // long not > medium
+    }
+
+    #[test]
+    fn test_crypto_trend_score_calculate() {
+        let (close, high, low, _) = make_test_data();
+        let cts = CryptoTrendScore::new(7, 21, 50).unwrap();
+        let result = cts.calculate(&close, &high, &low);
+
+        assert_eq!(result.len(), close.len());
+        for i in 55..result.len() {
+            assert!(result[i] >= -100.0 && result[i] <= 100.0, "Value at {} is {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_crypto_trend_score_classify() {
+        let cts = CryptoTrendScore::new(7, 21, 50).unwrap();
+        assert_eq!(cts.classify_trend(80.0), "Strong Uptrend");
+        assert_eq!(cts.classify_trend(40.0), "Moderate Uptrend");
+        assert_eq!(cts.classify_trend(0.0), "Sideways");
+        assert_eq!(cts.classify_trend(-40.0), "Moderate Downtrend");
+        assert_eq!(cts.classify_trend(-80.0), "Strong Downtrend");
+    }
+
+    #[test]
+    fn test_crypto_trend_score_direction() {
+        let cts = CryptoTrendScore::new(7, 21, 50).unwrap();
+        assert!(!cts.is_uptrend(10.0));
+        assert!(cts.is_uptrend(25.0));
+        assert!(!cts.is_downtrend(-10.0));
+        assert!(cts.is_downtrend(-25.0));
+    }
+
+    #[test]
+    fn test_crypto_trend_score_trait() {
+        let data = make_ohlcv_series();
+        let cts = CryptoTrendScore::new(7, 21, 50).unwrap();
+
+        assert_eq!(cts.name(), "Crypto Trend Score");
+        assert_eq!(cts.min_periods(), 51);
+
+        let output = cts.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========== CryptoOverboughtOversold Tests ==========
+
+    #[test]
+    fn test_crypto_obos_new() {
+        assert!(CryptoOverboughtOversold::new(14, 20, 10).is_ok());
+        assert!(CryptoOverboughtOversold::new(3, 20, 10).is_err()); // rsi_period too small
+        assert!(CryptoOverboughtOversold::new(14, 5, 10).is_err()); // deviation_period too small
+        assert!(CryptoOverboughtOversold::new(14, 20, 3).is_err()); // volume_period too small
+    }
+
+    #[test]
+    fn test_crypto_obos_calculate() {
+        let (close, _, _, volume) = make_test_data();
+        let obos = CryptoOverboughtOversold::new(14, 20, 10).unwrap();
+        let result = obos.calculate(&close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0, "Value at {} is {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_crypto_obos_classify() {
+        let obos = CryptoOverboughtOversold::new(14, 20, 10).unwrap();
+        assert_eq!(obos.classify_level(90.0), "Extremely Overbought");
+        assert_eq!(obos.classify_level(70.0), "Overbought");
+        assert_eq!(obos.classify_level(50.0), "Neutral");
+        assert_eq!(obos.classify_level(30.0), "Oversold");
+        assert_eq!(obos.classify_level(10.0), "Extremely Oversold");
+    }
+
+    #[test]
+    fn test_crypto_obos_conditions() {
+        let obos = CryptoOverboughtOversold::new(14, 20, 10).unwrap();
+        assert!(!obos.is_overbought(60.0));
+        assert!(obos.is_overbought(70.0));
+        assert!(!obos.is_oversold(40.0));
+        assert!(obos.is_oversold(30.0));
+        assert!(!obos.is_extreme(50.0));
+        assert!(obos.is_extreme(85.0));
+        assert!(obos.is_extreme(15.0));
+    }
+
+    #[test]
+    fn test_crypto_obos_trait() {
+        let data = make_ohlcv_series();
+        let obos = CryptoOverboughtOversold::new(14, 20, 10).unwrap();
+
+        assert_eq!(obos.name(), "Crypto Overbought/Oversold");
+        assert_eq!(obos.min_periods(), 21);
+
+        let output = obos.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========== CryptoMomentumIndex Tests ==========
+
+    #[test]
+    fn test_crypto_momentum_index_new() {
+        assert!(CryptoMomentumIndex::new(5, 14, 10).is_ok());
+        assert!(CryptoMomentumIndex::new(2, 14, 10).is_err()); // fast_period too small
+        assert!(CryptoMomentumIndex::new(5, 5, 10).is_err()); // slow not > fast
+        assert!(CryptoMomentumIndex::new(5, 14, 3).is_err()); // volume_period too small
+    }
+
+    #[test]
+    fn test_crypto_momentum_index_calculate() {
+        let (close, _, _, volume) = make_test_data();
+        let cmi = CryptoMomentumIndex::new(5, 14, 10).unwrap();
+        let result = cmi.calculate(&close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for i in 20..result.len() {
+            assert!(result[i] >= -100.0 && result[i] <= 100.0, "Value at {} is {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_crypto_momentum_index_classify() {
+        let cmi = CryptoMomentumIndex::new(5, 14, 10).unwrap();
+        assert_eq!(cmi.classify_momentum(80.0), "Extreme Bullish");
+        assert_eq!(cmi.classify_momentum(50.0), "Strong Bullish");
+        assert_eq!(cmi.classify_momentum(0.0), "Weak/Neutral");
+        assert_eq!(cmi.classify_momentum(-50.0), "Strong Bearish");
+        assert_eq!(cmi.classify_momentum(-80.0), "Extreme Bearish");
+    }
+
+    #[test]
+    fn test_crypto_momentum_index_direction() {
+        let cmi = CryptoMomentumIndex::new(5, 14, 10).unwrap();
+        assert!(!cmi.is_bullish(20.0));
+        assert!(cmi.is_bullish(35.0));
+        assert!(!cmi.is_bearish(-20.0));
+        assert!(cmi.is_bearish(-35.0));
+        assert!(!cmi.is_extreme(50.0));
+        assert!(cmi.is_extreme(75.0));
+        assert!(cmi.is_extreme(-75.0));
+    }
+
+    #[test]
+    fn test_crypto_momentum_index_trait() {
+        let data = make_ohlcv_series();
+        let cmi = CryptoMomentumIndex::new(5, 14, 10).unwrap();
+
+        assert_eq!(cmi.name(), "Crypto Momentum Index");
+        assert_eq!(cmi.min_periods(), 15);
+
+        let output = cmi.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========== CryptoRiskScore Tests ==========
+
+    #[test]
+    fn test_crypto_risk_score_new() {
+        assert!(CryptoRiskScore::new(10, 20, 3).is_ok());
+        assert!(CryptoRiskScore::new(3, 20, 3).is_err()); // volatility_period too small
+        assert!(CryptoRiskScore::new(10, 5, 3).is_err()); // drawdown_period too small
+        assert!(CryptoRiskScore::new(10, 20, 1).is_err()); // smooth_period too small
+    }
+
+    #[test]
+    fn test_crypto_risk_score_calculate() {
+        let (close, high, low, volume) = make_test_data();
+        let crs = CryptoRiskScore::new(10, 20, 3).unwrap();
+        let result = crs.calculate(&close, &high, &low, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0, "Value at {} is {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_crypto_risk_score_classify() {
+        let crs = CryptoRiskScore::new(10, 20, 3).unwrap();
+        assert_eq!(crs.classify_risk(90.0), "Extreme Risk");
+        assert_eq!(crs.classify_risk(70.0), "High Risk");
+        assert_eq!(crs.classify_risk(50.0), "Moderate Risk");
+        assert_eq!(crs.classify_risk(30.0), "Low Risk");
+        assert_eq!(crs.classify_risk(10.0), "Very Low Risk");
+    }
+
+    #[test]
+    fn test_crypto_risk_score_multiplier() {
+        let crs = CryptoRiskScore::new(10, 20, 3).unwrap();
+        assert_eq!(crs.position_multiplier(90.0), 0.25);
+        assert_eq!(crs.position_multiplier(70.0), 0.5);
+        assert_eq!(crs.position_multiplier(50.0), 0.75);
+        assert_eq!(crs.position_multiplier(30.0), 1.0);
+    }
+
+    #[test]
+    fn test_crypto_risk_score_caution() {
+        let crs = CryptoRiskScore::new(10, 20, 3).unwrap();
+        assert!(!crs.requires_caution(50.0));
+        assert!(crs.requires_caution(65.0));
+        assert!(!crs.is_crisis_level(80.0));
+        assert!(crs.is_crisis_level(90.0));
+    }
+
+    #[test]
+    fn test_crypto_risk_score_trait() {
+        let data = make_ohlcv_series();
+        let crs = CryptoRiskScore::new(10, 20, 3).unwrap();
+
+        assert_eq!(crs.name(), "Crypto Risk Score");
+        assert_eq!(crs.min_periods(), 23);
+
+        let output = crs.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========== Integration Tests for 6 New Indicators ==========
+
+    #[test]
+    fn test_six_new_indicators_with_same_data() {
+        let data = make_ohlcv_series();
+
+        let csi = CryptoStrengthIndex::new(10, 14, 3).unwrap();
+        let cvs = CryptoVolatilityScore::new(10, 30).unwrap();
+        let cts = CryptoTrendScore::new(7, 21, 50).unwrap();
+        let obos = CryptoOverboughtOversold::new(14, 20, 10).unwrap();
+        let cmi = CryptoMomentumIndex::new(5, 14, 10).unwrap();
+        let crs = CryptoRiskScore::new(10, 20, 3).unwrap();
+
+        assert!(csi.compute(&data).is_ok());
+        assert!(cvs.compute(&data).is_ok());
+        assert!(cts.compute(&data).is_ok());
+        assert!(obos.compute(&data).is_ok());
+        assert!(cmi.compute(&data).is_ok());
+        assert!(crs.compute(&data).is_ok());
+    }
+
+    #[test]
+    fn test_six_new_indicators_empty_data() {
+        let close: Vec<f64> = vec![];
+        let high: Vec<f64> = vec![];
+        let low: Vec<f64> = vec![];
+        let volume: Vec<f64> = vec![];
+
+        let csi = CryptoStrengthIndex::new(10, 14, 3).unwrap();
+        assert!(csi.calculate(&close, &volume).is_empty());
+
+        let cvs = CryptoVolatilityScore::new(10, 30).unwrap();
+        assert!(cvs.calculate(&close, &high, &low, &volume).is_empty());
+
+        let cts = CryptoTrendScore::new(7, 21, 50).unwrap();
+        assert!(cts.calculate(&close, &high, &low).is_empty());
+
+        let obos = CryptoOverboughtOversold::new(14, 20, 10).unwrap();
+        assert!(obos.calculate(&close, &volume).is_empty());
+
+        let cmi = CryptoMomentumIndex::new(5, 14, 10).unwrap();
+        assert!(cmi.calculate(&close, &volume).is_empty());
+
+        let crs = CryptoRiskScore::new(10, 20, 3).unwrap();
+        assert!(crs.calculate(&close, &high, &low, &volume).is_empty());
     }
 }

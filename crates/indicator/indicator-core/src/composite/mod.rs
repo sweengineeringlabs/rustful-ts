@@ -101,4 +101,11 @@ pub use advanced::{
     MarketConditionIndex, MarketConditionIndexConfig, MarketConditionIndexOutput,
     SignalStrengthComposite, SignalStrengthCompositeConfig, SignalStrengthCompositeOutput,
     AdaptiveCompositeMA, AdaptiveCompositeMAConfig, AdaptiveCompositeMAOutput,
+    // Additional advanced indicators
+    TrendStrengthComposite, TrendStrengthCompositeConfig, TrendStrengthCompositeOutput,
+    MomentumQualityComposite, MomentumQualityCompositeConfig, MomentumQualityCompositeOutput,
+    VolatilityAdjustedSignal, VolatilityAdjustedSignalConfig, VolatilityAdjustedSignalOutput,
+    MultiFactorMomentumV2, MultiFactorMomentumV2Config, MultiFactorMomentumV2Output,
+    TechnicalRating, TechnicalRatingConfig, TechnicalRatingOutput,
+    MarketPhaseDetector, MarketPhaseDetectorConfig, MarketPhaseDetectorOutput, DetectedPhase,
 };

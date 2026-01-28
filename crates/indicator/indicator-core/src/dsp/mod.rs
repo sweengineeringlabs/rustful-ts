@@ -51,4 +51,6 @@ pub use advanced::{
     NoiseFilter, CyclePeriodEstimator, SignalToNoiseRatioAdvanced,
     BandpassFilter, HighpassFilter, LowpassFilter,
     NotchFilter, AllpassPhaseShifter, MovingAverageConvergence,
+    FourierTransformPower, WaveletSmoothing, AdaptiveLPFilter,
+    PhaseDetector, AmplitudeExtractor, TrendCycleDecomposer,
 };

@@ -32,4 +32,7 @@ pub use advanced::{
     // 6 NEW filter indicators
     GaussianAdaptiveFilter, SavitzkyGolayFilter, TriangularFilter,
     HammingFilter, SuperSmootherFilter, DecyclerFilter,
+    // 6 ADDITIONAL NEW filter indicators
+    WienerFilter, KalmanSmoother, MovingMedianFilter,
+    ExponentialSmoother, AdaptiveNoiseFilterLMS, TrendSeparationFilter,
 };

@@ -3896,6 +3896,1085 @@ impl TechnicalIndicator for SmartMoneySentiment {
     }
 }
 
+// ============================================================================
+// NEW Sentiment Indicators (6 indicators)
+// ============================================================================
+
+/// Bull Bear Ratio - Measures the balance between bullish and bearish forces
+///
+/// This indicator quantifies the relative strength of bullish versus bearish
+/// market participants by analyzing price action, volume patterns, and momentum.
+/// It helps identify whether bulls or bears are in control of the market.
+///
+/// # Calculation
+/// - Analyzes up vs down price movements weighted by magnitude
+/// - Evaluates volume on up days vs down days
+/// - Measures bullish vs bearish candle patterns
+/// - Combines factors into a bull/bear ratio
+///
+/// # Output Range
+/// Returns values from -100 to 100:
+/// - Strong negative values (-100 to -50) indicate bears dominating
+/// - Moderate negative values (-50 to -20) indicate bearish bias
+/// - Values near 0 (-20 to 20) indicate balanced market
+/// - Moderate positive values (20 to 50) indicate bullish bias
+/// - Strong positive values (50 to 100) indicate bulls dominating
+#[derive(Debug, Clone)]
+pub struct BullBearRatio {
+    period: usize,
+    smoothing: usize,
+}
+
+impl BullBearRatio {
+    /// Creates a new BullBearRatio indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 5)
+    /// * `smoothing` - Smoothing period for the final output (minimum 1)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate bull bear ratio (-100 to 100)
+    ///
+    /// # Arguments
+    /// * `open` - Array of opening prices
+    /// * `high` - Array of high prices
+    /// * `low` - Array of low prices
+    /// * `close` - Array of closing prices
+    /// * `volume` - Array of volume values
+    ///
+    /// # Returns
+    /// Vector of bull/bear ratio values for each data point
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut raw_ratio = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // 1. Price movement component
+            let mut bull_moves = 0.0;
+            let mut bear_moves = 0.0;
+            for j in (start + 1)..=i {
+                let change = close[j] - close[j - 1];
+                if change > 0.0 {
+                    bull_moves += change;
+                } else {
+                    bear_moves += change.abs();
+                }
+            }
+            let move_ratio = if bull_moves + bear_moves > 1e-10 {
+                (bull_moves - bear_moves) / (bull_moves + bear_moves)
+            } else {
+                0.0
+            };
+
+            // 2. Volume-weighted direction
+            let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let mut bull_vol = 0.0;
+            let mut bear_vol = 0.0;
+            for j in (start + 1)..=i {
+                let vol_weight = if avg_vol > 0.0 { volume[j] / avg_vol } else { 1.0 };
+                if close[j] > close[j - 1] {
+                    bull_vol += vol_weight;
+                } else if close[j] < close[j - 1] {
+                    bear_vol += vol_weight;
+                }
+            }
+            let vol_ratio = if bull_vol + bear_vol > 1e-10 {
+                (bull_vol - bear_vol) / (bull_vol + bear_vol)
+            } else {
+                0.0
+            };
+
+            // 3. Candle body analysis
+            let mut bull_bodies = 0.0;
+            let mut bear_bodies = 0.0;
+            for j in start..=i {
+                let body = close[j] - open[j];
+                let range = high[j] - low[j];
+                if range > 1e-10 {
+                    let body_ratio = body.abs() / range;
+                    if body > 0.0 {
+                        bull_bodies += body_ratio;
+                    } else {
+                        bear_bodies += body_ratio;
+                    }
+                }
+            }
+            let body_ratio = if bull_bodies + bear_bodies > 1e-10 {
+                (bull_bodies - bear_bodies) / (bull_bodies + bear_bodies)
+            } else {
+                0.0
+            };
+
+            // 4. Price position in range
+            let period_high = high[start..=i].iter().cloned().fold(f64::MIN, f64::max);
+            let period_low = low[start..=i].iter().cloned().fold(f64::MAX, f64::min);
+            let range = period_high - period_low;
+            let position_ratio = if range > 1e-10 {
+                (close[i] - period_low) / range * 2.0 - 1.0
+            } else {
+                0.0
+            };
+
+            // 5. Momentum bias
+            let momentum = if close[start] > 0.0 {
+                (close[i] / close[start] - 1.0) * 10.0
+            } else {
+                0.0
+            };
+            let momentum_ratio = momentum.clamp(-1.0, 1.0);
+
+            // Combine all components
+            raw_ratio[i] = (
+                move_ratio * 25.0 +
+                vol_ratio * 25.0 +
+                body_ratio * 20.0 +
+                position_ratio * 15.0 +
+                momentum_ratio * 15.0
+            ).clamp(-100.0, 100.0);
+        }
+
+        // Apply smoothing
+        let total_lookback = self.period + self.smoothing - 1;
+        for i in total_lookback..n {
+            let sum: f64 = raw_ratio[(i - self.smoothing + 1)..=i].iter().sum();
+            result[i] = (sum / self.smoothing as f64).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BullBearRatio {
+    fn name(&self) -> &str {
+        "Bull Bear Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Sentiment Score - Comprehensive overall sentiment score
+///
+/// This indicator provides a holistic sentiment score by combining multiple
+/// technical factors including price action, volume dynamics, momentum, and
+/// volatility patterns into a single comprehensive reading.
+///
+/// # Calculation
+/// - Combines price momentum and trend analysis
+/// - Integrates volume confirmation signals
+/// - Incorporates volatility-adjusted positioning
+/// - Weights factors based on market conditions
+///
+/// # Output Range
+/// Returns values from -100 to 100:
+/// - Strong negative values indicate bearish sentiment
+/// - Values near 0 indicate neutral sentiment
+/// - Strong positive values indicate bullish sentiment
+#[derive(Debug, Clone)]
+pub struct SentimentScore {
+    period: usize,
+    momentum_weight: f64,
+    volume_weight: f64,
+    volatility_weight: f64,
+}
+
+impl SentimentScore {
+    /// Creates a new SentimentScore indicator with default weights
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            momentum_weight: 0.40,
+            volume_weight: 0.35,
+            volatility_weight: 0.25,
+        })
+    }
+
+    /// Creates a new SentimentScore indicator with custom weights
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    /// * `momentum_weight` - Weight for momentum component (0.0 to 1.0)
+    /// * `volume_weight` - Weight for volume component (0.0 to 1.0)
+    /// * `volatility_weight` - Weight for volatility component (0.0 to 1.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn with_weights(period: usize, momentum_weight: f64, volume_weight: f64, volatility_weight: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        let total = momentum_weight + volume_weight + volatility_weight;
+        if (total - 1.0).abs() > 0.01 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "weights".to_string(),
+                reason: "must sum to 1.0".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            momentum_weight,
+            volume_weight,
+            volatility_weight,
+        })
+    }
+
+    /// Calculate sentiment score (-100 to 100)
+    ///
+    /// # Arguments
+    /// * `open` - Array of opening prices
+    /// * `high` - Array of high prices
+    /// * `low` - Array of low prices
+    /// * `close` - Array of closing prices
+    /// * `volume` - Array of volume values
+    ///
+    /// # Returns
+    /// Vector of sentiment score values for each data point
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // 1. Momentum Component
+            // ROC-based momentum
+            let roc = if close[start] > 0.0 {
+                (close[i] / close[start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+
+            // RSI-like component
+            let mut gains = 0.0;
+            let mut losses = 0.0;
+            for j in (start + 1)..=i {
+                let change = close[j] - close[j - 1];
+                if change > 0.0 {
+                    gains += change;
+                } else {
+                    losses += change.abs();
+                }
+            }
+            let rsi_bias = if gains + losses > 0.0 {
+                (gains / (gains + losses) - 0.5) * 200.0
+            } else {
+                0.0
+            };
+
+            // Price trend consistency
+            let mut up_count = 0;
+            let mut down_count = 0;
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_count += 1;
+                } else if close[j] < close[j - 1] {
+                    down_count += 1;
+                }
+            }
+            let trend_bias = (up_count as f64 - down_count as f64) / self.period as f64 * 50.0;
+
+            let momentum_score = ((roc * 0.4 + rsi_bias * 0.4 + trend_bias * 0.2) as f64).clamp(-100.0, 100.0);
+
+            // 2. Volume Component
+            let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let mut up_vol = 0.0;
+            let mut down_vol = 0.0;
+            for j in (start + 1)..=i {
+                let vol_weight = if avg_vol > 0.0 { volume[j] / avg_vol } else { 1.0 };
+                if close[j] > close[j - 1] {
+                    up_vol += vol_weight;
+                } else if close[j] < close[j - 1] {
+                    down_vol += vol_weight;
+                }
+            }
+            let volume_score = if up_vol + down_vol > 0.0 {
+                ((up_vol - down_vol) / (up_vol + down_vol) * 100.0).clamp(-100.0, 100.0)
+            } else {
+                0.0
+            };
+
+            // 3. Volatility Component
+            // ATR calculation
+            let mut tr_sum = 0.0;
+            for j in (start + 1)..=i {
+                let tr1 = high[j] - low[j];
+                let tr2 = (high[j] - close[j - 1]).abs();
+                let tr3 = (low[j] - close[j - 1]).abs();
+                tr_sum += tr1.max(tr2).max(tr3);
+            }
+            let atr = tr_sum / self.period as f64;
+
+            // Price position in range
+            let period_high = high[start..=i].iter().cloned().fold(f64::MIN, f64::max);
+            let period_low = low[start..=i].iter().cloned().fold(f64::MAX, f64::min);
+            let range = period_high - period_low;
+            let position = if range > 1e-10 {
+                (close[i] - period_low) / range * 2.0 - 1.0
+            } else {
+                0.0
+            };
+
+            // Volatility-adjusted score
+            let vol_pct = if close[i] > 0.0 { atr / close[i] * 100.0 } else { 0.0 };
+            let vol_multiplier = if vol_pct > 3.0 { 1.2 } else if vol_pct < 1.0 { 0.8 } else { 1.0 };
+            let volatility_score = (position * 100.0 * vol_multiplier).clamp(-100.0, 100.0);
+
+            // Combine all components
+            result[i] = (
+                momentum_score * self.momentum_weight +
+                volume_score * self.volume_weight +
+                volatility_score * self.volatility_weight
+            ).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SentimentScore {
+    fn name(&self) -> &str {
+        "Sentiment Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Market Mood Index - Measures overall market mood/atmosphere
+///
+/// This indicator gauges the overall market mood by analyzing behavioral
+/// patterns in price action and volume that reflect collective trader psychology.
+/// It differentiates between optimistic, pessimistic, and uncertain market states.
+///
+/// # Calculation
+/// - Analyzes price behavior patterns (gaps, ranges, trends)
+/// - Measures participation through volume analysis
+/// - Evaluates conviction through candle characteristics
+/// - Tracks momentum persistence
+///
+/// # Output Range
+/// Returns values from -100 to 100:
+/// - Strong negative values indicate pessimistic/fearful mood
+/// - Values near 0 indicate uncertain/confused mood
+/// - Strong positive values indicate optimistic/confident mood
+#[derive(Debug, Clone)]
+pub struct MarketMoodIndex {
+    period: usize,
+    sensitivity: f64,
+}
+
+impl MarketMoodIndex {
+    /// Creates a new MarketMoodIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    /// * `sensitivity` - Sensitivity to mood changes (0.5 to 2.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, sensitivity: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if sensitivity < 0.5 || sensitivity > 2.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0.5 and 2.0".to_string(),
+            });
+        }
+        Ok(Self { period, sensitivity })
+    }
+
+    /// Calculate market mood index (-100 to 100)
+    ///
+    /// # Arguments
+    /// * `open` - Array of opening prices
+    /// * `high` - Array of high prices
+    /// * `low` - Array of low prices
+    /// * `close` - Array of closing prices
+    /// * `volume` - Array of volume values
+    ///
+    /// # Returns
+    /// Vector of market mood index values for each data point
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // 1. Price behavior component (gaps, patterns)
+            let mut gap_sentiment = 0.0;
+            let mut consecutive_direction = 0;
+            let mut last_dir = 0;
+            for j in (start + 1)..=i {
+                // Gap analysis
+                if open[j] > high[j - 1] {
+                    gap_sentiment += 5.0;  // Gap up = optimism
+                } else if open[j] < low[j - 1] {
+                    gap_sentiment -= 5.0;  // Gap down = pessimism
+                }
+                // Consecutive moves
+                let dir = if close[j] > close[j - 1] { 1 } else if close[j] < close[j - 1] { -1 } else { 0 };
+                if dir != 0 && dir == last_dir {
+                    consecutive_direction += dir;
+                } else if dir != 0 {
+                    consecutive_direction = dir;
+                    last_dir = dir;
+                }
+            }
+            let behavior_score = (gap_sentiment + consecutive_direction as f64 * 3.0).clamp(-30.0, 30.0);
+
+            // 2. Participation/conviction (volume analysis)
+            let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let mut participation_score = 0.0;
+            for j in (start + 1)..=i {
+                if avg_vol > 0.0 && volume[j] > avg_vol * 1.2 {
+                    // High volume participation
+                    let direction = if close[j] > close[j - 1] { 1.0 } else { -1.0 };
+                    participation_score += direction * ((volume[j] / avg_vol) - 1.0).min(1.0) * 5.0;
+                }
+            }
+            participation_score = participation_score.clamp(-25.0, 25.0);
+
+            // 3. Candle conviction (body sizes, wicks)
+            let mut conviction_score = 0.0;
+            for j in start..=i {
+                let range = high[j] - low[j];
+                if range > 1e-10 {
+                    let body = close[j] - open[j];
+                    let body_ratio = body.abs() / range;
+                    let direction = body.signum();
+
+                    // Large bodies = conviction
+                    if body_ratio > 0.6 {
+                        conviction_score += direction * body_ratio * 3.0;
+                    }
+
+                    // Upper wick = selling pressure (negative mood)
+                    let upper_wick = high[j] - close[j].max(open[j]);
+                    let upper_wick_ratio = upper_wick / range;
+                    if upper_wick_ratio > 0.3 {
+                        conviction_score -= upper_wick_ratio * 2.0;
+                    }
+
+                    // Lower wick = buying pressure (positive mood)
+                    let lower_wick = close[j].min(open[j]) - low[j];
+                    let lower_wick_ratio = lower_wick / range;
+                    if lower_wick_ratio > 0.3 {
+                        conviction_score += lower_wick_ratio * 2.0;
+                    }
+                }
+            }
+            conviction_score = conviction_score.clamp(-25.0, 25.0);
+
+            // 4. Momentum persistence
+            let momentum = if close[start] > 0.0 {
+                (close[i] / close[start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let momentum_score = (momentum * 2.0).clamp(-20.0, 20.0);
+
+            // Combine all components with sensitivity
+            result[i] = ((behavior_score + participation_score + conviction_score + momentum_score)
+                * self.sensitivity).clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MarketMoodIndex {
+    fn name(&self) -> &str {
+        "Market Mood Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Speculative Index - Measures the level of speculation in the market
+///
+/// This indicator quantifies speculative activity by analyzing price volatility,
+/// volume spikes, price gaps, and rapid price movements that characterize
+/// speculative behavior rather than fundamental-driven trading.
+///
+/// # Calculation
+/// - Measures price volatility relative to historical norms
+/// - Tracks volume spikes and unusual activity
+/// - Analyzes price gaps and rapid movements
+/// - Evaluates range expansion during moves
+///
+/// # Output Range
+/// Returns values from 0 to 100:
+/// - Values 0-25 indicate low speculation
+/// - Values 25-50 indicate moderate speculation
+/// - Values 50-75 indicate high speculation
+/// - Values 75-100 indicate extreme speculation
+#[derive(Debug, Clone)]
+pub struct SpeculativeIndex {
+    period: usize,
+    baseline_period: usize,
+}
+
+impl SpeculativeIndex {
+    /// Creates a new SpeculativeIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Short-term period for recent speculation (minimum 5)
+    /// * `baseline_period` - Longer period for baseline comparison (minimum 20)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, baseline_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if baseline_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "baseline_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if baseline_period <= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "baseline_period".to_string(),
+                reason: "must be greater than period".to_string(),
+            });
+        }
+        Ok(Self { period, baseline_period })
+    }
+
+    /// Calculate speculative index (0 to 100)
+    ///
+    /// # Arguments
+    /// * `open` - Array of opening prices
+    /// * `high` - Array of high prices
+    /// * `low` - Array of low prices
+    /// * `close` - Array of closing prices
+    /// * `volume` - Array of volume values
+    ///
+    /// # Returns
+    /// Vector of speculative index values for each data point
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+
+        for i in self.baseline_period..n {
+            let start = i - self.period;
+            let baseline_start = i - self.baseline_period;
+
+            // 1. Volatility expansion (speculative markets are volatile)
+            let mut recent_tr_sum = 0.0;
+            for j in (start + 1)..=i {
+                let tr1 = high[j] - low[j];
+                let tr2 = (high[j] - close[j - 1]).abs();
+                let tr3 = (low[j] - close[j - 1]).abs();
+                recent_tr_sum += tr1.max(tr2).max(tr3);
+            }
+            let recent_atr = recent_tr_sum / self.period as f64;
+
+            let mut baseline_tr_sum = 0.0;
+            for j in (baseline_start + 1)..=i {
+                let tr1 = high[j] - low[j];
+                let tr2 = (high[j] - close[j - 1]).abs();
+                let tr3 = (low[j] - close[j - 1]).abs();
+                baseline_tr_sum += tr1.max(tr2).max(tr3);
+            }
+            let baseline_atr = baseline_tr_sum / self.baseline_period as f64;
+
+            let vol_expansion = if baseline_atr > 1e-10 {
+                ((recent_atr / baseline_atr) - 1.0).max(0.0).min(2.0) * 25.0
+            } else {
+                0.0
+            };
+
+            // 2. Volume spike analysis
+            let baseline_avg_vol: f64 = volume[baseline_start..=i].iter().sum::<f64>()
+                / (self.baseline_period + 1) as f64;
+            let recent_avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+
+            let vol_spike = if baseline_avg_vol > 0.0 {
+                ((recent_avg_vol / baseline_avg_vol) - 1.0).max(0.0).min(2.0) * 20.0
+            } else {
+                0.0
+            };
+
+            // 3. Gap frequency (speculative markets have more gaps)
+            let mut gap_count = 0.0;
+            for j in (start + 1)..=i {
+                if open[j] > high[j - 1] || open[j] < low[j - 1] {
+                    gap_count += 1.0;
+                }
+            }
+            let gap_score = (gap_count / self.period as f64 * 50.0).min(20.0);
+
+            // 4. Price velocity (rapid price movements)
+            let price_change = if close[start] > 0.0 {
+                ((close[i] / close[start]) - 1.0).abs() * 100.0
+            } else {
+                0.0
+            };
+            let velocity_score = (price_change * 2.0).min(20.0);
+
+            // 5. Range expansion during moves
+            let mut range_expansion = 0.0;
+            for j in start..=i {
+                let range = high[j] - low[j];
+                let baseline_range: f64 = (baseline_start..start)
+                    .map(|k| high[k] - low[k])
+                    .sum::<f64>() / (start - baseline_start).max(1) as f64;
+                if baseline_range > 1e-10 && range > baseline_range * 1.5 {
+                    range_expansion += (range / baseline_range - 1.0).min(1.0);
+                }
+            }
+            let range_score = (range_expansion * 10.0).min(15.0);
+
+            // Combine all components
+            result[i] = (vol_expansion + vol_spike + gap_score + velocity_score + range_score)
+                .clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SpeculativeIndex {
+    fn name(&self) -> &str {
+        "Speculative Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.baseline_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Risk Appetite Index - Measures market participants' appetite for risk
+///
+/// This indicator gauges risk appetite by analyzing how aggressively traders
+/// are positioning themselves. High risk appetite shows in strong trending
+/// moves with conviction, while low risk appetite shows in cautious,
+/// range-bound behavior.
+///
+/// # Calculation
+/// - Analyzes trend strength and persistence
+/// - Measures aggressive positioning (buying strength vs selling)
+/// - Evaluates volume on breakout moves
+/// - Tracks willingness to hold through volatility
+///
+/// # Output Range
+/// Returns values from 0 to 100:
+/// - Values 0-25 indicate risk-off (very cautious)
+/// - Values 25-50 indicate low risk appetite
+/// - Values 50-75 indicate moderate risk appetite
+/// - Values 75-100 indicate risk-on (aggressive)
+#[derive(Debug, Clone)]
+pub struct RiskAppetiteIndex {
+    period: usize,
+    smoothing: usize,
+}
+
+impl RiskAppetiteIndex {
+    /// Creates a new RiskAppetiteIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    /// * `smoothing` - Smoothing period for the final output (minimum 1)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate risk appetite index (0 to 100)
+    ///
+    /// # Arguments
+    /// * `open` - Array of opening prices
+    /// * `high` - Array of high prices
+    /// * `low` - Array of low prices
+    /// * `close` - Array of closing prices
+    /// * `volume` - Array of volume values
+    ///
+    /// # Returns
+    /// Vector of risk appetite index values for each data point
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let mut raw_appetite = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // 1. Trend strength (strong trends = risk appetite)
+            let net_change = (close[i] - close[start]).abs();
+            let mut total_change = 0.0;
+            for j in (start + 1)..=i {
+                total_change += (close[j] - close[j - 1]).abs();
+            }
+            let efficiency = if total_change > 1e-10 {
+                net_change / total_change
+            } else {
+                0.0
+            };
+            let trend_score = efficiency * 25.0;
+
+            // 2. Aggressive positioning (closing near highs = bullish risk appetite)
+            let mut position_sum = 0.0;
+            for j in start..=i {
+                let range = high[j] - low[j];
+                if range > 1e-10 {
+                    let position = (close[j] - low[j]) / range;
+                    position_sum += position;
+                }
+            }
+            let avg_position = position_sum / (self.period + 1) as f64;
+            let position_score = avg_position * 25.0;
+
+            // 3. Volume on advancing bars (high volume on up moves = risk on)
+            let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let mut up_vol_ratio = 0.0;
+            let mut total_vol_weighted = 0.0;
+            for j in (start + 1)..=i {
+                if avg_vol > 0.0 {
+                    let vol_weight = volume[j] / avg_vol;
+                    total_vol_weighted += vol_weight;
+                    if close[j] > close[j - 1] {
+                        up_vol_ratio += vol_weight;
+                    }
+                }
+            }
+            let vol_score = if total_vol_weighted > 0.0 {
+                (up_vol_ratio / total_vol_weighted) * 25.0
+            } else {
+                12.5
+            };
+
+            // 4. Breakout behavior (new highs = risk appetite)
+            let period_high = high[start..i].iter().cloned().fold(f64::MIN, f64::max);
+            let breakout_score = if high[i] > period_high {
+                15.0
+            } else if close[i] > period_high * 0.98 {
+                10.0
+            } else {
+                5.0
+            };
+
+            // 5. Volatility acceptance (trading through volatility = risk appetite)
+            let mut tr_sum = 0.0;
+            for j in (start + 1)..=i {
+                let tr1 = high[j] - low[j];
+                let tr2 = (high[j] - close[j - 1]).abs();
+                let tr3 = (low[j] - close[j - 1]).abs();
+                tr_sum += tr1.max(tr2).max(tr3);
+            }
+            let atr = tr_sum / self.period as f64;
+            let atr_pct = if close[i] > 0.0 { atr / close[i] * 100.0 } else { 0.0 };
+
+            // High volatility with positive momentum = risk on
+            let momentum = if close[start] > 0.0 {
+                (close[i] / close[start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let vol_acceptance_score = if atr_pct > 2.0 && momentum > 0.0 {
+                10.0
+            } else if atr_pct < 1.0 {
+                5.0  // Low vol = cautious
+            } else {
+                7.5
+            };
+
+            // Combine all components
+            raw_appetite[i] = (trend_score + position_score + vol_score + breakout_score + vol_acceptance_score)
+                .clamp(0.0, 100.0);
+        }
+
+        // Apply smoothing
+        let total_lookback = self.period + self.smoothing - 1;
+        for i in total_lookback..n {
+            let sum: f64 = raw_appetite[(i - self.smoothing + 1)..=i].iter().sum();
+            result[i] = (sum / self.smoothing as f64).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for RiskAppetiteIndex {
+    fn name(&self) -> &str {
+        "Risk Appetite Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+/// Contrary Indicator - Generates contrarian signals based on extreme sentiment
+///
+/// This indicator identifies extreme market conditions where contrarian
+/// positioning may be advantageous. It detects overbought/oversold extremes,
+/// sentiment exhaustion, and potential reversal points.
+///
+/// # Calculation
+/// - Identifies overbought/oversold price extremes
+/// - Measures sentiment exhaustion through volume analysis
+/// - Detects divergences between price and momentum
+/// - Generates contrarian signals at extremes
+///
+/// # Output Range
+/// Returns values from -100 to 100:
+/// - Strong negative values indicate contrarian buy signal (market oversold)
+/// - Values near 0 indicate no contrarian signal
+/// - Strong positive values indicate contrarian sell signal (market overbought)
+#[derive(Debug, Clone)]
+pub struct ContraryIndicator {
+    period: usize,
+    extreme_threshold: f64,
+    confirmation_bars: usize,
+}
+
+impl ContraryIndicator {
+    /// Creates a new ContraryIndicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    /// * `extreme_threshold` - Threshold for extreme detection (1.5 to 3.0)
+    /// * `confirmation_bars` - Number of bars to confirm extreme (minimum 2)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, extreme_threshold: f64, confirmation_bars: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if extreme_threshold < 1.5 || extreme_threshold > 3.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "extreme_threshold".to_string(),
+                reason: "must be between 1.5 and 3.0".to_string(),
+            });
+        }
+        if confirmation_bars < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "confirmation_bars".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, extreme_threshold, confirmation_bars })
+    }
+
+    /// Calculate contrary indicator (-100 to 100)
+    ///
+    /// # Arguments
+    /// * `open` - Array of opening prices
+    /// * `high` - Array of high prices
+    /// * `low` - Array of low prices
+    /// * `close` - Array of closing prices
+    /// * `volume` - Array of volume values
+    ///
+    /// # Returns
+    /// Vector of contrary indicator values for each data point
+    pub fn calculate(&self, open: &[f64], high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len().min(open.len()).min(high.len()).min(low.len()).min(volume.len());
+        let mut result = vec![0.0; n];
+        let total_lookback = self.period + self.confirmation_bars;
+
+        for i in total_lookback..n {
+            let start = i - self.period;
+
+            // 1. Calculate price statistics
+            let close_slice = &close[start..=i];
+            let mean: f64 = close_slice.iter().sum::<f64>() / (self.period + 1) as f64;
+            let variance: f64 = close_slice.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / (self.period + 1) as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev < 1e-10 {
+                continue;
+            }
+
+            // Price z-score
+            let price_zscore = (close[i] - mean) / std_dev;
+
+            // 2. RSI-like exhaustion
+            let mut gains = 0.0;
+            let mut losses = 0.0;
+            for j in (start + 1)..=i {
+                let change = close[j] - close[j - 1];
+                if change > 0.0 {
+                    gains += change;
+                } else {
+                    losses += change.abs();
+                }
+            }
+            let rsi = if gains + losses > 0.0 {
+                gains / (gains + losses) * 100.0
+            } else {
+                50.0
+            };
+            let rsi_extreme = if rsi > 70.0 {
+                (rsi - 70.0) / 30.0  // 0 to 1 for overbought
+            } else if rsi < 30.0 {
+                -(30.0 - rsi) / 30.0  // -1 to 0 for oversold
+            } else {
+                0.0
+            };
+
+            // 3. Volume exhaustion (high volume at extremes)
+            let avg_vol: f64 = volume[start..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+            let recent_vol: f64 = volume[(i - self.confirmation_bars)..=i].iter().sum::<f64>()
+                / (self.confirmation_bars + 1) as f64;
+            let vol_spike = if avg_vol > 0.0 {
+                (recent_vol / avg_vol - 1.0).max(0.0).min(2.0)
+            } else {
+                0.0
+            };
+
+            // 4. Price position extreme
+            let period_high = high[start..=i].iter().cloned().fold(f64::MIN, f64::max);
+            let period_low = low[start..=i].iter().cloned().fold(f64::MAX, f64::min);
+            let range = period_high - period_low;
+            let position = if range > 1e-10 {
+                (close[i] - period_low) / range
+            } else {
+                0.5
+            };
+            let position_extreme = if position > 0.9 {
+                (position - 0.5) * 2.0  // Extreme high
+            } else if position < 0.1 {
+                (position - 0.5) * 2.0  // Extreme low
+            } else {
+                0.0
+            };
+
+            // 5. Confirmation through consecutive extreme bars
+            let mut extreme_count = 0;
+            for j in (i - self.confirmation_bars)..=i {
+                let bar_zscore = if std_dev > 1e-10 {
+                    (close[j] - mean) / std_dev
+                } else {
+                    0.0
+                };
+                if bar_zscore.abs() > self.extreme_threshold * 0.7 {
+                    extreme_count += 1;
+                }
+            }
+            let confirmation_factor = extreme_count as f64 / (self.confirmation_bars + 1) as f64;
+
+            // Generate contrarian signal
+            let is_extreme = price_zscore.abs() >= self.extreme_threshold;
+            if is_extreme && confirmation_factor >= 0.5 {
+                // Signal opposite to the extreme (contrarian)
+                let base_signal = -price_zscore.signum() * 50.0;
+                let rsi_boost = rsi_extreme * -30.0;  // Contrarian RSI component
+                let vol_boost = vol_spike * -price_zscore.signum() * 10.0;
+                let position_boost = -position_extreme * 10.0;
+
+                result[i] = (base_signal + rsi_boost + vol_boost + position_boost)
+                    .clamp(-100.0, 100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for ContraryIndicator {
+    fn name(&self) -> &str {
+        "Contrary Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.confirmation_bars + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.open, &data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5724,6 +6803,391 @@ mod tests {
         let result = sms.calculate(&open, &high, &low, &close, &volume);
         assert_eq!(result.len(), 60);
         for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    // ============================================================================
+    // Tests for NEW Sentiment Indicators (6 indicators)
+    // ============================================================================
+
+    #[test]
+    fn test_bull_bear_ratio() {
+        let (open, high, low, close, volume) = make_test_data();
+        let bbr = BullBearRatio::new(10, 3).unwrap();
+        let result = bbr.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_bull_bear_ratio_validation() {
+        // period must be at least 5
+        assert!(BullBearRatio::new(4, 3).is_err());
+        assert!(BullBearRatio::new(5, 3).is_ok());
+
+        // smoothing must be at least 1
+        assert!(BullBearRatio::new(10, 0).is_err());
+        assert!(BullBearRatio::new(10, 1).is_ok());
+    }
+
+    #[test]
+    fn test_bull_bear_ratio_min_periods() {
+        let bbr = BullBearRatio::new(10, 3).unwrap();
+        assert_eq!(bbr.min_periods(), 13); // period + smoothing
+    }
+
+    #[test]
+    fn test_bull_bear_ratio_name() {
+        let bbr = BullBearRatio::new(10, 3).unwrap();
+        assert_eq!(bbr.name(), "Bull Bear Ratio");
+    }
+
+    #[test]
+    fn test_bull_bear_ratio_bullish_trend() {
+        // Test with strong bullish trend
+        let open: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 1.5).collect();
+        let high: Vec<f64> = (0..50).map(|i| 102.0 + i as f64 * 1.5).collect();
+        let low: Vec<f64> = (0..50).map(|i| 99.0 + i as f64 * 1.5).collect();
+        let close: Vec<f64> = (0..50).map(|i| 101.5 + i as f64 * 1.5).collect();
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + i as f64 * 20.0).collect();
+
+        let bbr = BullBearRatio::new(10, 3).unwrap();
+        let result = bbr.calculate(&open, &high, &low, &close, &volume);
+
+        let avg_bbr: f64 = result[20..].iter().sum::<f64>() / 30.0;
+        assert!(avg_bbr > 0.0, "Expected positive bull/bear ratio for bullish trend, got {}", avg_bbr);
+    }
+
+    #[test]
+    fn test_sentiment_score() {
+        let (open, high, low, close, volume) = make_test_data();
+        let ss = SentimentScore::new(15).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_sentiment_score_validation() {
+        // period must be at least 10
+        assert!(SentimentScore::new(9).is_err());
+        assert!(SentimentScore::new(10).is_ok());
+
+        // weights must sum to 1.0
+        assert!(SentimentScore::with_weights(15, 0.5, 0.5, 0.5).is_err());
+        assert!(SentimentScore::with_weights(15, 0.4, 0.35, 0.25).is_ok());
+    }
+
+    #[test]
+    fn test_sentiment_score_min_periods() {
+        let ss = SentimentScore::new(15).unwrap();
+        assert_eq!(ss.min_periods(), 16); // period + 1
+    }
+
+    #[test]
+    fn test_sentiment_score_name() {
+        let ss = SentimentScore::new(15).unwrap();
+        assert_eq!(ss.name(), "Sentiment Score");
+    }
+
+    #[test]
+    fn test_sentiment_score_with_custom_weights() {
+        let (open, high, low, close, volume) = make_test_data();
+        let ss = SentimentScore::with_weights(15, 0.5, 0.3, 0.2).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_market_mood_index() {
+        let (open, high, low, close, volume) = make_test_data();
+        let mmi = MarketMoodIndex::new(15, 1.0).unwrap();
+        let result = mmi.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_market_mood_index_validation() {
+        // period must be at least 10
+        assert!(MarketMoodIndex::new(9, 1.0).is_err());
+        assert!(MarketMoodIndex::new(10, 1.0).is_ok());
+
+        // sensitivity must be between 0.5 and 2.0
+        assert!(MarketMoodIndex::new(15, 0.4).is_err());
+        assert!(MarketMoodIndex::new(15, 2.1).is_err());
+        assert!(MarketMoodIndex::new(15, 0.5).is_ok());
+        assert!(MarketMoodIndex::new(15, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_market_mood_index_min_periods() {
+        let mmi = MarketMoodIndex::new(15, 1.0).unwrap();
+        assert_eq!(mmi.min_periods(), 16); // period + 1
+    }
+
+    #[test]
+    fn test_market_mood_index_name() {
+        let mmi = MarketMoodIndex::new(15, 1.0).unwrap();
+        assert_eq!(mmi.name(), "Market Mood Index");
+    }
+
+    #[test]
+    fn test_speculative_index() {
+        let (open, high, low, close, volume) = make_test_data();
+        let si = SpeculativeIndex::new(10, 25).unwrap();
+        let result = si.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[25..] {
+            assert!(val >= 0.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_speculative_index_validation() {
+        // period must be at least 5
+        assert!(SpeculativeIndex::new(4, 25).is_err());
+        assert!(SpeculativeIndex::new(5, 25).is_ok());
+
+        // baseline_period must be at least 20
+        assert!(SpeculativeIndex::new(5, 19).is_err());
+        assert!(SpeculativeIndex::new(5, 20).is_ok());
+
+        // baseline_period must be greater than period
+        assert!(SpeculativeIndex::new(20, 20).is_err());
+        assert!(SpeculativeIndex::new(10, 25).is_ok());
+    }
+
+    #[test]
+    fn test_speculative_index_min_periods() {
+        let si = SpeculativeIndex::new(10, 25).unwrap();
+        assert_eq!(si.min_periods(), 26); // baseline_period + 1
+    }
+
+    #[test]
+    fn test_speculative_index_name() {
+        let si = SpeculativeIndex::new(10, 25).unwrap();
+        assert_eq!(si.name(), "Speculative Index");
+    }
+
+    #[test]
+    fn test_speculative_index_high_volatility() {
+        // Test with high volatility data - should show high speculation
+        let open: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64 * 0.8).sin() * 15.0).collect();
+        let high: Vec<f64> = (0..60).map(|i| 110.0 + (i as f64 * 0.8).sin() * 20.0).collect();
+        let low: Vec<f64> = (0..60).map(|i| 90.0 + (i as f64 * 0.8).sin() * 10.0).collect();
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64 * 0.8).sin() * 18.0).collect();
+        let volume: Vec<f64> = (0..60).map(|i| 1000.0 + (i as f64 * 0.5).abs() * 100.0).collect();
+
+        let si = SpeculativeIndex::new(10, 25).unwrap();
+        let result = si.calculate(&open, &high, &low, &close, &volume);
+
+        // Should show some speculation in volatile market
+        let has_speculation = result[30..].iter().any(|&v| v > 10.0);
+        assert!(has_speculation, "Expected some speculation in volatile market");
+    }
+
+    #[test]
+    fn test_risk_appetite_index() {
+        let (open, high, low, close, volume) = make_test_data();
+        let rai = RiskAppetiteIndex::new(15, 3).unwrap();
+        let result = rai.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result[18..] {
+            assert!(val >= 0.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_risk_appetite_index_validation() {
+        // period must be at least 10
+        assert!(RiskAppetiteIndex::new(9, 3).is_err());
+        assert!(RiskAppetiteIndex::new(10, 3).is_ok());
+
+        // smoothing must be at least 1
+        assert!(RiskAppetiteIndex::new(15, 0).is_err());
+        assert!(RiskAppetiteIndex::new(15, 1).is_ok());
+    }
+
+    #[test]
+    fn test_risk_appetite_index_min_periods() {
+        let rai = RiskAppetiteIndex::new(15, 3).unwrap();
+        assert_eq!(rai.min_periods(), 18); // period + smoothing
+    }
+
+    #[test]
+    fn test_risk_appetite_index_name() {
+        let rai = RiskAppetiteIndex::new(15, 3).unwrap();
+        assert_eq!(rai.name(), "Risk Appetite Index");
+    }
+
+    #[test]
+    fn test_risk_appetite_index_strong_trend() {
+        // Test with strong uptrend - should show high risk appetite
+        let open: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let high: Vec<f64> = (0..50).map(|i| 103.0 + i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..50).map(|i| 99.0 + i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..50).map(|i| 102.5 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + i as f64 * 30.0).collect();
+
+        let rai = RiskAppetiteIndex::new(15, 3).unwrap();
+        let result = rai.calculate(&open, &high, &low, &close, &volume);
+
+        let avg_rai: f64 = result[25..].iter().sum::<f64>() / 25.0;
+        assert!(avg_rai > 40.0, "Expected high risk appetite in strong uptrend, got {}", avg_rai);
+    }
+
+    #[test]
+    fn test_contrary_indicator() {
+        let (open, high, low, close, volume) = make_test_data();
+        let ci = ContraryIndicator::new(15, 2.0, 3).unwrap();
+        let result = ci.calculate(&open, &high, &low, &close, &volume);
+
+        assert_eq!(result.len(), close.len());
+        for &val in &result {
+            assert!(val >= -100.0 && val <= 100.0, "Value {} out of bounds", val);
+        }
+    }
+
+    #[test]
+    fn test_contrary_indicator_validation() {
+        // period must be at least 10
+        assert!(ContraryIndicator::new(9, 2.0, 3).is_err());
+        assert!(ContraryIndicator::new(10, 2.0, 3).is_ok());
+
+        // extreme_threshold must be between 1.5 and 3.0
+        assert!(ContraryIndicator::new(15, 1.4, 3).is_err());
+        assert!(ContraryIndicator::new(15, 3.1, 3).is_err());
+        assert!(ContraryIndicator::new(15, 1.5, 3).is_ok());
+        assert!(ContraryIndicator::new(15, 3.0, 3).is_ok());
+
+        // confirmation_bars must be at least 2
+        assert!(ContraryIndicator::new(15, 2.0, 1).is_err());
+        assert!(ContraryIndicator::new(15, 2.0, 2).is_ok());
+    }
+
+    #[test]
+    fn test_contrary_indicator_min_periods() {
+        let ci = ContraryIndicator::new(15, 2.0, 3).unwrap();
+        assert_eq!(ci.min_periods(), 19); // period + confirmation_bars + 1
+    }
+
+    #[test]
+    fn test_contrary_indicator_name() {
+        let ci = ContraryIndicator::new(15, 2.0, 3).unwrap();
+        assert_eq!(ci.name(), "Contrary Indicator");
+    }
+
+    #[test]
+    fn test_new_sentiment_indicators_with_flat_data() {
+        // Test all 6 new indicators with flat (constant) data
+        let open = vec![100.0; 60];
+        let high = vec![100.0; 60];
+        let low = vec![100.0; 60];
+        let close = vec![100.0; 60];
+        let volume = vec![1000.0; 60];
+
+        // BullBearRatio
+        let bbr = BullBearRatio::new(10, 3).unwrap();
+        let result = bbr.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+
+        // SentimentScore
+        let ss = SentimentScore::new(15).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+
+        // MarketMoodIndex
+        let mmi = MarketMoodIndex::new(15, 1.0).unwrap();
+        let result = mmi.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+
+        // SpeculativeIndex
+        let si = SpeculativeIndex::new(10, 25).unwrap();
+        let result = si.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+
+        // RiskAppetiteIndex
+        let rai = RiskAppetiteIndex::new(15, 3).unwrap();
+        let result = rai.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+
+        // ContraryIndicator
+        let ci = ContraryIndicator::new(15, 2.0, 3).unwrap();
+        let result = ci.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+    }
+
+    #[test]
+    fn test_new_sentiment_indicators_with_volatile_data() {
+        // Test all 6 new indicators with volatile data
+        let open: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64 * 0.5).sin() * 20.0).collect();
+        let high: Vec<f64> = (0..60).map(|i| 105.0 + (i as f64 * 0.5).sin() * 25.0).collect();
+        let low: Vec<f64> = (0..60).map(|i| 95.0 + (i as f64 * 0.5).sin() * 15.0).collect();
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64 * 0.5).sin() * 22.0).collect();
+        let volume: Vec<f64> = (0..60).map(|i| 1000.0 + (i as f64 * 0.3).cos().abs() * 2000.0).collect();
+
+        // BullBearRatio
+        let bbr = BullBearRatio::new(10, 3).unwrap();
+        let result = bbr.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+
+        // SentimentScore
+        let ss = SentimentScore::new(15).unwrap();
+        let result = ss.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+
+        // MarketMoodIndex
+        let mmi = MarketMoodIndex::new(15, 1.0).unwrap();
+        let result = mmi.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+        for &val in &result[15..] {
+            assert!(val >= -100.0 && val <= 100.0);
+        }
+
+        // SpeculativeIndex
+        let si = SpeculativeIndex::new(10, 25).unwrap();
+        let result = si.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+        for &val in &result[25..] {
+            assert!(val >= 0.0 && val <= 100.0);
+        }
+
+        // RiskAppetiteIndex
+        let rai = RiskAppetiteIndex::new(15, 3).unwrap();
+        let result = rai.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+        for &val in &result[18..] {
+            assert!(val >= 0.0 && val <= 100.0);
+        }
+
+        // ContraryIndicator
+        let ci = ContraryIndicator::new(15, 2.0, 3).unwrap();
+        let result = ci.calculate(&open, &high, &low, &close, &volume);
+        assert_eq!(result.len(), 60);
+        for &val in &result {
             assert!(val >= -100.0 && val <= 100.0);
         }
     }

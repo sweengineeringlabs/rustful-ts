@@ -2864,6 +2864,744 @@ impl TechnicalIndicator for BreadthDiffusion {
     }
 }
 
+// ============================================================================
+// 6 NEW Breadth Indicators (BreadthRatio, BreadthScore, MarketParticipation, etc.)
+// ============================================================================
+
+/// BreadthRatio - Simple Breadth Ratio
+///
+/// Calculates a normalized breadth ratio that measures the proportion of
+/// advancing periods relative to total active periods (advances + declines).
+/// Unlike AdvanceDeclineRatio which produces unbounded values, this indicator
+/// normalizes the output to a 0-100 scale for easier interpretation.
+///
+/// # Formula
+/// BreadthRatio = (Advances / (Advances + Declines)) * 100
+///
+/// # Interpretation
+/// - Values > 50: More advances than declines (bullish)
+/// - Values = 50: Equal advances and declines (neutral)
+/// - Values < 50: More declines than advances (bearish)
+/// - Extreme readings (>80 or <20) may indicate overbought/oversold conditions
+#[derive(Debug, Clone)]
+pub struct BreadthRatio {
+    /// Period for calculating the ratio
+    period: usize,
+    /// Smoothing period for EMA (optional smoothing)
+    smoothing: usize,
+}
+
+impl BreadthRatio {
+    /// Creates a new BreadthRatio indicator.
+    ///
+    /// # Arguments
+    /// * `period` - The lookback period for calculating advances/declines (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if period < 5 or smoothing < 2
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::BreadthRatio;
+    /// let br = BreadthRatio::new(10, 3).unwrap();
+    /// ```
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate the breadth ratio for each bar.
+    ///
+    /// # Arguments
+    /// * `close` - Array of closing prices
+    ///
+    /// # Returns
+    /// Vector of breadth ratio values (0-100 scale).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut raw = vec![0.0; n];
+        let mut result = vec![0.0; n];
+
+        // Calculate raw breadth ratio
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut declines = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                } else if close[j] < close[j - 1] {
+                    declines += 1;
+                }
+            }
+
+            let total = advances + declines;
+            if total > 0 {
+                raw[i] = (advances as f64 / total as f64) * 100.0;
+            } else {
+                raw[i] = 50.0; // Neutral when no changes
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in self.period..n {
+            if i == self.period {
+                result[i] = raw[i];
+            } else {
+                result[i] = alpha * raw[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthRatio {
+    fn name(&self) -> &str {
+        "Breadth Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthScore - Composite Breadth Score
+///
+/// Calculates a composite breadth score by combining multiple breadth metrics:
+/// - Advance percentage
+/// - Volume-weighted breadth
+/// - Consistency of advances
+///
+/// The score provides a holistic view of market breadth quality on a 0-100 scale.
+///
+/// # Formula
+/// BreadthScore = (AdvancePct * 0.4 + VolumeBreadth * 0.3 + Consistency * 0.3) * 100
+///
+/// # Interpretation
+/// - Values > 70: Strong positive breadth (bullish)
+/// - Values 50-70: Neutral to mildly positive
+/// - Values 30-50: Neutral to mildly negative
+/// - Values < 30: Strong negative breadth (bearish)
+#[derive(Debug, Clone)]
+pub struct BreadthScore {
+    /// Period for calculating breadth components
+    period: usize,
+    /// Weight for advance percentage component (0-1)
+    advance_weight: f64,
+    /// Weight for volume component (0-1)
+    volume_weight: f64,
+}
+
+impl BreadthScore {
+    /// Creates a new BreadthScore indicator.
+    ///
+    /// # Arguments
+    /// * `period` - The lookback period for calculating breadth (minimum 5)
+    /// * `advance_weight` - Weight for advance percentage (0.0-1.0)
+    /// * `volume_weight` - Weight for volume breadth (0.0-1.0)
+    ///
+    /// # Errors
+    /// Returns an error if period < 5 or weights are invalid
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::BreadthScore;
+    /// let bs = BreadthScore::new(10, 0.5, 0.3).unwrap();
+    /// ```
+    pub fn new(period: usize, advance_weight: f64, volume_weight: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if advance_weight < 0.0 || advance_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "advance_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        if volume_weight < 0.0 || volume_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        if advance_weight + volume_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "weights".to_string(),
+                reason: "sum of advance_weight and volume_weight must not exceed 1.0".to_string(),
+            });
+        }
+        Ok(Self { period, advance_weight, volume_weight })
+    }
+
+    /// Calculate the breadth score for each bar.
+    ///
+    /// # Arguments
+    /// * `close` - Array of closing prices
+    /// * `volume` - Array of volumes
+    ///
+    /// # Returns
+    /// Vector of breadth scores (0-100 scale).
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let consistency_weight = 1.0 - self.advance_weight - self.volume_weight;
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Component 1: Advance percentage
+            let mut advances = 0;
+            let mut total_changes = 0;
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                    total_changes += 1;
+                } else if close[j] < close[j - 1] {
+                    total_changes += 1;
+                }
+            }
+            let advance_pct = if total_changes > 0 {
+                advances as f64 / total_changes as f64
+            } else {
+                0.5
+            };
+
+            // Component 2: Volume-weighted breadth
+            let mut up_volume = 0.0;
+            let mut down_volume = 0.0;
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_volume += volume[j];
+                } else if close[j] < close[j - 1] {
+                    down_volume += volume[j];
+                }
+            }
+            let total_vol = up_volume + down_volume;
+            let volume_breadth = if total_vol > 1e-10 {
+                up_volume / total_vol
+            } else {
+                0.5
+            };
+
+            // Component 3: Consistency - percentage of bars moving in net direction
+            let net_direction = if (advances as i32) > (total_changes as i32 - advances as i32) {
+                1 // Net bullish
+            } else if (advances as i32) < (total_changes as i32 - advances as i32) {
+                -1 // Net bearish
+            } else {
+                0 // Neutral
+            };
+
+            let mut consistent_days = 0;
+            for j in (start + 1)..=i {
+                let day_direction = if close[j] > close[j - 1] {
+                    1
+                } else if close[j] < close[j - 1] {
+                    -1
+                } else {
+                    0
+                };
+                if day_direction == net_direction && net_direction != 0 {
+                    consistent_days += 1;
+                }
+            }
+            let consistency = consistent_days as f64 / self.period as f64;
+
+            // Combine components
+            let score = advance_pct * self.advance_weight
+                + volume_breadth * self.volume_weight
+                + consistency * consistency_weight;
+            result[i] = (score * 100.0).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthScore {
+    fn name(&self) -> &str {
+        "Breadth Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+}
+
+/// MarketParticipation - Market Participation Rate
+///
+/// Measures the breadth of market participation by calculating the percentage
+/// of periods showing significant price movement (either up or down) versus
+/// periods with minimal movement. This differs from ParticipationRate which
+/// uses a threshold; MarketParticipation uses a dynamic approach based on
+/// average movement.
+///
+/// # Formula
+/// Participation = (Active Periods / Total Periods) * Directional Bias
+///
+/// # Interpretation
+/// - Values > 60: High participation (strong conviction in trend)
+/// - Values 40-60: Normal participation
+/// - Values < 40: Low participation (weak conviction, possible consolidation)
+#[derive(Debug, Clone)]
+pub struct MarketParticipation {
+    /// Period for calculating participation
+    period: usize,
+    /// Lookback period for calculating average movement
+    volatility_lookback: usize,
+}
+
+impl MarketParticipation {
+    /// Creates a new MarketParticipation indicator.
+    ///
+    /// # Arguments
+    /// * `period` - The lookback period for calculating participation (minimum 5)
+    /// * `volatility_lookback` - Period for calculating average movement baseline (minimum 5)
+    ///
+    /// # Errors
+    /// Returns an error if either period is less than 5
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::MarketParticipation;
+    /// let mp = MarketParticipation::new(10, 20).unwrap();
+    /// ```
+    pub fn new(period: usize, volatility_lookback: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if volatility_lookback < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_lookback".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period, volatility_lookback })
+    }
+
+    /// Calculate the market participation rate for each bar.
+    ///
+    /// # Arguments
+    /// * `close` - Array of closing prices
+    ///
+    /// # Returns
+    /// Vector of participation rates (0-100 scale).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate daily returns
+        let mut returns = vec![0.0; n];
+        for i in 1..n {
+            if close[i - 1] > 1e-10 {
+                returns[i] = ((close[i] / close[i - 1]) - 1.0).abs();
+            }
+        }
+
+        // Calculate rolling average return (for baseline)
+        let min_idx = self.volatility_lookback.max(self.period);
+        for i in min_idx..n {
+            // Calculate average return over volatility lookback
+            let vol_start = i.saturating_sub(self.volatility_lookback);
+            let avg_return: f64 = returns[(vol_start + 1)..=i].iter().sum::<f64>()
+                / self.volatility_lookback as f64;
+
+            // Threshold: returns above 50% of average are "significant"
+            let threshold = avg_return * 0.5;
+
+            // Count significant participation
+            let period_start = i.saturating_sub(self.period);
+            let mut significant_up = 0;
+            let mut significant_down = 0;
+
+            for j in (period_start + 1)..=i {
+                if returns[j] > threshold {
+                    if close[j] > close[j - 1] {
+                        significant_up += 1;
+                    } else {
+                        significant_down += 1;
+                    }
+                }
+            }
+
+            let total_significant = significant_up + significant_down;
+            let participation_rate = total_significant as f64 / self.period as f64;
+
+            // Add directional bias: boost if participation is aligned
+            let direction_score = if total_significant > 0 {
+                let bias = (significant_up as f64 - significant_down as f64).abs()
+                    / total_significant as f64;
+                1.0 + bias * 0.2 // Up to 20% boost for directional alignment
+            } else {
+                1.0
+            };
+
+            result[i] = (participation_rate * direction_score * 100.0).clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MarketParticipation {
+    fn name(&self) -> &str {
+        "Market Participation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volatility_lookback.max(self.period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// TrendBreadth - Breadth Aligned with Trend
+///
+/// Measures how well market breadth confirms the underlying price trend.
+/// Unlike BreadthTrend which measures the trend of breadth itself, TrendBreadth
+/// evaluates the alignment between price direction and breadth direction,
+/// returning a confirmation score.
+///
+/// # Formula
+/// TrendBreadth = (BreadthDirection * PriceDirection) * StrengthMultiplier
+///
+/// # Interpretation
+/// - Values > 50: Breadth confirms price trend (healthy trend)
+/// - Values = 50: Neutral / no clear confirmation
+/// - Values < 50: Breadth diverges from price trend (potential reversal)
+/// - Extreme readings (>80 or <20) indicate strong confirmation or divergence
+#[derive(Debug, Clone)]
+pub struct TrendBreadth {
+    /// Period for calculating price trend
+    trend_period: usize,
+    /// Period for calculating breadth
+    breadth_period: usize,
+    /// Smoothing period for output
+    smoothing: usize,
+}
+
+impl TrendBreadth {
+    /// Creates a new TrendBreadth indicator.
+    ///
+    /// # Arguments
+    /// * `trend_period` - Period for measuring price trend (minimum 5)
+    /// * `breadth_period` - Period for measuring breadth (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if any period is invalid
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::TrendBreadth;
+    /// let tb = TrendBreadth::new(20, 10, 5).unwrap();
+    /// ```
+    pub fn new(trend_period: usize, breadth_period: usize, smoothing: usize) -> Result<Self> {
+        if trend_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if breadth_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "breadth_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { trend_period, breadth_period, smoothing })
+    }
+
+    /// Calculate the trend breadth confirmation for each bar.
+    ///
+    /// # Arguments
+    /// * `close` - Array of closing prices
+    ///
+    /// # Returns
+    /// Vector of trend breadth values (0-100 scale).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut raw = vec![50.0; n]; // Default to neutral
+        let mut result = vec![0.0; n];
+
+        let min_idx = self.trend_period.max(self.breadth_period);
+
+        for i in min_idx..n {
+            // Calculate price trend direction and strength
+            let trend_start = i.saturating_sub(self.trend_period);
+            let price_change = if close[trend_start] > 1e-10 {
+                (close[i] / close[trend_start] - 1.0) * 100.0
+            } else {
+                0.0
+            };
+            let price_direction = if price_change > 0.5 {
+                1.0
+            } else if price_change < -0.5 {
+                -1.0
+            } else {
+                0.0
+            };
+            let price_strength = price_change.abs().min(20.0) / 20.0; // Normalize to 0-1
+
+            // Calculate breadth direction and strength
+            let breadth_start = i.saturating_sub(self.breadth_period);
+            let mut advances = 0;
+            let mut declines = 0;
+            for j in (breadth_start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                } else if close[j] < close[j - 1] {
+                    declines += 1;
+                }
+            }
+
+            let total = advances + declines;
+            let breadth_ratio = if total > 0 {
+                (advances as f64 - declines as f64) / total as f64
+            } else {
+                0.0
+            };
+            let breadth_direction = if breadth_ratio > 0.1 {
+                1.0
+            } else if breadth_ratio < -0.1 {
+                -1.0
+            } else {
+                0.0
+            };
+            let breadth_strength = breadth_ratio.abs().min(1.0);
+
+            // Calculate confirmation score
+            if price_direction != 0.0 && breadth_direction != 0.0 {
+                let alignment = price_direction * breadth_direction; // 1 if same, -1 if opposite
+                let combined_strength = (price_strength + breadth_strength) / 2.0;
+
+                if alignment > 0.0 {
+                    // Confirmed: base 50 + up to 50 based on strength
+                    raw[i] = 50.0 + combined_strength * 50.0;
+                } else {
+                    // Divergent: base 50 - up to 50 based on strength
+                    raw[i] = 50.0 - combined_strength * 50.0;
+                }
+            } else {
+                // Neutral/unclear
+                raw[i] = 50.0;
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in min_idx..n {
+            if i == min_idx {
+                result[i] = raw[i];
+            } else {
+                result[i] = alpha * raw[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendBreadth {
+    fn name(&self) -> &str {
+        "Trend Breadth"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.trend_period.max(self.breadth_period) + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthSignal - Breadth Trading Signal
+///
+/// Generates trading signals based on breadth analysis by combining multiple
+/// breadth factors into a directional signal. The indicator produces values
+/// from -100 to +100 where positive values suggest bullish positioning and
+/// negative values suggest bearish positioning.
+///
+/// # Formula
+/// Signal = (BreadthMomentum * 0.4 + BreadthLevel * 0.3 + BreadthChange * 0.3)
+///
+/// # Interpretation
+/// - Values > 50: Strong buy signal
+/// - Values 20-50: Moderate buy signal
+/// - Values -20 to 20: Neutral / no signal
+/// - Values -50 to -20: Moderate sell signal
+/// - Values < -50: Strong sell signal
+#[derive(Debug, Clone)]
+pub struct BreadthSignal {
+    /// Period for calculating breadth components
+    period: usize,
+    /// Momentum lookback period
+    momentum_period: usize,
+    /// Signal smoothing period
+    smoothing: usize,
+}
+
+impl BreadthSignal {
+    /// Creates a new BreadthSignal indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating breadth (minimum 5)
+    /// * `momentum_period` - Period for momentum calculation (minimum 2)
+    /// * `smoothing` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if any period is invalid
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::BreadthSignal;
+    /// let bs = BreadthSignal::new(10, 5, 3).unwrap();
+    /// ```
+    pub fn new(period: usize, momentum_period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_period, smoothing })
+    }
+
+    /// Calculate the breadth signal for each bar.
+    ///
+    /// # Arguments
+    /// * `close` - Array of closing prices
+    ///
+    /// # Returns
+    /// Vector of signal values (-100 to +100 scale).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut raw = vec![0.0; n];
+        let mut result = vec![0.0; n];
+
+        // Calculate breadth ratio for each period
+        let mut breadth_ratio = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut declines = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                } else if close[j] < close[j - 1] {
+                    declines += 1;
+                }
+            }
+
+            let total = advances + declines;
+            if total > 0 {
+                // Scale to -1 to +1
+                breadth_ratio[i] = (advances as f64 - declines as f64) / total as f64;
+            }
+        }
+
+        let min_idx = self.period + self.momentum_period;
+
+        for i in min_idx..n {
+            // Component 1: Current breadth level (-100 to +100)
+            let breadth_level = breadth_ratio[i] * 100.0;
+
+            // Component 2: Breadth momentum (change in breadth)
+            let breadth_momentum = (breadth_ratio[i] - breadth_ratio[i - self.momentum_period]) * 100.0;
+
+            // Component 3: Breadth acceleration (second derivative)
+            let prev_momentum = if i >= min_idx + self.momentum_period {
+                breadth_ratio[i - self.momentum_period] - breadth_ratio[i - 2 * self.momentum_period]
+            } else {
+                0.0
+            };
+            let breadth_acceleration = (breadth_momentum / 100.0 - prev_momentum) * 50.0;
+
+            // Combine components with weights
+            let signal = breadth_level * 0.4 + breadth_momentum * 0.35 + breadth_acceleration * 0.25;
+            raw[i] = signal.clamp(-100.0, 100.0);
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in min_idx..n {
+            if i == min_idx {
+                result[i] = raw[i];
+            } else {
+                result[i] = alpha * raw[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthSignal {
+    fn name(&self) -> &str {
+        "Breadth Signal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.momentum_period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4094,5 +4832,330 @@ mod tests {
 
         let bd = BreadthDiffusion::new(5, 10, 20, 3).unwrap();
         let _ = bd.compute(&data).unwrap();
+    }
+
+    // ============================================================================
+    // Tests for 6 NEW breadth indicators (BreadthRatio, BreadthScore, etc.)
+    // ============================================================================
+
+    #[test]
+    fn test_breadth_ratio() {
+        let data = make_test_data();
+        let br = BreadthRatio::new(10, 3).unwrap();
+        let result = br.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..10 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100
+        for i in 15..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "BreadthRatio should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_breadth_ratio_validation() {
+        assert!(BreadthRatio::new(4, 3).is_err()); // period too small
+        assert!(BreadthRatio::new(10, 1).is_err()); // smoothing too small
+        assert!(BreadthRatio::new(10, 3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_ratio_trait() {
+        let data = make_test_data();
+        let br = BreadthRatio::new(10, 3).unwrap();
+        assert_eq!(br.name(), "Breadth Ratio");
+        assert_eq!(br.min_periods(), 13);
+        let output = br.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_ratio_bullish() {
+        // Create strong uptrend
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+
+        let br = BreadthRatio::new(5, 2).unwrap();
+        let result = br.calculate(&close);
+
+        // Uptrend should have ratio > 50 (more advances)
+        let avg = result[10..].iter().sum::<f64>() / result[10..].len() as f64;
+        assert!(avg > 50.0, "Bullish market should have ratio > 50, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_ratio_bearish() {
+        // Create strong downtrend
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+
+        let br = BreadthRatio::new(5, 2).unwrap();
+        let result = br.calculate(&close);
+
+        // Downtrend should have ratio < 50 (more declines)
+        let avg = result[10..].iter().sum::<f64>() / result[10..].len() as f64;
+        assert!(avg < 50.0, "Bearish market should have ratio < 50, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_score() {
+        let data = make_test_data();
+        let bs = BreadthScore::new(10, 0.5, 0.3).unwrap();
+        let result = bs.calculate(&data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..10 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100
+        for i in 15..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "BreadthScore should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_breadth_score_validation() {
+        assert!(BreadthScore::new(4, 0.5, 0.3).is_err()); // period too small
+        assert!(BreadthScore::new(10, -0.1, 0.3).is_err()); // negative weight
+        assert!(BreadthScore::new(10, 1.1, 0.3).is_err()); // weight > 1
+        assert!(BreadthScore::new(10, 0.6, 0.5).is_err()); // sum > 1
+        assert!(BreadthScore::new(10, 0.5, 0.3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_score_trait() {
+        let data = make_test_data();
+        let bs = BreadthScore::new(10, 0.5, 0.3).unwrap();
+        assert_eq!(bs.name(), "Breadth Score");
+        assert_eq!(bs.min_periods(), 11);
+        let output = bs.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_score_strong_market() {
+        // Create strong uptrend with volume confirmation
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + i as f64 * 50.0).collect();
+
+        let bs = BreadthScore::new(5, 0.4, 0.3).unwrap();
+        let result = bs.calculate(&close, &volume);
+
+        // Strong market should have higher scores
+        let avg = result[10..].iter().sum::<f64>() / result[10..].len() as f64;
+        assert!(avg > 30.0, "Strong market should have above-average score, got {}", avg);
+    }
+
+    #[test]
+    fn test_market_participation() {
+        let data = make_test_data();
+        let mp = MarketParticipation::new(10, 20).unwrap();
+        let result = mp.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..20 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "MarketParticipation should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_market_participation_validation() {
+        assert!(MarketParticipation::new(4, 20).is_err()); // period too small
+        assert!(MarketParticipation::new(10, 4).is_err()); // volatility_lookback too small
+        assert!(MarketParticipation::new(10, 20).is_ok());
+    }
+
+    #[test]
+    fn test_market_participation_trait() {
+        let data = make_test_data();
+        let mp = MarketParticipation::new(10, 20).unwrap();
+        assert_eq!(mp.name(), "Market Participation");
+        assert_eq!(mp.min_periods(), 21);
+        let output = mp.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_market_participation_active_market() {
+        // Create volatile market with significant moves
+        let mut close: Vec<f64> = vec![100.0; 50];
+        for i in 1..50 {
+            if i % 2 == 0 {
+                close[i] = close[i - 1] * 1.02; // 2% up
+            } else {
+                close[i] = close[i - 1] * 0.98; // 2% down
+            }
+        }
+
+        let mp = MarketParticipation::new(5, 10).unwrap();
+        let result = mp.calculate(&close);
+
+        // Active market should show participation
+        let has_participation = result[15..].iter().any(|&v| v > 0.0);
+        assert!(has_participation, "Active market should show participation");
+    }
+
+    #[test]
+    fn test_trend_breadth() {
+        let data = make_test_data();
+        let tb = TrendBreadth::new(20, 10, 5).unwrap();
+        let result = tb.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..20 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100
+        for i in 30..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "TrendBreadth should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_trend_breadth_validation() {
+        assert!(TrendBreadth::new(4, 10, 5).is_err()); // trend_period too small
+        assert!(TrendBreadth::new(20, 4, 5).is_err()); // breadth_period too small
+        assert!(TrendBreadth::new(20, 10, 1).is_err()); // smoothing too small
+        assert!(TrendBreadth::new(20, 10, 5).is_ok());
+    }
+
+    #[test]
+    fn test_trend_breadth_trait() {
+        let data = make_test_data();
+        let tb = TrendBreadth::new(20, 10, 5).unwrap();
+        assert_eq!(tb.name(), "Trend Breadth");
+        assert_eq!(tb.min_periods(), 25);
+        let output = tb.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_trend_breadth_confirmed_uptrend() {
+        // Create confirmed uptrend (price up, breadth positive)
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+
+        let tb = TrendBreadth::new(10, 5, 3).unwrap();
+        let result = tb.calculate(&close);
+
+        // Confirmed trend should have values > 50
+        let avg = result[20..].iter().sum::<f64>() / result[20..].len() as f64;
+        assert!(avg >= 50.0, "Confirmed uptrend should have TrendBreadth >= 50, got {}", avg);
+    }
+
+    #[test]
+    fn test_trend_breadth_divergent() {
+        // Create divergent pattern - net price up but mixed breadth
+        let mut close: Vec<f64> = vec![100.0; 50];
+        for i in 1..50 {
+            // Overall uptrend but with frequent down days
+            if i % 3 == 0 {
+                close[i] = close[i - 1] - 0.3;
+            } else {
+                close[i] = close[i - 1] + 0.5;
+            }
+        }
+
+        let tb = TrendBreadth::new(10, 5, 3).unwrap();
+        let result = tb.calculate(&close);
+
+        // Should produce valid values
+        let has_values = result[20..].iter().any(|&v| v != 0.0);
+        assert!(has_values, "Should calculate trend breadth values");
+    }
+
+    #[test]
+    fn test_breadth_signal() {
+        let data = make_test_data();
+        let bs = BreadthSignal::new(10, 5, 3).unwrap();
+        let result = bs.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..15 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be -100 to +100
+        for i in 20..result.len() {
+            assert!(result[i] >= -100.0 && result[i] <= 100.0,
+                "BreadthSignal should be -100 to 100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_breadth_signal_validation() {
+        assert!(BreadthSignal::new(4, 5, 3).is_err()); // period too small
+        assert!(BreadthSignal::new(10, 1, 3).is_err()); // momentum_period too small
+        assert!(BreadthSignal::new(10, 5, 1).is_err()); // smoothing too small
+        assert!(BreadthSignal::new(10, 5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_signal_trait() {
+        let data = make_test_data();
+        let bs = BreadthSignal::new(10, 5, 3).unwrap();
+        assert_eq!(bs.name(), "Breadth Signal");
+        assert_eq!(bs.min_periods(), 18);
+        let output = bs.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_signal_bullish() {
+        // Create strong bullish market
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let bs = BreadthSignal::new(5, 3, 2).unwrap();
+        let result = bs.calculate(&close);
+
+        // Bullish market should have positive signal
+        let avg = result[15..].iter().sum::<f64>() / result[15..].len() as f64;
+        assert!(avg > 0.0, "Bullish market should have positive signal, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_signal_bearish() {
+        // Create strong bearish market
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64 * 2.0).collect();
+
+        let bs = BreadthSignal::new(5, 3, 2).unwrap();
+        let result = bs.calculate(&close);
+
+        // Bearish market should have negative signal
+        let avg = result[15..].iter().sum::<f64>() / result[15..].len() as f64;
+        assert!(avg < 0.0, "Bearish market should have negative signal, got {}", avg);
+    }
+
+    #[test]
+    fn test_all_final_five_indicators_compute() {
+        let data = make_test_data();
+
+        // Verify all 5 final NEW indicators can compute successfully
+        // (BreadthMomentumIndex already exists, so we have 5 new ones)
+        let br = BreadthRatio::new(10, 3).unwrap();
+        let _ = br.compute(&data).unwrap();
+
+        let bs = BreadthScore::new(10, 0.5, 0.3).unwrap();
+        let _ = bs.compute(&data).unwrap();
+
+        let mp = MarketParticipation::new(10, 20).unwrap();
+        let _ = mp.compute(&data).unwrap();
+
+        let tb = TrendBreadth::new(20, 10, 5).unwrap();
+        let _ = tb.compute(&data).unwrap();
+
+        let bsig = BreadthSignal::new(10, 5, 3).unwrap();
+        let _ = bsig.compute(&data).unwrap();
     }
 }

@@ -32,4 +32,7 @@ pub use advanced::{
     // Additional NEW sentiment indicators (6 new)
     FearGreedProxy, MarketPanicIndex, EuphoriaDetector,
     SentimentStrengthIndicator, CrowdBehaviorIndicator, SmartMoneySentiment,
+    // NEW sentiment indicators (6 new)
+    BullBearRatio, SentimentScore, MarketMoodIndex,
+    SpeculativeIndex, RiskAppetiteIndex, ContraryIndicator,
 };

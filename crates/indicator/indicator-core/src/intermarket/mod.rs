@@ -47,6 +47,9 @@ pub use advanced::{
     // 6 NEW intermarket indicators
     RelativeRotation, AlphaGenerator, TrackingError,
     IntermarketInformationRatio, IntermarketCorrelationBreakdown, RegimeCorrelation,
+    // 6 ADDITIONAL intermarket indicators
+    RelativeValueScore, SpreadMomentum, ConvergenceDivergence,
+    PairStrength, CrossAssetMomentum, IntermarketSignal,
 };
 
 // ============================================================================

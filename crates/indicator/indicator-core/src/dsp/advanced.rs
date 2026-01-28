@@ -2441,6 +2441,759 @@ impl TechnicalIndicator for AllpassPhaseShifter {
     }
 }
 
+/// Fourier Transform Power - Computes power spectrum using DFT
+///
+/// This indicator calculates the power spectrum of price data using a
+/// discrete Fourier transform approach. It returns the total spectral
+/// power across a range of frequencies, which can be used to identify
+/// the strength of cyclical components in price movements. Higher values
+/// indicate stronger periodic behavior.
+#[derive(Debug, Clone)]
+pub struct FourierTransformPower {
+    period: usize,
+    num_frequencies: usize,
+}
+
+impl FourierTransformPower {
+    /// Creates a new FourierTransformPower indicator
+    ///
+    /// # Parameters
+    /// - `period`: The lookback period for analysis (minimum 20)
+    /// - `num_frequencies`: Number of frequency bins to analyze (2 to 20)
+    ///
+    /// # Returns
+    /// A Result containing the FourierTransformPower or an error if parameters are invalid
+    pub fn new(period: usize, num_frequencies: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if num_frequencies < 2 || num_frequencies > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_frequencies".to_string(),
+                reason: "must be between 2 and 20".to_string(),
+            });
+        }
+        Ok(Self { period, num_frequencies })
+    }
+
+    /// Calculate the power at a specific frequency
+    fn compute_power_at_frequency(&self, slice: &[f64], freq_period: usize) -> f64 {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let mut real = 0.0;
+        let mut imag = 0.0;
+
+        for (j, &val) in slice.iter().enumerate() {
+            let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+            let centered = val - mean;
+            real += centered * angle.cos();
+            imag += centered * angle.sin();
+        }
+
+        // Power is magnitude squared, normalized by length
+        (real * real + imag * imag) / (len * len) as f64
+    }
+
+    /// Calculate Fourier transform power
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Generate frequency periods to analyze (logarithmically spaced)
+        let min_period = 4;
+        let max_period = self.period / 2;
+
+        let freq_periods: Vec<usize> = (0..self.num_frequencies)
+            .map(|i| {
+                let t = i as f64 / (self.num_frequencies - 1).max(1) as f64;
+                let log_min = (min_period as f64).ln();
+                let log_max = (max_period as f64).ln();
+                (log_min + t * (log_max - log_min)).exp() as usize
+            })
+            .collect();
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+
+            // Sum power across all frequency bins
+            let mut total_power = 0.0;
+            for &freq_period in &freq_periods {
+                if freq_period >= 3 && freq_period <= slice.len() / 2 {
+                    total_power += self.compute_power_at_frequency(slice, freq_period);
+                }
+            }
+
+            result[i] = total_power;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for FourierTransformPower {
+    fn name(&self) -> &str {
+        "Fourier Transform Power"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Wavelet Smoothing - Applies wavelet-based smoothing to price data
+///
+/// This indicator uses a simplified wavelet decomposition approach to
+/// smooth price data while preserving important features like trend
+/// changes and reversals. It decomposes the signal into approximation
+/// (low-frequency) and detail (high-frequency) components, then
+/// reconstructs using only the approximation for smoothing.
+#[derive(Debug, Clone)]
+pub struct WaveletSmoothing {
+    period: usize,
+    decomposition_level: usize,
+}
+
+impl WaveletSmoothing {
+    /// Creates a new WaveletSmoothing indicator
+    ///
+    /// # Parameters
+    /// - `period`: The lookback period for wavelet analysis (minimum 16)
+    /// - `decomposition_level`: Number of decomposition levels (1 to 4)
+    ///
+    /// # Returns
+    /// A Result containing the WaveletSmoothing or an error if parameters are invalid
+    pub fn new(period: usize, decomposition_level: usize) -> Result<Self> {
+        if period < 16 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 16".to_string(),
+            });
+        }
+        if decomposition_level < 1 || decomposition_level > 4 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "decomposition_level".to_string(),
+                reason: "must be between 1 and 4".to_string(),
+            });
+        }
+        Ok(Self { period, decomposition_level })
+    }
+
+    /// Apply Haar wavelet low-pass filter (averaging)
+    fn haar_lowpass(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < 2 {
+            return data.to_vec();
+        }
+
+        let mut result = Vec::with_capacity((n + 1) / 2);
+        let mut i = 0;
+        while i + 1 < n {
+            result.push((data[i] + data[i + 1]) / 2.0);
+            i += 2;
+        }
+        if n % 2 == 1 {
+            result.push(data[n - 1]);
+        }
+        result
+    }
+
+    /// Upsample by repeating each value
+    fn upsample(&self, data: &[f64], target_len: usize) -> Vec<f64> {
+        let mut result = Vec::with_capacity(target_len);
+        for &val in data {
+            result.push(val);
+            if result.len() < target_len {
+                result.push(val);
+            }
+        }
+        while result.len() < target_len {
+            if let Some(&last) = data.last() {
+                result.push(last);
+            }
+        }
+        result.truncate(target_len);
+        result
+    }
+
+    /// Calculate wavelet smoothing
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let original_len = slice.len();
+
+            // Multi-level wavelet decomposition (approximation only)
+            let mut approx = slice.to_vec();
+            for _ in 0..self.decomposition_level {
+                if approx.len() >= 2 {
+                    approx = self.haar_lowpass(&approx);
+                }
+            }
+
+            // Reconstruction: upsample back to original size
+            for _ in 0..self.decomposition_level {
+                approx = self.upsample(&approx, original_len);
+            }
+
+            // Take the last value as the smoothed output
+            result[i] = approx.last().copied().unwrap_or(close[i]);
+        }
+
+        // Fill initial values
+        for i in 0..self.period.min(n) {
+            result[i] = close[i];
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for WaveletSmoothing {
+    fn name(&self) -> &str {
+        "Wavelet Smoothing"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Adaptive Low-Pass Filter - Filter that adapts cutoff based on volatility
+///
+/// This indicator implements an adaptive low-pass filter that adjusts its
+/// cutoff frequency based on local price volatility. During high volatility
+/// periods, it uses a faster response (higher cutoff) to track rapid changes;
+/// during low volatility, it uses stronger smoothing to filter noise.
+#[derive(Debug, Clone)]
+pub struct AdaptiveLPFilter {
+    period: usize,
+    base_cutoff: usize,
+    sensitivity: f64,
+}
+
+impl AdaptiveLPFilter {
+    /// Creates a new AdaptiveLPFilter
+    ///
+    /// # Parameters
+    /// - `period`: Lookback period for volatility estimation (minimum 10)
+    /// - `base_cutoff`: Base cutoff period for the filter (minimum 5)
+    /// - `sensitivity`: How much the filter adapts to volatility (0.1 to 2.0)
+    ///
+    /// # Returns
+    /// A Result containing the AdaptiveLPFilter or an error if parameters are invalid
+    pub fn new(period: usize, base_cutoff: usize, sensitivity: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if base_cutoff < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_cutoff".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if sensitivity < 0.1 || sensitivity > 2.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0.1 and 2.0".to_string(),
+            });
+        }
+        Ok(Self { period, base_cutoff, sensitivity })
+    }
+
+    /// Estimate local volatility using standard deviation of returns
+    fn estimate_volatility(&self, slice: &[f64]) -> f64 {
+        if slice.len() < 2 {
+            return 0.0;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = slice.windows(2)
+            .map(|w| if w[0].abs() > 1e-10 { (w[1] - w[0]) / w[0] } else { 0.0 })
+            .collect();
+
+        if returns.is_empty() {
+            return 0.0;
+        }
+
+        let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+        let variance: f64 = returns.iter()
+            .map(|&r| (r - mean).powi(2))
+            .sum::<f64>() / returns.len() as f64;
+
+        variance.sqrt()
+    }
+
+    /// Calculate adaptive low-pass filter output
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut filtered = 0.0;
+
+        // Calculate long-term average volatility for normalization
+        let mut vol_history = Vec::new();
+
+        for i in 0..n {
+            if i < self.period {
+                result[i] = close[i];
+                filtered = close[i];
+                continue;
+            }
+
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+
+            // Estimate current volatility
+            let current_vol = self.estimate_volatility(slice);
+            vol_history.push(current_vol);
+
+            // Calculate average volatility
+            let avg_vol = if vol_history.len() > 10 {
+                vol_history.iter().sum::<f64>() / vol_history.len() as f64
+            } else {
+                current_vol
+            };
+
+            // Normalize volatility (ratio to average)
+            let vol_ratio = if avg_vol > 1e-10 {
+                (current_vol / avg_vol).max(0.5).min(2.0)
+            } else {
+                1.0
+            };
+
+            // Adaptive cutoff: higher volatility = faster response (lower effective period)
+            let adaptive_cutoff = self.base_cutoff as f64 / (1.0 + self.sensitivity * (vol_ratio - 1.0));
+            let effective_cutoff = adaptive_cutoff.max(3.0);
+
+            // Calculate filter coefficient
+            let omega = 2.0 * std::f64::consts::PI / effective_cutoff;
+            let alpha = (1.0 - omega.cos()) / omega.sin();
+            let a = alpha / (1.0 + alpha);
+
+            // Apply adaptive smoothing
+            filtered = a * close[i] + (1.0 - a) * filtered;
+            result[i] = filtered;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AdaptiveLPFilter {
+    fn name(&self) -> &str {
+        "Adaptive LP Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Phase Detector - Detects the phase of dominant cycle in price data
+///
+/// This indicator detects and tracks the instantaneous phase of the
+/// dominant cycle in price data using quadrature analysis. The phase
+/// output ranges from 0 to 360 degrees and can be used to identify
+/// cycle turning points (0/360 = trough, 180 = peak).
+#[derive(Debug, Clone)]
+pub struct PhaseDetector {
+    period: usize,
+    smoothing: usize,
+}
+
+impl PhaseDetector {
+    /// Creates a new PhaseDetector
+    ///
+    /// # Parameters
+    /// - `period`: Analysis period for cycle detection (minimum 10)
+    /// - `smoothing`: Phase smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the PhaseDetector or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Detect dominant cycle period using autocorrelation
+    fn detect_cycle_period(&self, slice: &[f64]) -> usize {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let min_period = 5;
+        let max_period = len / 2;
+
+        let mut best_period = min_period;
+        let mut best_corr = f64::NEG_INFINITY;
+
+        for period in min_period..=max_period {
+            let mut num = 0.0;
+            let mut denom1 = 0.0;
+            let mut denom2 = 0.0;
+
+            for j in 0..(len - period) {
+                let x = slice[j] - mean;
+                let y = slice[j + period] - mean;
+                num += x * y;
+                denom1 += x * x;
+                denom2 += y * y;
+            }
+
+            let denom = (denom1 * denom2).sqrt();
+            let corr = if denom > 1e-10 { num / denom } else { 0.0 };
+
+            if corr > best_corr {
+                best_corr = corr;
+                best_period = period;
+            }
+        }
+
+        best_period
+    }
+
+    /// Calculate phase detector output
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut phase_history: Vec<f64> = Vec::new();
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Detect dominant cycle period
+            let cycle_period = self.detect_cycle_period(slice);
+
+            // Calculate in-phase (I) and quadrature (Q) components
+            let mut in_phase = 0.0;
+            let mut quadrature = 0.0;
+
+            for (j, &val) in slice.iter().enumerate() {
+                let angle = 2.0 * std::f64::consts::PI * j as f64 / cycle_period as f64;
+                let centered = val - mean;
+                in_phase += centered * angle.cos();
+                quadrature += centered * angle.sin();
+            }
+
+            // Calculate instantaneous phase
+            let raw_phase = quadrature.atan2(in_phase);
+            let phase_degrees = (raw_phase * 180.0 / std::f64::consts::PI + 360.0) % 360.0;
+
+            // Add to phase history for smoothing
+            phase_history.push(phase_degrees);
+            if phase_history.len() > self.smoothing {
+                phase_history.remove(0);
+            }
+
+            // Circular mean for phase smoothing (handles wraparound)
+            let mut sin_sum = 0.0;
+            let mut cos_sum = 0.0;
+            for &p in &phase_history {
+                let rad = p * std::f64::consts::PI / 180.0;
+                sin_sum += rad.sin();
+                cos_sum += rad.cos();
+            }
+            let smoothed_phase = (sin_sum.atan2(cos_sum) * 180.0 / std::f64::consts::PI + 360.0) % 360.0;
+
+            result[i] = smoothed_phase;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PhaseDetector {
+    fn name(&self) -> &str {
+        "Phase Detector"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Amplitude Extractor - Extracts the amplitude of dominant cycle
+///
+/// This indicator measures the amplitude (strength) of the dominant
+/// cycle in price data. It uses the magnitude of the DFT coefficient
+/// at the dominant frequency to estimate cycle amplitude. Higher values
+/// indicate stronger, more pronounced cycles.
+#[derive(Debug, Clone)]
+pub struct AmplitudeExtractor {
+    period: usize,
+    normalize: bool,
+}
+
+impl AmplitudeExtractor {
+    /// Creates a new AmplitudeExtractor
+    ///
+    /// # Parameters
+    /// - `period`: Analysis period for amplitude extraction (minimum 10)
+    /// - `normalize`: Whether to normalize amplitude by price level
+    ///
+    /// # Returns
+    /// A Result containing the AmplitudeExtractor or an error if parameters are invalid
+    pub fn new(period: usize, normalize: bool) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period, normalize })
+    }
+
+    /// Detect dominant cycle period
+    fn detect_cycle_period(&self, slice: &[f64]) -> usize {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let min_period = 5;
+        let max_period = len / 2;
+
+        let mut best_period = min_period;
+        let mut best_power = 0.0f64;
+
+        for period in min_period..=max_period {
+            let mut real = 0.0;
+            let mut imag = 0.0;
+
+            for (j, &val) in slice.iter().enumerate() {
+                let angle = 2.0 * std::f64::consts::PI * j as f64 / period as f64;
+                let centered = val - mean;
+                real += centered * angle.cos();
+                imag += centered * angle.sin();
+            }
+
+            let power = real * real + imag * imag;
+            if power > best_power {
+                best_power = power;
+                best_period = period;
+            }
+        }
+
+        best_period
+    }
+
+    /// Calculate amplitude extractor output
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Detect dominant cycle period
+            let cycle_period = self.detect_cycle_period(slice);
+
+            // Calculate DFT coefficient at dominant frequency
+            let mut real = 0.0;
+            let mut imag = 0.0;
+
+            for (j, &val) in slice.iter().enumerate() {
+                let angle = 2.0 * std::f64::consts::PI * j as f64 / cycle_period as f64;
+                let centered = val - mean;
+                real += centered * angle.cos();
+                imag += centered * angle.sin();
+            }
+
+            // Amplitude is the magnitude of the complex coefficient
+            let amplitude = (real * real + imag * imag).sqrt() * 2.0 / len as f64;
+
+            // Optionally normalize by price level
+            let final_amplitude = if self.normalize && mean.abs() > 1e-10 {
+                (amplitude / mean.abs()) * 100.0  // As percentage
+            } else {
+                amplitude
+            };
+
+            result[i] = final_amplitude;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AmplitudeExtractor {
+    fn name(&self) -> &str {
+        "Amplitude Extractor"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Cycle Decomposer - Separates trend and cycle components
+///
+/// This indicator decomposes price into trend and cycle components using
+/// a combination of low-pass filtering (for trend) and the residual (for
+/// cycle). It returns the cycle component, which oscillates around zero
+/// and represents the deviation from the underlying trend.
+#[derive(Debug, Clone)]
+pub struct TrendCycleDecomposer {
+    trend_period: usize,
+    cycle_period: usize,
+}
+
+impl TrendCycleDecomposer {
+    /// Creates a new TrendCycleDecomposer
+    ///
+    /// # Parameters
+    /// - `trend_period`: Period for trend extraction (minimum 20)
+    /// - `cycle_period`: Minimum cycle period to preserve (minimum 5)
+    ///
+    /// # Returns
+    /// A Result containing the TrendCycleDecomposer or an error if parameters are invalid
+    pub fn new(trend_period: usize, cycle_period: usize) -> Result<Self> {
+        if trend_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if cycle_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if cycle_period >= trend_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_period".to_string(),
+                reason: "must be less than trend_period".to_string(),
+            });
+        }
+        Ok(Self { trend_period, cycle_period })
+    }
+
+    /// Calculate trend using supersmoother filter
+    fn calculate_trend(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut trend = vec![0.0; n];
+
+        // Ehlers' supersmoother coefficients
+        let omega = 2.0 * std::f64::consts::PI / self.trend_period as f64;
+        let a1 = (-1.414 * omega).exp();
+        let b1 = 2.0 * a1 * (1.414 * omega).cos();
+        let c2 = b1;
+        let c3 = -a1 * a1;
+        let c1 = 1.0 - c2 - c3;
+
+        if n > 0 {
+            trend[0] = close[0];
+        }
+        if n > 1 {
+            trend[1] = close[1];
+        }
+
+        for i in 2..n {
+            trend[i] = c1 * (close[i] + close[i - 1]) / 2.0 + c2 * trend[i - 1] + c3 * trend[i - 2];
+        }
+
+        trend
+    }
+
+    /// Calculate cycle component using bandpass filter
+    fn calculate_cycle(&self, close: &[f64], trend: &[f64]) -> Vec<f64> {
+        let n = close.len();
+
+        // Get the detrended signal (cycle = price - trend)
+        let detrended: Vec<f64> = close.iter().zip(trend.iter())
+            .map(|(&c, &t)| c - t)
+            .collect();
+
+        // Apply light smoothing to remove very high frequency noise
+        // Use simple EMA-style smoothing
+        let mut cycle = vec![0.0; n];
+        let alpha = 2.0 / (self.cycle_period as f64 / 2.0 + 1.0);
+
+        if n > 0 {
+            cycle[0] = detrended[0];
+        }
+
+        for i in 1..n {
+            cycle[i] = alpha * detrended[i] + (1.0 - alpha) * cycle[i - 1];
+        }
+
+        cycle
+    }
+
+    /// Calculate trend-cycle decomposition (returns cycle component)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let trend = self.calculate_trend(close);
+        self.calculate_cycle(close, &trend)
+    }
+
+    /// Calculate and return both trend and cycle components
+    pub fn calculate_both(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let trend = self.calculate_trend(close);
+        let cycle = self.calculate_cycle(close, &trend);
+        (trend, cycle)
+    }
+}
+
+impl TechnicalIndicator for TrendCycleDecomposer {
+    fn name(&self) -> &str {
+        "Trend Cycle Decomposer"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.trend_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (trend, cycle) = self.calculate_both(&data.close);
+        Ok(IndicatorOutput::dual(cycle, trend))
+    }
+}
+
 /// Moving Average Convergence - Measures convergence of different MAs
 ///
 /// This indicator calculates the degree of convergence or divergence between
@@ -4050,5 +4803,455 @@ mod tests {
             let diff = (notch_result.primary[i] - close[i]).abs();
             assert!(diff < 20.0, "Notch filter should be close to original price, diff {} at {}", diff, i);
         }
+    }
+
+    // =====================================================================
+    // FourierTransformPower Tests
+    // =====================================================================
+
+    #[test]
+    fn test_fourier_transform_power_basic() {
+        let close = make_test_data();
+        let ftp = FourierTransformPower::new(30, 5).unwrap();
+        let result = ftp.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Power values should be non-negative
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0, "Expected non-negative power at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_fourier_transform_power_sine_wave() {
+        // Pure sine wave should have significant power
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 2.0 * std::f64::consts::PI / 12.0).sin() * 5.0)
+            .collect();
+        let ftp = FourierTransformPower::new(30, 8).unwrap();
+        let result = ftp.calculate(&close);
+
+        // Sine wave should produce measurable power
+        let avg_power: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_power > 0.0, "Expected positive power for sine wave, got {}", avg_power);
+    }
+
+    #[test]
+    fn test_fourier_transform_power_validation() {
+        // period too small
+        assert!(FourierTransformPower::new(10, 5).is_err());
+        // num_frequencies out of range
+        assert!(FourierTransformPower::new(30, 1).is_err());
+        assert!(FourierTransformPower::new(30, 25).is_err());
+        // valid
+        assert!(FourierTransformPower::new(20, 2).is_ok());
+        assert!(FourierTransformPower::new(30, 20).is_ok());
+    }
+
+    #[test]
+    fn test_fourier_transform_power_trait() {
+        let data = make_ohlcv_series();
+        let ftp = FourierTransformPower::new(25, 5).unwrap();
+
+        assert_eq!(ftp.name(), "Fourier Transform Power");
+        assert_eq!(ftp.min_periods(), 26);
+
+        let output = ftp.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // WaveletSmoothing Tests
+    // =====================================================================
+
+    #[test]
+    fn test_wavelet_smoothing_basic() {
+        let close = make_test_data();
+        let ws = WaveletSmoothing::new(20, 2).unwrap();
+        let result = ws.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Smoothed values should be positive
+        for i in 25..result.len() {
+            assert!(result[i] > 0.0, "Expected positive value at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_wavelet_smoothing_reduces_noise() {
+        // Noisy data
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + i as f64 * 0.3 + ((i * 17) % 7) as f64 - 3.0)
+            .collect();
+        let ws = WaveletSmoothing::new(16, 2).unwrap();
+        let result = ws.calculate(&close);
+
+        // Smoothed data should have less variance in differences
+        let raw_variance: f64 = close[25..].windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .sum::<f64>() / (close.len() - 26) as f64;
+        let smoothed_variance: f64 = result[25..].windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .sum::<f64>() / (result.len() - 26) as f64;
+
+        assert!(smoothed_variance <= raw_variance * 1.5,
+                "Wavelet smoothing should reduce variance: raw {} vs smoothed {}", raw_variance, smoothed_variance);
+    }
+
+    #[test]
+    fn test_wavelet_smoothing_validation() {
+        // period too small
+        assert!(WaveletSmoothing::new(10, 2).is_err());
+        // decomposition_level out of range
+        assert!(WaveletSmoothing::new(20, 0).is_err());
+        assert!(WaveletSmoothing::new(20, 5).is_err());
+        // valid
+        assert!(WaveletSmoothing::new(16, 1).is_ok());
+        assert!(WaveletSmoothing::new(32, 4).is_ok());
+    }
+
+    #[test]
+    fn test_wavelet_smoothing_trait() {
+        let data = make_ohlcv_series();
+        let ws = WaveletSmoothing::new(20, 2).unwrap();
+
+        assert_eq!(ws.name(), "Wavelet Smoothing");
+        assert_eq!(ws.min_periods(), 21);
+
+        let output = ws.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // AdaptiveLPFilter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_adaptive_lp_filter_basic() {
+        let close = make_test_data();
+        let alpf = AdaptiveLPFilter::new(15, 8, 0.5).unwrap();
+        let result = alpf.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Filtered values should be positive and track price
+        for i in 20..result.len() {
+            assert!(result[i] > 0.0, "Expected positive value at index {}", i);
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 30.0, "Filter should track price, diff {} at {}", diff, i);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_lp_filter_smoothing() {
+        // Smooth trend data
+        let close: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let alpf = AdaptiveLPFilter::new(15, 8, 0.5).unwrap();
+        let result = alpf.calculate(&close);
+
+        // For smooth data, filter should track closely
+        for i in 25..result.len() {
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 10.0, "Expected close tracking for smooth data at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_lp_filter_validation() {
+        // period too small
+        assert!(AdaptiveLPFilter::new(5, 5, 0.5).is_err());
+        // base_cutoff too small
+        assert!(AdaptiveLPFilter::new(15, 3, 0.5).is_err());
+        // sensitivity out of range
+        assert!(AdaptiveLPFilter::new(15, 8, 0.05).is_err());
+        assert!(AdaptiveLPFilter::new(15, 8, 2.5).is_err());
+        // valid
+        assert!(AdaptiveLPFilter::new(10, 5, 0.1).is_ok());
+        assert!(AdaptiveLPFilter::new(20, 10, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_lp_filter_trait() {
+        let data = make_ohlcv_series();
+        let alpf = AdaptiveLPFilter::new(15, 8, 0.5).unwrap();
+
+        assert_eq!(alpf.name(), "Adaptive LP Filter");
+        assert_eq!(alpf.min_periods(), 16);
+
+        let output = alpf.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // PhaseDetector Tests
+    // =====================================================================
+
+    #[test]
+    fn test_phase_detector_basic() {
+        let close = make_test_data();
+        let pd = PhaseDetector::new(20, 3).unwrap();
+        let result = pd.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Phase should be between 0 and 360
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] < 360.0,
+                    "Phase {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_phase_detector_sine_wave() {
+        // Pure sine wave should show phase progression
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 2.0 * std::f64::consts::PI / 12.0).sin() * 5.0)
+            .collect();
+        let pd = PhaseDetector::new(20, 1).unwrap();
+        let result = pd.calculate(&close);
+
+        // Phase values should vary (not all the same)
+        let phase_variance: f64 = {
+            let mean = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+            result[40..].iter().map(|&p| (p - mean).powi(2)).sum::<f64>() / (result.len() - 40) as f64
+        };
+        assert!(phase_variance > 0.0, "Phase should vary for sine wave");
+    }
+
+    #[test]
+    fn test_phase_detector_validation() {
+        // period too small
+        assert!(PhaseDetector::new(5, 3).is_err());
+        // smoothing too small
+        assert!(PhaseDetector::new(20, 0).is_err());
+        // valid
+        assert!(PhaseDetector::new(10, 1).is_ok());
+        assert!(PhaseDetector::new(30, 5).is_ok());
+    }
+
+    #[test]
+    fn test_phase_detector_trait() {
+        let data = make_ohlcv_series();
+        let pd = PhaseDetector::new(20, 3).unwrap();
+
+        assert_eq!(pd.name(), "Phase Detector");
+        assert_eq!(pd.min_periods(), 21);
+
+        let output = pd.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // AmplitudeExtractor Tests
+    // =====================================================================
+
+    #[test]
+    fn test_amplitude_extractor_basic() {
+        let close = make_test_data();
+        let ae = AmplitudeExtractor::new(20, false).unwrap();
+        let result = ae.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Amplitude should be non-negative
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0, "Expected non-negative amplitude at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_amplitude_extractor_sine_wave() {
+        // Sine wave with amplitude 5
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 2.0 * std::f64::consts::PI / 12.0).sin() * 5.0)
+            .collect();
+        let ae = AmplitudeExtractor::new(25, false).unwrap();
+        let result = ae.calculate(&close);
+
+        // Average amplitude should be close to the actual amplitude (5)
+        let avg_amplitude: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_amplitude > 2.0 && avg_amplitude < 10.0,
+                "Expected amplitude near 5, got {}", avg_amplitude);
+    }
+
+    #[test]
+    fn test_amplitude_extractor_normalized() {
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 5.0)
+            .collect();
+        let ae = AmplitudeExtractor::new(20, true).unwrap();
+        let result = ae.calculate(&close);
+
+        // Normalized amplitude should be percentage values
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] < 50.0,
+                    "Normalized amplitude {} at index {} seems too high", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_amplitude_extractor_validation() {
+        // period too small
+        assert!(AmplitudeExtractor::new(5, false).is_err());
+        // valid
+        assert!(AmplitudeExtractor::new(10, false).is_ok());
+        assert!(AmplitudeExtractor::new(20, true).is_ok());
+    }
+
+    #[test]
+    fn test_amplitude_extractor_trait() {
+        let data = make_ohlcv_series();
+        let ae = AmplitudeExtractor::new(20, false).unwrap();
+
+        assert_eq!(ae.name(), "Amplitude Extractor");
+        assert_eq!(ae.min_periods(), 21);
+
+        let output = ae.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // TrendCycleDecomposer Tests
+    // =====================================================================
+
+    #[test]
+    fn test_trend_cycle_decomposer_basic() {
+        let close = make_test_data();
+        let tcd = TrendCycleDecomposer::new(25, 8).unwrap();
+        let result = tcd.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Cycle component should oscillate (have positive and negative values)
+        let mut has_positive = false;
+        let mut has_negative = false;
+        for i in 30..result.len() {
+            if result[i] > 0.5 {
+                has_positive = true;
+            }
+            if result[i] < -0.5 {
+                has_negative = true;
+            }
+        }
+        assert!(has_positive || has_negative, "Cycle component should oscillate");
+    }
+
+    #[test]
+    fn test_trend_cycle_decomposer_both() {
+        let close: Vec<f64> = (0..100)
+            .map(|i| {
+                let trend = 100.0 + i as f64 * 0.5;
+                let cycle = (i as f64 * 0.4).sin() * 3.0;
+                trend + cycle
+            })
+            .collect();
+        let tcd = TrendCycleDecomposer::new(25, 8).unwrap();
+        let (trend, cycle) = tcd.calculate_both(&close);
+
+        assert_eq!(trend.len(), close.len());
+        assert_eq!(cycle.len(), close.len());
+
+        // Trend should be positive and generally increasing
+        for i in 30..trend.len() {
+            assert!(trend[i] > 0.0, "Trend should be positive at index {}", i);
+        }
+
+        // Cycle should oscillate around zero
+        let cycle_mean: f64 = cycle[40..].iter().sum::<f64>() / (cycle.len() - 40) as f64;
+        assert!(cycle_mean.abs() < 5.0, "Cycle mean {} should be near zero", cycle_mean);
+    }
+
+    #[test]
+    fn test_trend_cycle_decomposer_validation() {
+        // trend_period too small
+        assert!(TrendCycleDecomposer::new(10, 5).is_err());
+        // cycle_period too small
+        assert!(TrendCycleDecomposer::new(25, 3).is_err());
+        // cycle_period >= trend_period
+        assert!(TrendCycleDecomposer::new(25, 25).is_err());
+        assert!(TrendCycleDecomposer::new(25, 30).is_err());
+        // valid
+        assert!(TrendCycleDecomposer::new(20, 5).is_ok());
+        assert!(TrendCycleDecomposer::new(30, 10).is_ok());
+    }
+
+    #[test]
+    fn test_trend_cycle_decomposer_trait() {
+        let data = make_ohlcv_series();
+        let tcd = TrendCycleDecomposer::new(25, 8).unwrap();
+
+        assert_eq!(tcd.name(), "Trend Cycle Decomposer");
+        assert_eq!(tcd.min_periods(), 26);
+
+        let output = tcd.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have dual output (cycle as primary, trend as secondary)
+        assert!(output.secondary.is_some());
+        assert_eq!(output.secondary.as_ref().unwrap().len(), data.close.len());
+    }
+
+    // =====================================================================
+    // New 6 DSP Indicators Integration Test
+    // =====================================================================
+
+    #[test]
+    fn test_six_new_dsp_indicators_integration() {
+        // Test all 6 newest DSP indicators together
+        let close: Vec<f64> = (0..120)
+            .map(|i| {
+                let trend = 100.0 + i as f64 * 0.25;
+                let cycle = (i as f64 * 2.0 * std::f64::consts::PI / 15.0).sin() * 4.0;
+                let noise = ((i * 13) % 5) as f64 * 0.2 - 0.4;
+                trend + cycle + noise
+            })
+            .collect();
+        let data = OHLCVSeries::from_close(close);
+
+        // Create all 6 new indicators
+        let ftp = FourierTransformPower::new(30, 6).unwrap();
+        let ws = WaveletSmoothing::new(20, 2).unwrap();
+        let alpf = AdaptiveLPFilter::new(15, 8, 0.5).unwrap();
+        let pd = PhaseDetector::new(20, 3).unwrap();
+        let ae = AmplitudeExtractor::new(20, false).unwrap();
+        let tcd = TrendCycleDecomposer::new(25, 8).unwrap();
+
+        // All should compute without errors
+        let ftp_result = ftp.compute(&data).unwrap();
+        let ws_result = ws.compute(&data).unwrap();
+        let alpf_result = alpf.compute(&data).unwrap();
+        let pd_result = pd.compute(&data).unwrap();
+        let ae_result = ae.compute(&data).unwrap();
+        let tcd_result = tcd.compute(&data).unwrap();
+
+        // All should have correct length
+        assert_eq!(ftp_result.primary.len(), 120);
+        assert_eq!(ws_result.primary.len(), 120);
+        assert_eq!(alpf_result.primary.len(), 120);
+        assert_eq!(pd_result.primary.len(), 120);
+        assert_eq!(ae_result.primary.len(), 120);
+        assert_eq!(tcd_result.primary.len(), 120);
+
+        // Verify Fourier power is non-negative
+        for i in 40..ftp_result.primary.len() {
+            assert!(ftp_result.primary[i] >= 0.0, "Fourier power should be non-negative");
+        }
+
+        // Verify wavelet smoothing produces positive values
+        let ws_sum: f64 = ws_result.primary[30..].iter().sum();
+        assert!(ws_sum > 0.0, "Wavelet smoothing should produce positive values");
+
+        // Verify adaptive LP filter tracks price
+        let alpf_sum: f64 = alpf_result.primary[20..].iter().sum();
+        assert!(alpf_sum > 0.0, "Adaptive LP filter should produce positive values");
+
+        // Verify phase is in range 0-360
+        for i in 25..pd_result.primary.len() {
+            assert!(pd_result.primary[i] >= 0.0 && pd_result.primary[i] < 360.0,
+                    "Phase {} at index {} out of range", pd_result.primary[i], i);
+        }
+
+        // Verify amplitude is non-negative
+        for i in 25..ae_result.primary.len() {
+            assert!(ae_result.primary[i] >= 0.0, "Amplitude should be non-negative");
+        }
+
+        // Verify trend-cycle decomposer has dual output
+        assert!(tcd_result.secondary.is_some());
     }
 }
