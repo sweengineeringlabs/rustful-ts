@@ -86,4 +86,7 @@ pub use advanced::{
     VolumeAnomaly, VolumePriceConfirmation, VolumeExhaustion,
     VolumeWeightedMomentum, VolumeForceIndex, CumulativeVolumeOscillator,
     VolumeRateOfChange, RelativeVolumeProfile, VolumeImpulse,
+    // New volume indicators
+    VolumeWeightedTrend, VolumeMomentumOscillator, VolumeAccumulationTrend,
+    AdaptiveVolumeMA, VolumeFlowIndex, VolumePressureIndex,
 };

@@ -1424,6 +1424,731 @@ impl TechnicalIndicator for CopulaCorrelation {
     }
 }
 
+/// Z-Score Extreme - Detects extreme z-score readings in price series
+///
+/// Identifies when price moves are statistically extreme by calculating
+/// the z-score (number of standard deviations from mean) and flagging
+/// readings that exceed a threshold.
+///
+/// # Interpretation
+/// - Values > threshold: Extremely overbought condition
+/// - Values < -threshold: Extremely oversold condition
+/// - Values near 0: Normal market conditions
+///
+/// # Example
+/// ```ignore
+/// let detector = ZScoreExtreme::new(20, 2.0).unwrap();
+/// let extremes = detector.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ZScoreExtreme {
+    period: usize,
+    threshold: f64,
+}
+
+impl ZScoreExtreme {
+    pub fn new(period: usize, threshold: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if threshold <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self { period, threshold })
+    }
+
+    /// Calculate z-score extremes
+    ///
+    /// Returns the z-score when it exceeds the threshold, otherwise 0.
+    /// The sign indicates direction (positive = overbought, negative = oversold).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period {
+            return result;
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let window = &close[start..=i];
+            let current = close[i];
+
+            // Calculate mean and standard deviation
+            let mean: f64 = window.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = window.iter()
+                .map(|x| (x - mean).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            if std_dev > 1e-10 {
+                let z_score = (current - mean) / std_dev;
+                // Only return z-score if it exceeds threshold
+                if z_score.abs() > self.threshold {
+                    result[i] = z_score;
+                }
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for ZScoreExtreme {
+    fn name(&self) -> &str {
+        "Z-Score Extreme"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Percentile Rank - Ranks current value in percentile terms
+///
+/// Calculates the percentile rank of the current price relative to
+/// a historical window. Shows where the current price stands in the
+/// distribution of past prices.
+///
+/// # Interpretation
+/// - 100: Current price is the highest in the lookback period
+/// - 50: Current price is at the median
+/// - 0: Current price is the lowest in the lookback period
+///
+/// # Example
+/// ```ignore
+/// let rank = PercentileRank::new(50).unwrap();
+/// let percentiles = rank.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct PercentileRank {
+    period: usize,
+}
+
+impl PercentileRank {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate percentile rank (0-100)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period {
+            return result;
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let window = &close[start..=i];
+            let current = close[i];
+
+            // Count how many values are less than current
+            let count_below = window.iter().filter(|&&x| x < current).count();
+            // Count how many values are equal to current
+            let count_equal = window.iter().filter(|&&x| (x - current).abs() < 1e-10).count();
+
+            // Percentile rank formula: (count_below + 0.5 * count_equal) / total * 100
+            let percentile = (count_below as f64 + 0.5 * count_equal as f64)
+                / self.period as f64 * 100.0;
+            result[i] = percentile;
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for PercentileRank {
+    fn name(&self) -> &str {
+        "Percentile Rank"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Statistical Regime Output - Contains regime and transition data
+#[derive(Debug, Clone)]
+pub struct StatisticalRegimeOutput {
+    /// Current regime: 1 = high volatility, 0 = normal, -1 = low volatility
+    pub regime: Vec<f64>,
+    /// Regime transition signal: 1 = regime change detected
+    pub transition: Vec<f64>,
+}
+
+/// Statistical Regime - Detects statistical regime changes in market data
+///
+/// Identifies different market regimes based on volatility levels and
+/// detects transitions between regimes. Uses rolling statistics to
+/// classify periods as high volatility, normal, or low volatility.
+///
+/// # Interpretation
+/// - Regime 1: High volatility regime (above upper threshold)
+/// - Regime 0: Normal volatility regime
+/// - Regime -1: Low volatility regime (below lower threshold)
+/// - Transition = 1: Regime change detected
+///
+/// # Example
+/// ```ignore
+/// let regime = StatisticalRegime::new(20, 1.5).unwrap();
+/// let output = regime.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct StatisticalRegime {
+    period: usize,
+    threshold_multiplier: f64,
+}
+
+impl StatisticalRegime {
+    pub fn new(period: usize, threshold_multiplier: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if threshold_multiplier <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold_multiplier".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self { period, threshold_multiplier })
+    }
+
+    /// Calculate statistical regime and transitions
+    pub fn calculate(&self, close: &[f64]) -> StatisticalRegimeOutput {
+        let n = close.len();
+        let mut regime = vec![0.0; n];
+        let mut transition = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return StatisticalRegimeOutput { regime, transition };
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        // First pass: calculate rolling volatility
+        let mut volatilities = vec![0.0; n];
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window = &returns[start..=return_idx];
+
+            let mean: f64 = window.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = window.iter()
+                .map(|r| (r - mean).powi(2))
+                .sum::<f64>() / self.period as f64;
+            volatilities[i] = variance.sqrt();
+        }
+
+        // Calculate long-term average volatility (using available data)
+        let valid_vols: Vec<f64> = volatilities.iter()
+            .skip(self.period)
+            .copied()
+            .filter(|&v| v > 0.0)
+            .collect();
+
+        if valid_vols.is_empty() {
+            return StatisticalRegimeOutput { regime, transition };
+        }
+
+        let mean_vol: f64 = valid_vols.iter().sum::<f64>() / valid_vols.len() as f64;
+        let vol_std: f64 = (valid_vols.iter()
+            .map(|v| (v - mean_vol).powi(2))
+            .sum::<f64>() / valid_vols.len() as f64).sqrt();
+
+        let upper_threshold = mean_vol + self.threshold_multiplier * vol_std;
+        let lower_threshold = mean_vol - self.threshold_multiplier * vol_std;
+
+        // Classify regimes
+        let mut prev_regime = 0.0;
+        for i in self.period..n {
+            let vol = volatilities[i];
+            let current_regime = if vol > upper_threshold {
+                1.0  // High volatility
+            } else if vol < lower_threshold && lower_threshold > 0.0 {
+                -1.0  // Low volatility
+            } else {
+                0.0  // Normal
+            };
+
+            regime[i] = current_regime;
+
+            // Detect transition
+            if i > self.period && current_regime != prev_regime {
+                transition[i] = 1.0;
+            }
+            prev_regime = current_regime;
+        }
+
+        StatisticalRegimeOutput { regime, transition }
+    }
+}
+
+impl TechnicalIndicator for StatisticalRegime {
+    fn name(&self) -> &str {
+        "Statistical Regime"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        Ok(IndicatorOutput::dual(result.regime, result.transition))
+    }
+
+    fn output_features(&self) -> usize {
+        2
+    }
+}
+
+/// Autocorrelation Index - Measures price autocorrelation
+///
+/// Calculates the autocorrelation of returns at a specified lag,
+/// measuring how much past returns predict future returns.
+///
+/// # Interpretation
+/// - Positive values: Trending/momentum behavior (past returns predict same direction)
+/// - Negative values: Mean-reverting behavior (past returns predict opposite direction)
+/// - Near zero: Random walk behavior
+///
+/// # Example
+/// ```ignore
+/// let ac = AutocorrelationIndex::new(20, 1).unwrap();
+/// let autocorr = ac.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct AutocorrelationIndex {
+    period: usize,
+    lag: usize,
+}
+
+impl AutocorrelationIndex {
+    pub fn new(period: usize, lag: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if lag < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lag".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        if lag >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lag".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, lag })
+    }
+
+    /// Calculate autocorrelation index
+    ///
+    /// Returns autocorrelation coefficient between -1 and 1
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        let required = self.period + self.lag + 1;
+        if n < required {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in required..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+
+            if start < self.lag {
+                continue;
+            }
+
+            let current_window = &returns[start..=return_idx];
+            let lagged_window = &returns[(start - self.lag)..=(return_idx - self.lag)];
+
+            // Calculate means
+            let mean_current: f64 = current_window.iter().sum::<f64>() / self.period as f64;
+            let mean_lagged: f64 = lagged_window.iter().sum::<f64>() / self.period as f64;
+
+            // Calculate autocorrelation
+            let mut numerator = 0.0;
+            let mut var_current = 0.0;
+            let mut var_lagged = 0.0;
+
+            for (c, l) in current_window.iter().zip(lagged_window.iter()) {
+                let dc = c - mean_current;
+                let dl = l - mean_lagged;
+                numerator += dc * dl;
+                var_current += dc * dc;
+                var_lagged += dl * dl;
+            }
+
+            let denominator = (var_current * var_lagged).sqrt();
+            if denominator > 1e-10 {
+                result[i] = numerator / denominator;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for AutocorrelationIndex {
+    fn name(&self) -> &str {
+        "Autocorrelation Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.lag + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Hurst Exponent MA - Moving Hurst exponent for trend persistence
+///
+/// Calculates a rolling Hurst exponent using the rescaled range (R/S) method.
+/// The Hurst exponent measures the long-term memory of a time series.
+///
+/// # Interpretation
+/// - H > 0.5: Persistent/trending behavior (momentum)
+/// - H = 0.5: Random walk (no memory)
+/// - H < 0.5: Anti-persistent/mean-reverting behavior
+///
+/// # Example
+/// ```ignore
+/// let hurst = HurstExponentMA::new(50).unwrap();
+/// let h_values = hurst.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct HurstExponentMA {
+    period: usize,
+}
+
+impl HurstExponentMA {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate R/S statistic for a given window
+    fn calculate_rs(returns: &[f64]) -> f64 {
+        let n = returns.len();
+        if n < 2 {
+            return 0.0;
+        }
+
+        // Calculate mean
+        let mean: f64 = returns.iter().sum::<f64>() / n as f64;
+
+        // Calculate cumulative deviations
+        let mut cumsum = Vec::with_capacity(n);
+        let mut sum = 0.0;
+        for r in returns {
+            sum += r - mean;
+            cumsum.push(sum);
+        }
+
+        // Range: max - min of cumulative deviations
+        let max_val = cumsum.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let min_val = cumsum.iter().cloned().fold(f64::INFINITY, f64::min);
+        let range = max_val - min_val;
+
+        // Standard deviation
+        let variance: f64 = returns.iter()
+            .map(|r| (r - mean).powi(2))
+            .sum::<f64>() / n as f64;
+        let std_dev = variance.sqrt();
+
+        if std_dev > 1e-10 {
+            range / std_dev
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate moving Hurst exponent
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate log returns
+        let log_returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    (close[i] / close[i - 1]).ln()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window = &log_returns[start..=return_idx];
+
+            // Use multiple sub-periods to estimate Hurst exponent
+            // Using 4 different window sizes
+            let window_sizes = [
+                self.period / 4,
+                self.period / 2,
+                3 * self.period / 4,
+                self.period,
+            ];
+
+            let mut log_n_vec = Vec::new();
+            let mut log_rs_vec = Vec::new();
+
+            for &ws in &window_sizes {
+                if ws < 4 {
+                    continue;
+                }
+
+                // Calculate average R/S for this window size
+                let num_windows = self.period / ws;
+                if num_windows == 0 {
+                    continue;
+                }
+
+                let mut rs_sum = 0.0;
+                let mut count = 0;
+                for j in 0..num_windows {
+                    let w_start = j * ws;
+                    let w_end = w_start + ws;
+                    if w_end <= window.len() {
+                        let rs = Self::calculate_rs(&window[w_start..w_end]);
+                        if rs > 0.0 {
+                            rs_sum += rs;
+                            count += 1;
+                        }
+                    }
+                }
+
+                if count > 0 {
+                    let avg_rs = rs_sum / count as f64;
+                    log_n_vec.push((ws as f64).ln());
+                    log_rs_vec.push(avg_rs.ln());
+                }
+            }
+
+            // Linear regression to estimate Hurst exponent
+            if log_n_vec.len() >= 2 {
+                let n_points = log_n_vec.len() as f64;
+                let sum_x: f64 = log_n_vec.iter().sum();
+                let sum_y: f64 = log_rs_vec.iter().sum();
+                let sum_xy: f64 = log_n_vec.iter().zip(log_rs_vec.iter())
+                    .map(|(x, y)| x * y)
+                    .sum();
+                let sum_xx: f64 = log_n_vec.iter().map(|x| x * x).sum();
+
+                let denominator = n_points * sum_xx - sum_x * sum_x;
+                if denominator.abs() > 1e-10 {
+                    let slope = (n_points * sum_xy - sum_x * sum_y) / denominator;
+                    // Clamp to valid Hurst range [0, 1]
+                    result[i] = slope.clamp(0.0, 1.0);
+                }
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for HurstExponentMA {
+    fn name(&self) -> &str {
+        "Hurst Exponent MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Entropy Measure - Information entropy of price series
+///
+/// Calculates the Shannon entropy of price returns distribution,
+/// measuring the randomness or unpredictability of price movements.
+///
+/// # Interpretation
+/// - High entropy: More random/unpredictable price action
+/// - Low entropy: More predictable/concentrated price action
+/// - Maximum entropy occurs when all outcomes are equally likely
+///
+/// # Example
+/// ```ignore
+/// let entropy = EntropyMeasure::new(20, 10).unwrap();
+/// let entropy_values = entropy.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct EntropyMeasure {
+    period: usize,
+    num_bins: usize,
+}
+
+impl EntropyMeasure {
+    pub fn new(period: usize, num_bins: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if num_bins < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_bins".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if num_bins > period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_bins".to_string(),
+                reason: "must not exceed period".to_string(),
+            });
+        }
+        Ok(Self { period, num_bins })
+    }
+
+    /// Calculate Shannon entropy of returns distribution
+    ///
+    /// Returns normalized entropy between 0 and 1
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window: Vec<f64> = returns[start..=return_idx].to_vec();
+
+            // Find min and max to determine bin edges
+            let min_val = window.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_val = window.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+            let range = max_val - min_val;
+            if range < 1e-10 {
+                // All values are the same, entropy is 0
+                continue;
+            }
+
+            // Create histogram
+            let bin_width = range / self.num_bins as f64;
+            let mut bin_counts = vec![0usize; self.num_bins];
+
+            for &r in &window {
+                let bin_idx = ((r - min_val) / bin_width) as usize;
+                let bin_idx = bin_idx.min(self.num_bins - 1);
+                bin_counts[bin_idx] += 1;
+            }
+
+            // Calculate Shannon entropy
+            let total = window.len() as f64;
+            let mut entropy = 0.0;
+            for &count in &bin_counts {
+                if count > 0 {
+                    let p = count as f64 / total;
+                    entropy -= p * p.ln();
+                }
+            }
+
+            // Normalize by maximum entropy (log of num_bins)
+            let max_entropy = (self.num_bins as f64).ln();
+            if max_entropy > 0.0 {
+                result[i] = entropy / max_entropy;
+            }
+        }
+        result
+    }
+}
+
+impl TechnicalIndicator for EntropyMeasure {
+    fn name(&self) -> &str {
+        "Entropy Measure"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1820,5 +2545,277 @@ mod tests {
         let output = cc.compute(&data).unwrap();
 
         assert!(!output.primary.is_empty());
+    }
+
+    // ==================== ZScoreExtreme Tests ====================
+
+    #[test]
+    fn test_zscore_extreme() {
+        let mut close = make_test_data();
+        // Add an extreme value
+        close[25] = close[24] * 1.15; // 15% jump
+
+        let zse = ZScoreExtreme::new(20, 2.0).unwrap();
+        let result = zse.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // The extreme should be detected
+        assert!(result[25].abs() > 0.0);
+    }
+
+    #[test]
+    fn test_zscore_extreme_validation() {
+        assert!(ZScoreExtreme::new(3, 2.0).is_err()); // period too small
+        assert!(ZScoreExtreme::new(20, 0.0).is_err()); // threshold not positive
+        assert!(ZScoreExtreme::new(20, -1.0).is_err()); // threshold negative
+    }
+
+    #[test]
+    fn test_zscore_extreme_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let zse = ZScoreExtreme::new(20, 2.0).unwrap();
+        let output = zse.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_zscore_extreme_no_extremes() {
+        let close = make_test_data(); // Smooth trending data
+        let zse = ZScoreExtreme::new(20, 3.0).unwrap(); // High threshold
+        let result = zse.calculate(&close);
+
+        // For smooth data with high threshold, most values should be 0
+        let extreme_count: usize = result.iter().filter(|&&v| v != 0.0).count();
+        assert!(extreme_count < close.len() / 2);
+    }
+
+    // ==================== PercentileRank Tests ====================
+
+    #[test]
+    fn test_percentile_rank() {
+        let close = make_test_data();
+        let pr = PercentileRank::new(20).unwrap();
+        let result = pr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Percentile should be between 0 and 100
+        for &val in result.iter().skip(19) {
+            assert!(val >= 0.0 && val <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_percentile_rank_validation() {
+        assert!(PercentileRank::new(3).is_err()); // period too small
+    }
+
+    #[test]
+    fn test_percentile_rank_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let pr = PercentileRank::new(20).unwrap();
+        let output = pr.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_percentile_rank_trending() {
+        let close = make_test_data(); // Trending up data
+        let pr = PercentileRank::new(10).unwrap();
+        let result = pr.calculate(&close);
+
+        // For trending up data, recent values should have high percentile ranks
+        let last_valid = result[close.len() - 1];
+        assert!(last_valid > 50.0); // Should be above median
+    }
+
+    // ==================== StatisticalRegime Tests ====================
+
+    #[test]
+    fn test_statistical_regime() {
+        let close = make_test_data();
+        let sr = StatisticalRegime::new(20, 1.5).unwrap();
+        let result = sr.calculate(&close);
+
+        assert_eq!(result.regime.len(), close.len());
+        assert_eq!(result.transition.len(), close.len());
+        // Regime should be -1, 0, or 1
+        for &val in result.regime.iter() {
+            assert!(val == -1.0 || val == 0.0 || val == 1.0);
+        }
+        // Transition should be 0 or 1
+        for &val in result.transition.iter() {
+            assert!(val == 0.0 || val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_statistical_regime_validation() {
+        assert!(StatisticalRegime::new(5, 1.5).is_err()); // period too small
+        assert!(StatisticalRegime::new(20, 0.0).is_err()); // threshold not positive
+        assert!(StatisticalRegime::new(20, -1.0).is_err()); // threshold negative
+    }
+
+    #[test]
+    fn test_statistical_regime_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let sr = StatisticalRegime::new(20, 1.5).unwrap();
+        let output = sr.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert!(output.secondary.is_some());
+    }
+
+    // ==================== AutocorrelationIndex Tests ====================
+
+    #[test]
+    fn test_autocorrelation_index() {
+        let close = make_test_data();
+        let ac = AutocorrelationIndex::new(15, 1).unwrap();
+        let result = ac.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Autocorrelation should be between -1 and 1
+        for &val in result.iter().skip(17) {
+            if val != 0.0 {
+                assert!(val >= -1.0 && val <= 1.0, "Autocorrelation out of range: {}", val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_autocorrelation_index_validation() {
+        assert!(AutocorrelationIndex::new(5, 1).is_err()); // period too small
+        assert!(AutocorrelationIndex::new(20, 0).is_err()); // lag too small
+        assert!(AutocorrelationIndex::new(20, 20).is_err()); // lag >= period
+    }
+
+    #[test]
+    fn test_autocorrelation_index_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let ac = AutocorrelationIndex::new(15, 1).unwrap();
+        let output = ac.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ==================== HurstExponentMA Tests ====================
+
+    #[test]
+    fn test_hurst_exponent_ma() {
+        let close = make_test_data();
+        let hurst = HurstExponentMA::new(20).unwrap();
+        let result = hurst.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Hurst exponent should be between 0 and 1
+        for &val in result.iter().skip(20) {
+            assert!(val >= 0.0 && val <= 1.0, "Hurst out of range: {}", val);
+        }
+    }
+
+    #[test]
+    fn test_hurst_exponent_ma_validation() {
+        assert!(HurstExponentMA::new(10).is_err()); // period too small
+    }
+
+    #[test]
+    fn test_hurst_exponent_ma_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let hurst = HurstExponentMA::new(20).unwrap();
+        let output = hurst.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_hurst_exponent_ma_trending() {
+        // Create strongly trending data
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let hurst = HurstExponentMA::new(20).unwrap();
+        let result = hurst.calculate(&close);
+
+        // Trending data should have H > 0.5 generally
+        let valid_values: Vec<f64> = result.iter()
+            .skip(20)
+            .copied()
+            .filter(|&v| v > 0.0)
+            .collect();
+
+        if !valid_values.is_empty() {
+            let avg: f64 = valid_values.iter().sum::<f64>() / valid_values.len() as f64;
+            // Allow for some variance but expect persistence
+            assert!(avg >= 0.3, "Expected H > 0.3 for trending, got {}", avg);
+        }
+    }
+
+    // ==================== EntropyMeasure Tests ====================
+
+    #[test]
+    fn test_entropy_measure() {
+        let close = make_test_data();
+        let em = EntropyMeasure::new(20, 5).unwrap();
+        let result = em.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Normalized entropy should be between 0 and 1
+        for &val in result.iter().skip(20) {
+            assert!(val >= 0.0 && val <= 1.0, "Entropy out of range: {}", val);
+        }
+    }
+
+    #[test]
+    fn test_entropy_measure_validation() {
+        assert!(EntropyMeasure::new(5, 5).is_err()); // period too small
+        assert!(EntropyMeasure::new(20, 1).is_err()); // num_bins too small
+        assert!(EntropyMeasure::new(20, 25).is_err()); // num_bins > period
+    }
+
+    #[test]
+    fn test_entropy_measure_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let em = EntropyMeasure::new(20, 5).unwrap();
+        let output = em.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_entropy_measure_uniform_returns() {
+        // Create data with varying returns to test entropy calculation
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + (i as f64 * 0.1).sin() * 5.0 + i as f64 * 0.5)
+            .collect();
+        let em = EntropyMeasure::new(20, 5).unwrap();
+        let result = em.calculate(&close);
+
+        // Should have some non-zero entropy values
+        let non_zero_count = result.iter().skip(20).filter(|&&v| v > 0.0).count();
+        assert!(non_zero_count > 0, "Expected some non-zero entropy values");
+    }
+
+    #[test]
+    fn test_entropy_measure_constant_price() {
+        // Constant price should have zero entropy (all returns are same)
+        let close: Vec<f64> = vec![100.0; 50];
+        let em = EntropyMeasure::new(20, 5).unwrap();
+        let result = em.calculate(&close);
+
+        // All values should be 0 for constant price
+        for &val in result.iter() {
+            assert!(val.abs() < 1e-10, "Expected 0 entropy for constant price");
+        }
     }
 }

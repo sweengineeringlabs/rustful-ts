@@ -72,4 +72,6 @@ pub use advanced::{
     MeanReversionStrength, DistributionMoments, DistributionMomentsOutput,
     OutlierDetector, RollingBeta, RollingAlpha, InformationCoefficient,
     RankCorrelation, TailDependence, TailDependenceOutput, CopulaCorrelation,
+    ZScoreExtreme, PercentileRank, StatisticalRegime, StatisticalRegimeOutput,
+    AutocorrelationIndex, HurstExponentMA, EntropyMeasure,
 };

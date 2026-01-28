@@ -61,4 +61,8 @@ pub use advanced::{
     VolatilityClustering, VolatilityAsymmetry, VolatilityEfficiency,
     VolatilityAcceleration, VolatilityMeanReversionDistance, VolatilitySpread,
     NormalizedRangeVolatility, VolatilitySkewIndicator, AdaptiveVolatilityBands,
+    // 6 NEW volatility indicators
+    VolatilityRegimeDetector, VolRegimeLevel, VolatilityBreakoutSignal,
+    EnhancedVolatilityMeanReversion, VolatilitySkewRatio,
+    VolatilityClusteringIndex, DynamicAdaptiveVolatilityBands,
 };

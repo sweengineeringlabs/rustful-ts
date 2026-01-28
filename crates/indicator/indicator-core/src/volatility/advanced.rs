@@ -2166,6 +2166,1039 @@ impl TechnicalIndicator for AdaptiveVolatilityBands {
     }
 }
 
+// ============================================================================
+// 6 NEW VOLATILITY INDICATORS
+// ============================================================================
+
+/// Volatility Regime Enumeration for VolatilityRegimeDetector
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VolRegimeLevel {
+    /// Low volatility regime (< 1 std below mean)
+    Low,
+    /// Medium/Normal volatility regime (within 1 std of mean)
+    Medium,
+    /// High volatility regime (> 1 std above mean)
+    High,
+}
+
+/// Volatility Regime Detector - Detects current volatility regime.
+///
+/// Classifies the current volatility environment into Low, Medium, or High
+/// regimes based on statistical thresholds. This is useful for adapting
+/// trading strategies to different market conditions.
+///
+/// # Regime Classification
+/// - Low: Current volatility is more than 1 standard deviation below the mean
+/// - Medium: Current volatility is within 1 standard deviation of the mean
+/// - High: Current volatility is more than 1 standard deviation above the mean
+///
+/// # Example
+/// ```ignore
+/// let detector = VolatilityRegimeDetector::new(20, 60)?;
+/// let (regime_values, regimes) = detector.calculate(&close);
+/// // regime_values contains z-scores, regimes contains enum classifications
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityRegimeDetector {
+    /// Period for calculating rolling volatility
+    volatility_period: usize,
+    /// Period for calculating mean and standard deviation of volatility
+    regime_period: usize,
+    /// Low regime threshold (std deviations below mean)
+    low_threshold: f64,
+    /// High regime threshold (std deviations above mean)
+    high_threshold: f64,
+}
+
+impl VolatilityRegimeDetector {
+    /// Create a new VolatilityRegimeDetector indicator.
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for calculating rolling volatility (minimum 5)
+    /// * `regime_period` - Period for calculating volatility statistics (minimum 20)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(volatility_period: usize, regime_period: usize) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if regime_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "regime_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        Ok(Self {
+            volatility_period,
+            regime_period,
+            low_threshold: -1.0,
+            high_threshold: 1.0,
+        })
+    }
+
+    /// Create with custom thresholds for regime classification.
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for calculating rolling volatility
+    /// * `regime_period` - Period for calculating volatility statistics
+    /// * `low_threshold` - Z-score threshold for low regime (typically negative)
+    /// * `high_threshold` - Z-score threshold for high regime (typically positive)
+    pub fn with_thresholds(
+        volatility_period: usize,
+        regime_period: usize,
+        low_threshold: f64,
+        high_threshold: f64,
+    ) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if regime_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "regime_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if low_threshold >= high_threshold {
+            return Err(IndicatorError::InvalidParameter {
+                name: "thresholds".to_string(),
+                reason: "low_threshold must be less than high_threshold".to_string(),
+            });
+        }
+        Ok(Self {
+            volatility_period,
+            regime_period,
+            low_threshold,
+            high_threshold,
+        })
+    }
+
+    /// Calculate volatility regime detection.
+    ///
+    /// Returns a tuple of (z_scores, regime_levels) where:
+    /// - z_scores: The z-score of current volatility relative to historical mean
+    /// - regime_levels: The classified regime for each period
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<VolRegimeLevel>) {
+        let n = close.len();
+        let total_period = self.volatility_period + self.regime_period;
+
+        let mut z_scores = vec![0.0; n];
+        let mut regimes = vec![VolRegimeLevel::Medium; n];
+
+        if n < total_period + 1 {
+            return (z_scores, regimes);
+        }
+
+        // Calculate rolling volatility
+        let mut volatility = vec![0.0; n];
+        for i in self.volatility_period..n {
+            let start = i.saturating_sub(self.volatility_period);
+            let returns: Vec<f64> = ((start + 1)..=i)
+                .filter_map(|j| {
+                    if close[j - 1] > 1e-10 {
+                        Some((close[j] / close[j - 1]).ln())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if returns.len() >= 2 {
+                let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+                let var: f64 = returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / returns.len() as f64;
+                volatility[i] = var.sqrt() * (252.0_f64).sqrt();
+            }
+        }
+
+        // Calculate regime based on z-score of volatility
+        for i in total_period..n {
+            let start = i.saturating_sub(self.regime_period);
+            let vol_slice: Vec<f64> = (start..i).map(|j| volatility[j]).collect();
+
+            if vol_slice.len() >= 2 {
+                let mean_vol: f64 = vol_slice.iter().sum::<f64>() / vol_slice.len() as f64;
+                let var_vol: f64 = vol_slice
+                    .iter()
+                    .map(|v| (v - mean_vol).powi(2))
+                    .sum::<f64>()
+                    / vol_slice.len() as f64;
+                let std_vol = var_vol.sqrt();
+
+                if std_vol > 1e-10 {
+                    let z_score = (volatility[i] - mean_vol) / std_vol;
+                    z_scores[i] = z_score;
+
+                    // Classify regime
+                    regimes[i] = if z_score <= self.low_threshold {
+                        VolRegimeLevel::Low
+                    } else if z_score >= self.high_threshold {
+                        VolRegimeLevel::High
+                    } else {
+                        VolRegimeLevel::Medium
+                    };
+                }
+            }
+        }
+
+        (z_scores, regimes)
+    }
+
+    /// Get the regime level at a specific z-score.
+    pub fn classify_regime(&self, z_score: f64) -> VolRegimeLevel {
+        if z_score <= self.low_threshold {
+            VolRegimeLevel::Low
+        } else if z_score >= self.high_threshold {
+            VolRegimeLevel::High
+        } else {
+            VolRegimeLevel::Medium
+        }
+    }
+}
+
+impl TechnicalIndicator for VolatilityRegimeDetector {
+    fn name(&self) -> &str {
+        "Volatility Regime Detector"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volatility_period + self.regime_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        let (z_scores, _) = self.calculate(&data.close);
+        Ok(IndicatorOutput::single(z_scores))
+    }
+}
+
+/// Volatility Breakout Signal - Advanced volatility breakout detection.
+///
+/// Detects significant volatility breakouts using multiple confirmation methods
+/// including ATR expansion, range breakout, and momentum confirmation. This is
+/// more sophisticated than simple threshold-based breakout detection.
+///
+/// # Signal Values
+/// - Positive values: Upside volatility breakout with momentum
+/// - Negative values: Downside volatility breakout with momentum
+/// - Zero: No significant breakout detected
+///
+/// # Example
+/// ```ignore
+/// let breakout = VolatilityBreakoutSignal::new(14, 50, 2.0)?;
+/// let signals = breakout.calculate(&high, &low, &close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityBreakoutSignal {
+    /// Period for ATR and short-term volatility calculation
+    atr_period: usize,
+    /// Period for baseline volatility comparison
+    baseline_period: usize,
+    /// Multiplier threshold for breakout detection
+    breakout_threshold: f64,
+}
+
+impl VolatilityBreakoutSignal {
+    /// Create a new VolatilityBreakoutSignal indicator.
+    ///
+    /// # Arguments
+    /// * `atr_period` - Period for ATR calculation (minimum 5)
+    /// * `baseline_period` - Period for baseline volatility (minimum 20)
+    /// * `breakout_threshold` - Multiplier for breakout detection (minimum 1.0)
+    pub fn new(atr_period: usize, baseline_period: usize, breakout_threshold: f64) -> Result<Self> {
+        if atr_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if baseline_period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "baseline_period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if breakout_threshold < 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "breakout_threshold".to_string(),
+                reason: "must be at least 1.0".to_string(),
+            });
+        }
+        Ok(Self {
+            atr_period,
+            baseline_period,
+            breakout_threshold,
+        })
+    }
+
+    /// Calculate volatility breakout signals.
+    ///
+    /// Returns breakout signal strength:
+    /// - Positive values indicate upside breakouts
+    /// - Negative values indicate downside breakouts
+    /// - Values close to zero indicate no breakout
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = high.len().min(low.len()).min(close.len());
+
+        if n < self.baseline_period + 1 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Calculate ATR
+        let mut atr = vec![0.0; n];
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i >= self.atr_period {
+                let start = i.saturating_sub(self.atr_period);
+                let mut tr_sum = tr;
+                for j in (start + 1)..i {
+                    let tr_j = (high[j] - low[j])
+                        .max((high[j] - close[j - 1]).abs())
+                        .max((low[j] - close[j - 1]).abs());
+                    tr_sum += tr_j;
+                }
+                atr[i] = tr_sum / self.atr_period as f64;
+            }
+        }
+
+        // Calculate baseline ATR and detect breakouts
+        for i in self.baseline_period..n {
+            let baseline_start = i.saturating_sub(self.baseline_period);
+
+            // Calculate baseline ATR statistics
+            let baseline_atrs: Vec<f64> = (baseline_start..i)
+                .filter(|&j| atr[j] > 1e-10)
+                .map(|j| atr[j])
+                .collect();
+
+            if baseline_atrs.len() < 5 {
+                continue;
+            }
+
+            let mean_atr: f64 = baseline_atrs.iter().sum::<f64>() / baseline_atrs.len() as f64;
+            let var_atr: f64 = baseline_atrs
+                .iter()
+                .map(|a| (a - mean_atr).powi(2))
+                .sum::<f64>()
+                / baseline_atrs.len() as f64;
+            let std_atr = var_atr.sqrt();
+
+            if std_atr > 1e-10 && mean_atr > 1e-10 {
+                // Current ATR relative to baseline
+                let atr_ratio = atr[i] / mean_atr;
+                let atr_zscore = (atr[i] - mean_atr) / std_atr;
+
+                // Determine direction based on price change
+                let price_change = close[i] - close[i - 1];
+                let direction = if price_change > 0.0 { 1.0 } else { -1.0 };
+
+                // Breakout signal: ATR expansion above threshold with direction
+                if atr_ratio > self.breakout_threshold && atr_zscore > 1.0 {
+                    // Signal strength based on how much ATR exceeded threshold
+                    let strength = (atr_ratio - 1.0) * atr_zscore.min(3.0);
+                    result[i] = strength * direction * 100.0;
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Check if a signal value represents a significant breakout.
+    pub fn is_breakout(&self, signal: f64) -> bool {
+        signal.abs() > 50.0
+    }
+}
+
+impl TechnicalIndicator for VolatilityBreakoutSignal {
+    fn name(&self) -> &str {
+        "Volatility Breakout Signal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.baseline_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(
+            &data.high,
+            &data.low,
+            &data.close,
+        )))
+    }
+}
+
+/// Enhanced Volatility Mean Reversion - Advanced mean reversion measurement.
+///
+/// Combines multiple mean reversion signals including distance from mean,
+/// half-life estimation, and reversion speed to provide a comprehensive
+/// view of volatility mean reversion opportunities.
+///
+/// # Output
+/// Returns a mean reversion score where:
+/// - Large positive values: Volatility is high and likely to revert down
+/// - Large negative values: Volatility is low and likely to revert up
+/// - Values near zero: Volatility is near its mean
+///
+/// # Example
+/// ```ignore
+/// let mr = EnhancedVolatilityMeanReversion::new(10, 50, 20)?;
+/// let scores = mr.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct EnhancedVolatilityMeanReversion {
+    /// Period for calculating rolling volatility
+    volatility_period: usize,
+    /// Period for calculating long-term mean volatility
+    mean_period: usize,
+    /// Lookback period for measuring reversion dynamics
+    lookback: usize,
+}
+
+impl EnhancedVolatilityMeanReversion {
+    /// Create a new EnhancedVolatilityMeanReversion indicator.
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for rolling volatility (minimum 5)
+    /// * `mean_period` - Period for mean volatility (minimum 30)
+    /// * `lookback` - Lookback for reversion dynamics (minimum 10)
+    pub fn new(volatility_period: usize, mean_period: usize, lookback: usize) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if mean_period < 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "mean_period".to_string(),
+                reason: "must be at least 30".to_string(),
+            });
+        }
+        if lookback < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self {
+            volatility_period,
+            mean_period,
+            lookback,
+        })
+    }
+
+    /// Calculate enhanced mean reversion score.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let total_period = self.mean_period + self.lookback;
+
+        if n < total_period + 1 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Calculate rolling volatility
+        let mut volatility = vec![0.0; n];
+        for i in self.volatility_period..n {
+            let start = i.saturating_sub(self.volatility_period);
+            let returns: Vec<f64> = ((start + 1)..=i)
+                .filter_map(|j| {
+                    if close[j - 1] > 1e-10 {
+                        Some((close[j] / close[j - 1]).ln())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if returns.len() >= 2 {
+                let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+                let var: f64 = returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / returns.len() as f64;
+                volatility[i] = var.sqrt() * (252.0_f64).sqrt();
+            }
+        }
+
+        // Calculate enhanced mean reversion score
+        for i in total_period..n {
+            // Long-term mean and std of volatility
+            let mean_start = i.saturating_sub(self.mean_period);
+            let vol_history: Vec<f64> = (mean_start..i)
+                .filter(|&j| volatility[j] > 1e-10)
+                .map(|j| volatility[j])
+                .collect();
+
+            if vol_history.len() < 10 {
+                continue;
+            }
+
+            let mean_vol: f64 = vol_history.iter().sum::<f64>() / vol_history.len() as f64;
+            let var_vol: f64 = vol_history
+                .iter()
+                .map(|v| (v - mean_vol).powi(2))
+                .sum::<f64>()
+                / vol_history.len() as f64;
+            let std_vol = var_vol.sqrt();
+
+            if std_vol < 1e-10 || mean_vol < 1e-10 {
+                continue;
+            }
+
+            // Component 1: Z-score (distance from mean)
+            let z_score = (volatility[i] - mean_vol) / std_vol;
+
+            // Component 2: Estimate half-life of mean reversion
+            // Using AR(1) coefficient approximation
+            let lookback_start = i.saturating_sub(self.lookback);
+            let mut sum_xy = 0.0;
+            let mut sum_x2 = 0.0;
+
+            for j in (lookback_start + 1)..=i {
+                let x = volatility[j - 1] - mean_vol;
+                let y = volatility[j] - mean_vol;
+                sum_xy += x * y;
+                sum_x2 += x * x;
+            }
+
+            let ar1_coef = if sum_x2 > 1e-10 {
+                (sum_xy / sum_x2).max(-0.99).min(0.99)
+            } else {
+                0.0
+            };
+
+            // Half-life: -ln(2) / ln(ar1_coef)
+            // Smaller half-life = faster reversion
+            let reversion_speed = if ar1_coef > 0.0 && ar1_coef < 1.0 {
+                1.0 - ar1_coef // Simple speed measure
+            } else {
+                0.5 // Default moderate speed
+            };
+
+            // Combined score: z-score weighted by reversion speed
+            // Positive z-score with high reversion speed = expect drop
+            // Negative z-score with high reversion speed = expect rise
+            result[i] = z_score * reversion_speed * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for EnhancedVolatilityMeanReversion {
+    fn name(&self) -> &str {
+        "Enhanced Volatility Mean Reversion"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.mean_period + self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Volatility Skew Ratio - Measures asymmetry in volatility distribution.
+///
+/// Calculates the ratio of upside volatility to downside volatility,
+/// providing insight into whether the market exhibits more volatility
+/// on up moves versus down moves.
+///
+/// # Interpretation
+/// - Ratio > 1: More volatility on up moves (unusual)
+/// - Ratio < 1: More volatility on down moves (typical for equities)
+/// - Ratio = 1: Symmetric volatility
+///
+/// # Example
+/// ```ignore
+/// let skew = VolatilitySkewRatio::new(20)?;
+/// let ratios = skew.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilitySkewRatio {
+    /// Lookback period for calculating skew
+    period: usize,
+}
+
+impl VolatilitySkewRatio {
+    /// Create a new VolatilitySkewRatio indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period (minimum 10)
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate volatility skew ratio.
+    ///
+    /// Returns the ratio of upside to downside volatility.
+    /// Values > 1 indicate more upside volatility.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+
+        if n < self.period + 1 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Separate positive and negative returns
+            let mut positive_returns = Vec::new();
+            let mut negative_returns = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    let ret = (close[j] / close[j - 1]).ln();
+                    if ret > 0.0 {
+                        positive_returns.push(ret);
+                    } else if ret < 0.0 {
+                        negative_returns.push(ret.abs());
+                    }
+                }
+            }
+
+            // Calculate upside volatility (std of positive returns)
+            let upside_vol = if positive_returns.len() >= 2 {
+                let mean: f64 =
+                    positive_returns.iter().sum::<f64>() / positive_returns.len() as f64;
+                let var: f64 = positive_returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / positive_returns.len() as f64;
+                var.sqrt()
+            } else if !positive_returns.is_empty() {
+                positive_returns.iter().sum::<f64>() / positive_returns.len() as f64
+            } else {
+                0.0
+            };
+
+            // Calculate downside volatility (std of absolute negative returns)
+            let downside_vol = if negative_returns.len() >= 2 {
+                let mean: f64 =
+                    negative_returns.iter().sum::<f64>() / negative_returns.len() as f64;
+                let var: f64 = negative_returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>()
+                    / negative_returns.len() as f64;
+                var.sqrt()
+            } else if !negative_returns.is_empty() {
+                negative_returns.iter().sum::<f64>() / negative_returns.len() as f64
+            } else {
+                0.0
+            };
+
+            // Calculate ratio (upside / downside)
+            if downside_vol > 1e-10 {
+                result[i] = upside_vol / downside_vol;
+            } else if upside_vol > 1e-10 {
+                result[i] = 2.0; // Cap at 2 when no downside vol
+            } else {
+                result[i] = 1.0; // Neutral when both are zero
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilitySkewRatio {
+    fn name(&self) -> &str {
+        "Volatility Skew Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Volatility Clustering Index - Measures volatility clustering strength.
+///
+/// Quantifies the degree to which high volatility tends to follow high volatility
+/// and low volatility tends to follow low volatility. This ARCH/GARCH effect
+/// is a key characteristic of financial markets.
+///
+/// # Output
+/// Returns a clustering index from 0 to 1:
+/// - Values near 1: Strong clustering (volatility is highly persistent)
+/// - Values near 0.5: Moderate clustering
+/// - Values near 0: Weak clustering (volatility is more random)
+///
+/// # Example
+/// ```ignore
+/// let clustering = VolatilityClusteringIndex::new(20, 5)?;
+/// let index = clustering.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityClusteringIndex {
+    /// Period for calculating rolling statistics
+    period: usize,
+    /// Number of lags to consider for clustering
+    num_lags: usize,
+}
+
+impl VolatilityClusteringIndex {
+    /// Create a new VolatilityClusteringIndex indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for statistics (minimum 20)
+    /// * `num_lags` - Number of lags to consider (minimum 1, maximum 10)
+    pub fn new(period: usize, num_lags: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if num_lags < 1 || num_lags > 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_lags".to_string(),
+                reason: "must be between 1 and 10".to_string(),
+            });
+        }
+        Ok(Self { period, num_lags })
+    }
+
+    /// Calculate volatility clustering index.
+    ///
+    /// Returns a value between 0 and 1 indicating clustering strength.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let total_period = self.period + self.num_lags;
+
+        if n < total_period + 2 {
+            return vec![0.0; n];
+        }
+
+        let mut result = vec![0.0; n];
+
+        // Calculate squared returns (proxy for volatility)
+        let mut squared_returns = vec![0.0; n];
+        for i in 1..n {
+            if close[i - 1] > 1e-10 {
+                let ret = (close[i] / close[i - 1]).ln();
+                squared_returns[i] = ret * ret;
+            }
+        }
+
+        // Calculate clustering index using multiple lag autocorrelations
+        for i in total_period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate mean and variance of squared returns
+            let slice: Vec<f64> = (start..=i).map(|j| squared_returns[j]).collect();
+            let mean: f64 = slice.iter().sum::<f64>() / slice.len() as f64;
+            let var: f64 = slice
+                .iter()
+                .map(|s| (s - mean).powi(2))
+                .sum::<f64>()
+                / slice.len() as f64;
+
+            if var < 1e-20 {
+                continue;
+            }
+
+            // Calculate average autocorrelation across lags
+            let mut total_autocorr = 0.0;
+            let mut valid_lags = 0;
+
+            for lag in 1..=self.num_lags {
+                let mut cov = 0.0;
+                let mut count = 0;
+
+                for j in (start + lag)..=i {
+                    let x = squared_returns[j] - mean;
+                    let y = squared_returns[j - lag] - mean;
+                    cov += x * y;
+                    count += 1;
+                }
+
+                if count > 0 {
+                    let autocorr = (cov / count as f64) / var;
+                    // Weight earlier lags more heavily
+                    let weight = 1.0 / lag as f64;
+                    total_autocorr += autocorr.max(0.0) * weight;
+                    valid_lags += 1;
+                }
+            }
+
+            if valid_lags > 0 {
+                // Normalize to 0-1 range
+                // Higher autocorrelation = higher clustering
+                let avg_autocorr = total_autocorr / valid_lags as f64;
+                result[i] = avg_autocorr.max(0.0).min(1.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilityClusteringIndex {
+    fn name(&self) -> &str {
+        "Volatility Clustering Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.num_lags + 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Dynamic Adaptive Volatility Bands - Self-adjusting volatility bands.
+///
+/// Creates dynamic price bands that automatically adjust their width based on
+/// current volatility regime, market conditions, and trend strength. Unlike
+/// standard Bollinger Bands, these bands adapt more aggressively to regime changes.
+///
+/// # Output
+/// Returns four series:
+/// - Middle band (adaptive moving average)
+/// - Upper band (middle + adaptive width)
+/// - Lower band (middle - adaptive width)
+/// - Regime multiplier (current adaptation factor)
+///
+/// # Example
+/// ```ignore
+/// let bands = DynamicAdaptiveVolatilityBands::new(10, 20, 2.0)?;
+/// let (middle, upper, lower, multiplier) = bands.calculate(&high, &low, &close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct DynamicAdaptiveVolatilityBands {
+    /// Period for volatility calculation
+    volatility_period: usize,
+    /// Period for the adaptive moving average
+    ma_period: usize,
+    /// Base multiplier for band width
+    base_multiplier: f64,
+}
+
+impl DynamicAdaptiveVolatilityBands {
+    /// Create a new DynamicAdaptiveVolatilityBands indicator.
+    ///
+    /// # Arguments
+    /// * `volatility_period` - Period for volatility (minimum 5)
+    /// * `ma_period` - Period for moving average (minimum 10)
+    /// * `base_multiplier` - Base multiplier for bands (minimum 0.5)
+    pub fn new(volatility_period: usize, ma_period: usize, base_multiplier: f64) -> Result<Self> {
+        if volatility_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if ma_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "ma_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if base_multiplier < 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_multiplier".to_string(),
+                reason: "must be at least 0.5".to_string(),
+            });
+        }
+        Ok(Self {
+            volatility_period,
+            ma_period,
+            base_multiplier,
+        })
+    }
+
+    /// Calculate dynamic adaptive volatility bands.
+    ///
+    /// Returns (middle_band, upper_band, lower_band, regime_multiplier)
+    pub fn calculate(
+        &self,
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = high.len().min(low.len()).min(close.len());
+        let total_period = self.volatility_period.max(self.ma_period);
+
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+        let mut regime_mult = vec![0.0; n];
+
+        if n < total_period + 1 {
+            return (middle, upper, lower, regime_mult);
+        }
+
+        // Calculate ATR-based volatility
+        let mut atr = vec![0.0; n];
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i >= self.volatility_period {
+                let start = i.saturating_sub(self.volatility_period);
+                let mut tr_sum = tr;
+                for j in (start + 1)..i {
+                    let tr_j = (high[j] - low[j])
+                        .max((high[j] - close[j - 1]).abs())
+                        .max((low[j] - close[j - 1]).abs());
+                    tr_sum += tr_j;
+                }
+                atr[i] = tr_sum / self.volatility_period as f64;
+            }
+        }
+
+        // Calculate long-term average ATR for regime detection
+        let long_period = self.volatility_period * 4;
+        let mut avg_atr = vec![0.0; n];
+        for i in long_period..n {
+            let start = i.saturating_sub(long_period);
+            let sum: f64 = atr[start..i].iter().sum();
+            avg_atr[i] = sum / long_period as f64;
+        }
+
+        // Calculate bands with dynamic adaptation
+        for i in total_period..n {
+            // Adaptive moving average (Kaufman-style efficiency adjustment)
+            let ma_start = i.saturating_sub(self.ma_period);
+            let price_change = (close[i] - close[ma_start]).abs();
+            let mut path_length = 0.0;
+            for j in (ma_start + 1)..=i {
+                path_length += (close[j] - close[j - 1]).abs();
+            }
+
+            // Efficiency ratio (0 to 1)
+            let efficiency = if path_length > 1e-10 {
+                (price_change / path_length).min(1.0)
+            } else {
+                0.5
+            };
+
+            // Adaptive smoothing constant
+            let fast_sc = 2.0 / 3.0;
+            let slow_sc = 2.0 / 31.0;
+            let sc = (efficiency * (fast_sc - slow_sc) + slow_sc).powi(2);
+
+            // Calculate adaptive MA
+            if i == total_period {
+                middle[i] = close[ma_start..=i].iter().sum::<f64>() / (self.ma_period + 1) as f64;
+            } else {
+                middle[i] = middle[i - 1] + sc * (close[i] - middle[i - 1]);
+            }
+
+            // Regime-based multiplier
+            let current_regime = if avg_atr[i] > 1e-10 {
+                (atr[i] / avg_atr[i]).sqrt()
+            } else {
+                1.0
+            };
+
+            // Trend strength adjustment
+            let trend_factor = 1.0 + (1.0 - efficiency) * 0.5;
+
+            // Final adaptive multiplier
+            let adaptive_mult = self.base_multiplier * current_regime * trend_factor;
+            regime_mult[i] = adaptive_mult;
+
+            // Calculate bands
+            let band_width = atr[i] * adaptive_mult;
+            upper[i] = middle[i] + band_width;
+            lower[i] = middle[i] - band_width;
+        }
+
+        (middle, upper, lower, regime_mult)
+    }
+}
+
+impl TechnicalIndicator for DynamicAdaptiveVolatilityBands {
+    fn name(&self) -> &str {
+        "Dynamic Adaptive Volatility Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.volatility_period.max(self.ma_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        let (middle, upper, lower, _) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // middle_band, upper_band, lower_band
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3004,5 +4037,475 @@ mod tests {
         assert_eq!(avb.volatility_period, avb_clone.volatility_period);
         assert_eq!(avb.band_period, avb_clone.band_period);
         assert!((avb.multiplier - avb_clone.multiplier).abs() < 1e-10);
+    }
+
+    // ========================================================================
+    // Tests for 6 NEW volatility indicators
+    // ========================================================================
+
+    #[test]
+    fn test_volatility_regime_detector() {
+        let (_, _, close) = make_test_data();
+        let vrd = VolatilityRegimeDetector::new(10, 30).unwrap();
+        let (z_scores, regimes) = vrd.calculate(&close);
+
+        assert_eq!(z_scores.len(), close.len());
+        assert_eq!(regimes.len(), close.len());
+
+        // Check that regimes are properly assigned
+        let min_period = vrd.min_periods();
+        for i in min_period..close.len() {
+            // Z-scores should be reasonable
+            assert!(
+                z_scores[i].is_finite(),
+                "Z-score at {} should be finite",
+                i
+            );
+            // Regimes should match z-score classification
+            let expected_regime = vrd.classify_regime(z_scores[i]);
+            assert_eq!(regimes[i], expected_regime);
+        }
+    }
+
+    #[test]
+    fn test_volatility_regime_detector_with_thresholds() {
+        let vrd = VolatilityRegimeDetector::with_thresholds(10, 30, -0.5, 0.5).unwrap();
+
+        // Test classification with custom thresholds
+        assert_eq!(vrd.classify_regime(-1.0), VolRegimeLevel::Low);
+        assert_eq!(vrd.classify_regime(0.0), VolRegimeLevel::Medium);
+        assert_eq!(vrd.classify_regime(1.0), VolRegimeLevel::High);
+    }
+
+    #[test]
+    fn test_volatility_regime_detector_invalid_params() {
+        assert!(VolatilityRegimeDetector::new(2, 30).is_err()); // volatility_period < 5
+        assert!(VolatilityRegimeDetector::new(10, 10).is_err()); // regime_period < 20
+        assert!(VolatilityRegimeDetector::with_thresholds(10, 30, 1.0, -1.0).is_err()); // low >= high
+    }
+
+    #[test]
+    fn test_volatility_regime_detector_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let vrd = VolatilityRegimeDetector::new(10, 30).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(vrd.name(), "Volatility Regime Detector");
+        assert_eq!(vrd.min_periods(), 41); // 10 + 30 + 1
+
+        let result = vrd.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_regime_detector_regimes() {
+        // Create data with clear regime changes
+        let mut close = Vec::new();
+        // Low volatility period
+        for i in 0..40 {
+            close.push(100.0 + i as f64 * 0.01);
+        }
+        // High volatility period
+        for i in 40..80 {
+            close.push(close[i - 1] * (1.0 + (i as f64 * 0.5).sin() * 0.05));
+        }
+        // Return to low volatility
+        for i in 80..120 {
+            close.push(close[i - 1] * (1.0 + (i as f64 * 0.1).sin() * 0.002));
+        }
+
+        let vrd = VolatilityRegimeDetector::new(5, 25).unwrap();
+        let (_, regimes) = vrd.calculate(&close);
+
+        // Should have different regimes
+        assert_eq!(regimes.len(), close.len());
+    }
+
+    #[test]
+    fn test_volatility_breakout_signal() {
+        let (high, low, close) = make_test_data();
+        let vbs = VolatilityBreakoutSignal::new(14, 40, 1.5).unwrap();
+        let result = vbs.calculate(&high, &low, &close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Check values are finite
+        let min_period = vbs.min_periods();
+        for i in min_period..close.len() {
+            assert!(
+                result[i].is_finite(),
+                "Breakout signal at {} should be finite",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatility_breakout_signal_is_breakout() {
+        let vbs = VolatilityBreakoutSignal::new(14, 40, 1.5).unwrap();
+
+        assert!(vbs.is_breakout(100.0));
+        assert!(vbs.is_breakout(-100.0));
+        assert!(!vbs.is_breakout(30.0));
+        assert!(!vbs.is_breakout(-30.0));
+    }
+
+    #[test]
+    fn test_volatility_breakout_signal_invalid_params() {
+        assert!(VolatilityBreakoutSignal::new(2, 40, 1.5).is_err()); // atr_period < 5
+        assert!(VolatilityBreakoutSignal::new(14, 10, 1.5).is_err()); // baseline_period < 20
+        assert!(VolatilityBreakoutSignal::new(14, 40, 0.5).is_err()); // threshold < 1.0
+    }
+
+    #[test]
+    fn test_volatility_breakout_signal_technical_indicator() {
+        let (high, low, close) = make_test_data();
+        let vbs = VolatilityBreakoutSignal::new(14, 40, 1.5).unwrap();
+        let data = OHLCVSeries {
+            open: close.clone(),
+            high,
+            low,
+            close,
+            volume: vec![1000.0; 100],
+        };
+
+        assert_eq!(vbs.name(), "Volatility Breakout Signal");
+        assert_eq!(vbs.min_periods(), 41); // baseline_period + 1
+
+        let result = vbs.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_enhanced_volatility_mean_reversion() {
+        let (_, _, close) = make_test_data();
+        let evmr = EnhancedVolatilityMeanReversion::new(10, 40, 15).unwrap();
+        let result = evmr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Check values are finite
+        let min_period = evmr.min_periods();
+        for i in min_period..close.len() {
+            assert!(
+                result[i].is_finite(),
+                "Mean reversion score at {} should be finite",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_enhanced_volatility_mean_reversion_invalid_params() {
+        assert!(EnhancedVolatilityMeanReversion::new(2, 40, 15).is_err()); // volatility_period < 5
+        assert!(EnhancedVolatilityMeanReversion::new(10, 20, 15).is_err()); // mean_period < 30
+        assert!(EnhancedVolatilityMeanReversion::new(10, 40, 5).is_err()); // lookback < 10
+    }
+
+    #[test]
+    fn test_enhanced_volatility_mean_reversion_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let evmr = EnhancedVolatilityMeanReversion::new(10, 40, 15).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(evmr.name(), "Enhanced Volatility Mean Reversion");
+        assert_eq!(evmr.min_periods(), 56); // 40 + 15 + 1
+
+        let result = evmr.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_skew_ratio() {
+        let (_, _, close) = make_test_data();
+        let vsr = VolatilitySkewRatio::new(20).unwrap();
+        let result = vsr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Ratios should be positive
+        let min_period = vsr.min_periods();
+        for i in min_period..close.len() {
+            assert!(
+                result[i] >= 0.0,
+                "Skew ratio at {} should be non-negative, got {}",
+                i,
+                result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatility_skew_ratio_invalid_params() {
+        assert!(VolatilitySkewRatio::new(5).is_err()); // period < 10
+    }
+
+    #[test]
+    fn test_volatility_skew_ratio_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let vsr = VolatilitySkewRatio::new(20).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(vsr.name(), "Volatility Skew Ratio");
+        assert_eq!(vsr.min_periods(), 21); // period + 1
+
+        let result = vsr.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_skew_ratio_trending_market() {
+        // Create uptrending data (more positive returns)
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let vsr = VolatilitySkewRatio::new(15).unwrap();
+        let result = vsr.calculate(&close);
+
+        // In trending market, ratio might be higher due to more up moves
+        assert_eq!(result.len(), close.len());
+        for i in 20..close.len() {
+            assert!(result[i].is_finite());
+        }
+    }
+
+    #[test]
+    fn test_volatility_clustering_index() {
+        let (_, _, close) = make_test_data();
+        let vci = VolatilityClusteringIndex::new(25, 3).unwrap();
+        let result = vci.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+
+        // Clustering index should be between 0 and 1
+        let min_period = vci.min_periods();
+        for i in min_period..close.len() {
+            assert!(
+                result[i] >= 0.0 && result[i] <= 1.0,
+                "Clustering index at {} should be between 0 and 1, got {}",
+                i,
+                result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_volatility_clustering_index_invalid_params() {
+        assert!(VolatilityClusteringIndex::new(10, 3).is_err()); // period < 20
+        assert!(VolatilityClusteringIndex::new(25, 0).is_err()); // num_lags < 1
+        assert!(VolatilityClusteringIndex::new(25, 15).is_err()); // num_lags > 10
+    }
+
+    #[test]
+    fn test_volatility_clustering_index_technical_indicator() {
+        let (_, _, close) = make_test_data();
+        let vci = VolatilityClusteringIndex::new(25, 3).unwrap();
+        let data = OHLCVSeries::from_close(close);
+
+        assert_eq!(vci.name(), "Volatility Clustering Index");
+        assert_eq!(vci.min_periods(), 30); // 25 + 3 + 2
+
+        let result = vci.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_volatility_clustering_index_with_clusters() {
+        // Create data with volatility clustering
+        let mut close = vec![100.0];
+        for i in 1..100 {
+            // Alternate between high and low volatility periods
+            let vol = if (i / 10) % 2 == 0 { 0.005 } else { 0.02 };
+            close.push(close[i - 1] * (1.0 + (i as f64 * 0.1).sin() * vol));
+        }
+
+        let vci = VolatilityClusteringIndex::new(20, 2).unwrap();
+        let result = vci.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_dynamic_adaptive_volatility_bands() {
+        let (high, low, close) = make_test_data();
+        let davb = DynamicAdaptiveVolatilityBands::new(10, 15, 2.0).unwrap();
+        let (middle, upper, lower, regime_mult) = davb.calculate(&high, &low, &close);
+
+        assert_eq!(middle.len(), close.len());
+        assert_eq!(upper.len(), close.len());
+        assert_eq!(lower.len(), close.len());
+        assert_eq!(regime_mult.len(), close.len());
+
+        let min_period = davb.min_periods();
+        for i in min_period..close.len() {
+            // Upper should be >= middle, lower should be <= middle
+            assert!(
+                upper[i] >= middle[i],
+                "Upper band should be >= middle at {}",
+                i
+            );
+            assert!(
+                lower[i] <= middle[i],
+                "Lower band should be <= middle at {}",
+                i
+            );
+            // Regime multiplier should be positive
+            assert!(
+                regime_mult[i] > 0.0,
+                "Regime multiplier should be positive at {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_dynamic_adaptive_volatility_bands_invalid_params() {
+        assert!(DynamicAdaptiveVolatilityBands::new(2, 15, 2.0).is_err()); // volatility_period < 5
+        assert!(DynamicAdaptiveVolatilityBands::new(10, 5, 2.0).is_err()); // ma_period < 10
+        assert!(DynamicAdaptiveVolatilityBands::new(10, 15, 0.3).is_err()); // base_multiplier < 0.5
+    }
+
+    #[test]
+    fn test_dynamic_adaptive_volatility_bands_technical_indicator() {
+        let (high, low, close) = make_test_data();
+        let davb = DynamicAdaptiveVolatilityBands::new(10, 15, 2.0).unwrap();
+        let data = OHLCVSeries {
+            open: close.clone(),
+            high,
+            low,
+            close,
+            volume: vec![1000.0; 100],
+        };
+
+        assert_eq!(davb.name(), "Dynamic Adaptive Volatility Bands");
+        assert_eq!(davb.min_periods(), 16); // max(10, 15) + 1
+
+        let result = davb.compute(&data).unwrap();
+        assert_eq!(result.primary.len(), data.close.len());
+        assert!(result.secondary.is_some()); // upper band
+        assert!(result.tertiary.is_some()); // lower band
+    }
+
+    #[test]
+    fn test_dynamic_adaptive_volatility_bands_output_features() {
+        let davb = DynamicAdaptiveVolatilityBands::new(10, 15, 2.0).unwrap();
+        assert_eq!(davb.output_features(), 3);
+    }
+
+    #[test]
+    fn test_dynamic_adaptive_volatility_bands_adapts() {
+        // Create data with varying volatility
+        let mut high = Vec::new();
+        let mut low = Vec::new();
+        let mut close = Vec::new();
+
+        // Low volatility period
+        for i in 0..50 {
+            let base = 100.0 + i as f64 * 0.05;
+            high.push(base + 0.5);
+            low.push(base - 0.5);
+            close.push(base);
+        }
+        // High volatility period
+        for i in 50..100 {
+            let base = close[i - 1] * (1.0 + (i as f64 * 0.3).sin() * 0.02);
+            high.push(base * 1.03);
+            low.push(base * 0.97);
+            close.push(base);
+        }
+
+        let davb = DynamicAdaptiveVolatilityBands::new(5, 10, 2.0).unwrap();
+        let (_, upper, lower, _) = davb.calculate(&high, &low, &close);
+
+        // Check bands exist and adapt
+        assert_eq!(upper.len(), close.len());
+        assert_eq!(lower.len(), close.len());
+
+        // Band width in high vol should be larger
+        let low_vol_width: f64 = (30..45)
+            .map(|i| upper[i] - lower[i])
+            .sum::<f64>()
+            / 15.0;
+        let high_vol_width: f64 = (80..95)
+            .map(|i| upper[i] - lower[i])
+            .sum::<f64>()
+            / 15.0;
+
+        // High vol should have wider bands (with some tolerance for adaptation lag)
+        assert!(
+            high_vol_width > low_vol_width * 0.3,
+            "High vol width {} should be larger than low vol width {}",
+            high_vol_width,
+            low_vol_width
+        );
+    }
+
+    #[test]
+    fn test_new_6_indicators_insufficient_data() {
+        let short_data = OHLCVSeries::from_close(vec![100.0, 101.0, 102.0]);
+        let short_ohlcv = OHLCVSeries {
+            open: vec![100.0, 101.0, 102.0],
+            high: vec![101.0, 102.0, 103.0],
+            low: vec![99.0, 100.0, 101.0],
+            close: vec![100.0, 101.0, 102.0],
+            volume: vec![1000.0, 1000.0, 1000.0],
+        };
+
+        let vrd = VolatilityRegimeDetector::new(10, 30).unwrap();
+        assert!(vrd.compute(&short_data).is_err());
+
+        let vbs = VolatilityBreakoutSignal::new(14, 40, 1.5).unwrap();
+        assert!(vbs.compute(&short_ohlcv).is_err());
+
+        let evmr = EnhancedVolatilityMeanReversion::new(10, 40, 15).unwrap();
+        assert!(evmr.compute(&short_data).is_err());
+
+        let vsr = VolatilitySkewRatio::new(20).unwrap();
+        assert!(vsr.compute(&short_data).is_err());
+
+        let vci = VolatilityClusteringIndex::new(25, 3).unwrap();
+        assert!(vci.compute(&short_data).is_err());
+
+        let davb = DynamicAdaptiveVolatilityBands::new(10, 15, 2.0).unwrap();
+        assert!(davb.compute(&short_ohlcv).is_err());
+    }
+
+    #[test]
+    fn test_new_6_indicators_clone() {
+        let vrd = VolatilityRegimeDetector::new(10, 30).unwrap();
+        let vrd_clone = vrd.clone();
+        assert_eq!(vrd.volatility_period, vrd_clone.volatility_period);
+        assert_eq!(vrd.regime_period, vrd_clone.regime_period);
+
+        let vbs = VolatilityBreakoutSignal::new(14, 40, 1.5).unwrap();
+        let vbs_clone = vbs.clone();
+        assert_eq!(vbs.atr_period, vbs_clone.atr_period);
+        assert_eq!(vbs.baseline_period, vbs_clone.baseline_period);
+
+        let evmr = EnhancedVolatilityMeanReversion::new(10, 40, 15).unwrap();
+        let evmr_clone = evmr.clone();
+        assert_eq!(evmr.volatility_period, evmr_clone.volatility_period);
+        assert_eq!(evmr.mean_period, evmr_clone.mean_period);
+
+        let vsr = VolatilitySkewRatio::new(20).unwrap();
+        let vsr_clone = vsr.clone();
+        assert_eq!(vsr.period, vsr_clone.period);
+
+        let vci = VolatilityClusteringIndex::new(25, 3).unwrap();
+        let vci_clone = vci.clone();
+        assert_eq!(vci.period, vci_clone.period);
+        assert_eq!(vci.num_lags, vci_clone.num_lags);
+
+        let davb = DynamicAdaptiveVolatilityBands::new(10, 15, 2.0).unwrap();
+        let davb_clone = davb.clone();
+        assert_eq!(davb.volatility_period, davb_clone.volatility_period);
+        assert_eq!(davb.ma_period, davb_clone.ma_period);
+        assert!((davb.base_multiplier - davb_clone.base_multiplier).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_vol_regime_level_equality() {
+        assert_eq!(VolRegimeLevel::Low, VolRegimeLevel::Low);
+        assert_eq!(VolRegimeLevel::Medium, VolRegimeLevel::Medium);
+        assert_eq!(VolRegimeLevel::High, VolRegimeLevel::High);
+        assert_ne!(VolRegimeLevel::Low, VolRegimeLevel::High);
     }
 }

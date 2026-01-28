@@ -41,4 +41,6 @@ pub use advanced::{
     WinRate, ProfitFactor, Expectancy,
     ConditionalBeta, TailVaR, StressTestMetric,
     LiquidityAdjustedVaR, CorrelationVaR, RegimeAwareRisk,
+    ConditionalDrawdownAtRisk, UpsideDownsideRatio, RiskAdjustedReturnMetric,
+    MaxDrawdownDuration, DrawdownRecoveryFactor, RiskRegimeIndicator,
 };

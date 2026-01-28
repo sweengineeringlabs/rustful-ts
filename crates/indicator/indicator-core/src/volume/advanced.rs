@@ -1648,6 +1648,760 @@ impl TechnicalIndicator for VolumeImpulse {
     }
 }
 
+/// Volume Weighted Trend - Measures trend direction weighted by volume
+///
+/// Calculates trend direction by weighting price changes by their corresponding
+/// volume. High volume moves have more influence on the trend reading than
+/// low volume moves, providing a more accurate picture of the true trend.
+#[derive(Debug, Clone)]
+pub struct VolumeWeightedTrend {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeWeightedTrend {
+    /// Create a new VolumeWeightedTrend indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for trend calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period for the result (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate volume-weighted trend
+    ///
+    /// Returns (trend_value, trend_direction):
+    /// - trend_value: Volume-weighted trend strength (-100 to 100)
+    /// - trend_direction: +1 for bullish, -1 for bearish, 0 for neutral
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut trend_value = vec![0.0; n];
+        let mut trend_direction = vec![0.0; n];
+
+        if n < 2 {
+            return (trend_value, trend_direction);
+        }
+
+        // Calculate raw volume-weighted price changes
+        let mut raw_vwt = vec![0.0; n];
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Sum of volume-weighted price changes
+            let mut weighted_sum = 0.0;
+            let mut volume_sum = 0.0;
+
+            for j in (start + 1)..=i {
+                let price_change = close[j] - close[j - 1];
+                let avg_price = (close[j] + close[j - 1]) / 2.0;
+
+                if avg_price > 1e-10 {
+                    // Normalize price change as percentage
+                    let pct_change = (price_change / avg_price) * 100.0;
+                    weighted_sum += pct_change * volume[j];
+                    volume_sum += volume[j];
+                }
+            }
+
+            if volume_sum > 1e-10 {
+                raw_vwt[i] = weighted_sum / volume_sum;
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                trend_value[i] = raw_vwt[i];
+            } else {
+                trend_value[i] = alpha * raw_vwt[i] + (1.0 - alpha) * trend_value[i - 1];
+            }
+
+            // Clamp to -100 to 100 range
+            trend_value[i] = trend_value[i].clamp(-100.0, 100.0);
+
+            // Determine direction
+            if trend_value[i] > 0.1 {
+                trend_direction[i] = 1.0;
+            } else if trend_value[i] < -0.1 {
+                trend_direction[i] = -1.0;
+            }
+        }
+
+        (trend_value, trend_direction)
+    }
+}
+
+impl TechnicalIndicator for VolumeWeightedTrend {
+    fn name(&self) -> &str {
+        "Volume Weighted Trend"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (trend_value, trend_direction) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::dual(trend_value, trend_direction))
+    }
+}
+
+/// Volume Momentum Oscillator - Oscillator combining volume and price momentum
+///
+/// Creates an oscillator that measures momentum weighted by volume intensity.
+/// The indicator oscillates around zero, with positive values indicating
+/// bullish volume-momentum and negative values indicating bearish.
+#[derive(Debug, Clone)]
+pub struct VolumeMomentumOscillator {
+    fast_period: usize,
+    slow_period: usize,
+    signal_period: usize,
+}
+
+impl VolumeMomentumOscillator {
+    /// Create a new VolumeMomentumOscillator indicator
+    ///
+    /// # Arguments
+    /// * `fast_period` - Fast EMA period (minimum 2)
+    /// * `slow_period` - Slow EMA period (must be greater than fast_period)
+    /// * `signal_period` - Signal line EMA period (minimum 2)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(fast_period: usize, slow_period: usize, signal_period: usize) -> Result<Self> {
+        if fast_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if slow_period <= fast_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "slow_period".to_string(),
+                reason: "must be greater than fast_period".to_string(),
+            });
+        }
+        if signal_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { fast_period, slow_period, signal_period })
+    }
+
+    /// Calculate volume momentum oscillator
+    ///
+    /// Returns (oscillator, signal_line, histogram):
+    /// - oscillator: Main oscillator line
+    /// - signal_line: EMA of the oscillator
+    /// - histogram: Difference between oscillator and signal
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut oscillator = vec![0.0; n];
+        let mut signal_line = vec![0.0; n];
+        let mut histogram = vec![0.0; n];
+
+        if n < 2 {
+            return (oscillator, signal_line, histogram);
+        }
+
+        // Calculate volume-weighted momentum
+        let mut vw_momentum = vec![0.0; n];
+        for i in 1..n {
+            let price_change = close[i] - close[i - 1];
+            let avg_price = (close[i] + close[i - 1]) / 2.0;
+
+            if avg_price > 1e-10 {
+                let pct_change = (price_change / avg_price) * 100.0;
+                vw_momentum[i] = pct_change * volume[i];
+            }
+        }
+
+        // Calculate fast EMA of volume-weighted momentum
+        let alpha_fast = 2.0 / (self.fast_period as f64 + 1.0);
+        let mut fast_ema = vec![0.0; n];
+        for i in 0..n {
+            if i == 0 {
+                fast_ema[i] = vw_momentum[i];
+            } else {
+                fast_ema[i] = alpha_fast * vw_momentum[i] + (1.0 - alpha_fast) * fast_ema[i - 1];
+            }
+        }
+
+        // Calculate slow EMA of volume-weighted momentum
+        let alpha_slow = 2.0 / (self.slow_period as f64 + 1.0);
+        let mut slow_ema = vec![0.0; n];
+        for i in 0..n {
+            if i == 0 {
+                slow_ema[i] = vw_momentum[i];
+            } else {
+                slow_ema[i] = alpha_slow * vw_momentum[i] + (1.0 - alpha_slow) * slow_ema[i - 1];
+            }
+        }
+
+        // Calculate oscillator (fast - slow)
+        for i in self.slow_period..n {
+            oscillator[i] = fast_ema[i] - slow_ema[i];
+        }
+
+        // Calculate signal line (EMA of oscillator)
+        let alpha_signal = 2.0 / (self.signal_period as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                signal_line[i] = oscillator[i];
+            } else {
+                signal_line[i] = alpha_signal * oscillator[i] + (1.0 - alpha_signal) * signal_line[i - 1];
+            }
+        }
+
+        // Calculate histogram
+        for i in 0..n {
+            histogram[i] = oscillator[i] - signal_line[i];
+        }
+
+        (oscillator, signal_line, histogram)
+    }
+}
+
+impl TechnicalIndicator for VolumeMomentumOscillator {
+    fn name(&self) -> &str {
+        "Volume Momentum Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.slow_period + self.signal_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let required = self.slow_period + self.signal_period;
+        if data.close.len() < required {
+            return Err(IndicatorError::InsufficientData {
+                required,
+                got: data.close.len(),
+            });
+        }
+        let (oscillator, signal, histogram) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::triple(oscillator, signal, histogram))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // oscillator, signal line, histogram
+    }
+}
+
+/// Volume Accumulation Trend - Tracks sustained accumulation or distribution
+///
+/// Measures the trend of accumulation (buying) or distribution (selling)
+/// by tracking the cumulative sum of volume weighted by price position
+/// within the bar's range over time.
+#[derive(Debug, Clone)]
+pub struct VolumeAccumulationTrend {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeAccumulationTrend {
+    /// Create a new VolumeAccumulationTrend indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for trend calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate volume accumulation trend
+    ///
+    /// Returns (trend_value, trend_signal):
+    /// - trend_value: Cumulative accumulation/distribution trend
+    /// - trend_signal: +1 for accumulation trend, -1 for distribution, 0 for neutral
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut trend_value = vec![0.0; n];
+        let mut trend_signal = vec![0.0; n];
+
+        if n < 1 {
+            return (trend_value, trend_signal);
+        }
+
+        // Calculate Accumulation/Distribution values using CLV (Close Location Value)
+        let mut ad_values = vec![0.0; n];
+        for i in 0..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // CLV ranges from -1 (close at low) to +1 (close at high)
+                let clv = ((close[i] - low[i]) - (high[i] - close[i])) / range;
+                ad_values[i] = clv * volume[i];
+            }
+        }
+
+        // Calculate rolling trend (slope of A/D line over period)
+        let mut raw_trend = vec![0.0; n];
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Linear regression slope of A/D values
+            let mut sum_x = 0.0;
+            let mut sum_y = 0.0;
+            let mut sum_xy = 0.0;
+            let mut sum_x2 = 0.0;
+
+            let mut cumulative_ad = 0.0;
+            for (j, idx) in (start..=i).enumerate() {
+                cumulative_ad += ad_values[idx];
+                let x = j as f64;
+                sum_x += x;
+                sum_y += cumulative_ad;
+                sum_xy += x * cumulative_ad;
+                sum_x2 += x * x;
+            }
+
+            let period_len = (self.period + 1) as f64;
+            let denom = period_len * sum_x2 - sum_x * sum_x;
+            if denom.abs() > 1e-10 {
+                raw_trend[i] = (period_len * sum_xy - sum_x * sum_y) / denom;
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                trend_value[i] = raw_trend[i];
+            } else {
+                trend_value[i] = alpha * raw_trend[i] + (1.0 - alpha) * trend_value[i - 1];
+            }
+        }
+
+        // Determine trend signal
+        for i in self.period..n {
+            // Use standard deviation to determine significance threshold
+            let start = i - self.period;
+            let window = &raw_trend[start..i];
+            let mean: f64 = window.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = window.iter()
+                .map(|v| (v - mean).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            let threshold = std_dev * 0.5;
+            if trend_value[i] > threshold {
+                trend_signal[i] = 1.0; // Accumulation trend
+            } else if trend_value[i] < -threshold {
+                trend_signal[i] = -1.0; // Distribution trend
+            }
+        }
+
+        (trend_value, trend_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeAccumulationTrend {
+    fn name(&self) -> &str {
+        "Volume Accumulation Trend"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (trend_value, trend_signal) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::dual(trend_value, trend_signal))
+    }
+}
+
+/// Adaptive Volume MA - Moving average that adapts to volume conditions
+///
+/// A volume-adaptive moving average that becomes more responsive when
+/// volume is high and more stable when volume is low. This helps filter
+/// out noise during low-volume periods while remaining responsive to
+/// significant high-volume price moves.
+#[derive(Debug, Clone)]
+pub struct AdaptiveVolumeMA {
+    period: usize,
+    fast_factor: f64,
+    slow_factor: f64,
+}
+
+impl AdaptiveVolumeMA {
+    /// Create a new AdaptiveVolumeMA indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for volume comparison (minimum 5)
+    /// * `fast_factor` - Fast smoothing factor (0.0 to 1.0, default 0.5)
+    /// * `slow_factor` - Slow smoothing factor (0.0 to fast_factor, default 0.1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, fast_factor: f64, slow_factor: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if fast_factor <= 0.0 || fast_factor > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_factor".to_string(),
+                reason: "must be between 0 and 1 (exclusive of 0)".to_string(),
+            });
+        }
+        if slow_factor < 0.0 || slow_factor >= fast_factor {
+            return Err(IndicatorError::InvalidParameter {
+                name: "slow_factor".to_string(),
+                reason: "must be between 0 and fast_factor".to_string(),
+            });
+        }
+        Ok(Self { period, fast_factor, slow_factor })
+    }
+
+    /// Create with default factors (fast=0.5, slow=0.1)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 0.5, 0.1)
+    }
+
+    /// Calculate adaptive volume moving average
+    ///
+    /// Returns (adaptive_ma, volume_ratio):
+    /// - adaptive_ma: The adaptive moving average values
+    /// - volume_ratio: Current volume relative to average (for reference)
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut adaptive_ma = vec![0.0; n];
+        let mut volume_ratio = vec![0.0; n];
+
+        if n == 0 {
+            return (adaptive_ma, volume_ratio);
+        }
+
+        // Initialize with first close price
+        adaptive_ma[0] = close[0];
+
+        for i in 1..n {
+            // Calculate average volume over lookback period
+            let start = if i >= self.period { i - self.period } else { 0 };
+            let avg_volume: f64 = volume[start..i].iter().sum::<f64>() / (i - start) as f64;
+
+            // Calculate volume ratio (current vs average)
+            let ratio = if avg_volume > 1e-10 {
+                (volume[i] / avg_volume).min(3.0) // Cap at 3x average
+            } else {
+                1.0
+            };
+            volume_ratio[i] = ratio;
+
+            // Adaptive smoothing constant based on volume ratio
+            // High volume = more responsive (closer to fast_factor)
+            // Low volume = more stable (closer to slow_factor)
+            let normalized_ratio = ((ratio - 0.5) / 2.5).clamp(0.0, 1.0);
+            let alpha = self.slow_factor + normalized_ratio * (self.fast_factor - self.slow_factor);
+
+            // Apply adaptive EMA
+            adaptive_ma[i] = alpha * close[i] + (1.0 - alpha) * adaptive_ma[i - 1];
+        }
+
+        (adaptive_ma, volume_ratio)
+    }
+}
+
+impl TechnicalIndicator for AdaptiveVolumeMA {
+    fn name(&self) -> &str {
+        "Adaptive Volume MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (adaptive_ma, volume_ratio) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::dual(adaptive_ma, volume_ratio))
+    }
+}
+
+/// Volume Flow Index - Measures the direction and strength of volume flow
+///
+/// Calculates the flow of volume by analyzing whether volume is flowing
+/// into (accumulation) or out of (distribution) a security. Uses a
+/// combination of price change direction and volume intensity.
+#[derive(Debug, Clone)]
+pub struct VolumeFlowIndex {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeFlowIndex {
+    /// Create a new VolumeFlowIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for flow calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate volume flow index
+    ///
+    /// Returns (flow_index, flow_direction):
+    /// - flow_index: Normalized flow index (-100 to 100)
+    /// - flow_direction: +1 for inflow, -1 for outflow, 0 for neutral
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut flow_index = vec![0.0; n];
+        let mut flow_direction = vec![0.0; n];
+
+        if n < 2 {
+            return (flow_index, flow_direction);
+        }
+
+        // Calculate typical price and money flow
+        let mut money_flow = vec![0.0; n];
+        for i in 1..n {
+            let typical_price = (high[i] + low[i] + close[i]) / 3.0;
+            let prev_typical = (high[i - 1] + low[i - 1] + close[i - 1]) / 3.0;
+
+            // Positive money flow if typical price increased, negative if decreased
+            if typical_price > prev_typical {
+                money_flow[i] = typical_price * volume[i];
+            } else if typical_price < prev_typical {
+                money_flow[i] = -typical_price * volume[i];
+            }
+            // If equal, money_flow remains 0
+        }
+
+        // Calculate rolling flow ratio
+        let mut raw_flow = vec![0.0; n];
+        for i in self.period..n {
+            let start = i - self.period;
+            let window = &money_flow[start..=i];
+
+            let positive_flow: f64 = window.iter().filter(|&&x| x > 0.0).sum();
+            let negative_flow: f64 = window.iter().filter(|&&x| x < 0.0).map(|x| x.abs()).sum();
+
+            let total_flow = positive_flow + negative_flow;
+            if total_flow > 1e-10 {
+                // Flow index as percentage: (positive - negative) / total * 100
+                raw_flow[i] = ((positive_flow - negative_flow) / total_flow) * 100.0;
+            }
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                flow_index[i] = raw_flow[i];
+            } else {
+                flow_index[i] = alpha * raw_flow[i] + (1.0 - alpha) * flow_index[i - 1];
+            }
+
+            // Clamp to -100 to 100
+            flow_index[i] = flow_index[i].clamp(-100.0, 100.0);
+
+            // Determine flow direction
+            if flow_index[i] > 10.0 {
+                flow_direction[i] = 1.0; // Net inflow
+            } else if flow_index[i] < -10.0 {
+                flow_direction[i] = -1.0; // Net outflow
+            }
+        }
+
+        (flow_index, flow_direction)
+    }
+}
+
+impl TechnicalIndicator for VolumeFlowIndex {
+    fn name(&self) -> &str {
+        "Volume Flow Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (flow_index, flow_direction) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::dual(flow_index, flow_direction))
+    }
+}
+
+/// Volume Pressure Index - Measures buying vs selling pressure from volume
+///
+/// Analyzes volume to determine whether buying or selling pressure dominates.
+/// Uses the relationship between close price and the high-low range to
+/// estimate the proportion of volume that represents buying vs selling.
+#[derive(Debug, Clone)]
+pub struct VolumePressureIndex {
+    period: usize,
+}
+
+impl VolumePressureIndex {
+    /// Create a new VolumePressureIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for pressure calculation (minimum 5)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate volume pressure index
+    ///
+    /// Returns (pressure_index, pressure_signal):
+    /// - pressure_index: Buying pressure ratio (0-100, 50 = balanced)
+    /// - pressure_signal: +1 for buying pressure, -1 for selling pressure, 0 for neutral
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut pressure_index = vec![50.0; n]; // Default to balanced
+        let mut pressure_signal = vec![0.0; n];
+
+        if n < 1 {
+            return (pressure_index, pressure_signal);
+        }
+
+        // Calculate buying and selling volume for each bar
+        let mut buying_volume = vec![0.0; n];
+        let mut selling_volume = vec![0.0; n];
+
+        for i in 0..n {
+            let range = high[i] - low[i];
+            if range > 1e-10 {
+                // Buying volume proportion: how close did price close to the high?
+                let buy_ratio = (close[i] - low[i]) / range;
+                buying_volume[i] = buy_ratio * volume[i];
+                selling_volume[i] = (1.0 - buy_ratio) * volume[i];
+            } else {
+                // No range, split 50/50
+                buying_volume[i] = volume[i] * 0.5;
+                selling_volume[i] = volume[i] * 0.5;
+            }
+        }
+
+        // Calculate rolling pressure index
+        for i in self.period..n {
+            let start = i - self.period;
+
+            let total_buying: f64 = buying_volume[start..=i].iter().sum();
+            let total_selling: f64 = selling_volume[start..=i].iter().sum();
+            let total_volume = total_buying + total_selling;
+
+            if total_volume > 1e-10 {
+                pressure_index[i] = (total_buying / total_volume) * 100.0;
+            }
+
+            // Determine pressure signal
+            if pressure_index[i] > 60.0 {
+                pressure_signal[i] = 1.0; // Strong buying pressure
+            } else if pressure_index[i] < 40.0 {
+                pressure_signal[i] = -1.0; // Strong selling pressure
+            }
+        }
+
+        (pressure_index, pressure_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumePressureIndex {
+    fn name(&self) -> &str {
+        "Volume Pressure Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (pressure_index, pressure_signal) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::dual(pressure_index, pressure_signal))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2398,5 +3152,450 @@ mod tests {
         assert!(VolumeImpulse::new(4, 2.0).is_err());
         assert!(VolumeImpulse::new(5, 0.0).is_err());
         assert!(VolumeImpulse::new(5, 2.0).is_ok());
+    }
+
+    // =========================================================================
+    // Tests for 6 NEW volume indicators
+    // =========================================================================
+
+    #[test]
+    fn test_volume_weighted_trend() {
+        let (_, _, close, volume) = make_test_data();
+        let vwt = VolumeWeightedTrend::new(10, 3).unwrap();
+        let (trend_value, trend_direction) = vwt.calculate(&close, &volume);
+
+        assert_eq!(trend_value.len(), close.len());
+        assert_eq!(trend_direction.len(), close.len());
+        // Trend value should be within bounds
+        assert!(trend_value.iter().all(|&v| v >= -100.0 && v <= 100.0));
+        // Direction should be -1, 0, or 1
+        assert!(trend_direction.iter().all(|&d| d == -1.0 || d == 0.0 || d == 1.0));
+    }
+
+    #[test]
+    fn test_volume_weighted_trend_uptrend() {
+        // Clear uptrend with increasing volume
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 1000.0 + i as f64 * 100.0).collect();
+
+        let vwt = VolumeWeightedTrend::new(5, 3).unwrap();
+        let (trend_value, trend_direction) = vwt.calculate(&close, &volume);
+
+        // Should show positive trend in uptrend
+        assert!(trend_value[20] > 0.0, "trend_value[20] = {} should be > 0", trend_value[20]);
+        assert_eq!(trend_direction[20], 1.0);
+    }
+
+    #[test]
+    fn test_volume_weighted_trend_downtrend() {
+        // Clear downtrend
+        let close: Vec<f64> = (0..25).map(|i| 150.0 - i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 1000.0 + i as f64 * 100.0).collect();
+
+        let vwt = VolumeWeightedTrend::new(5, 3).unwrap();
+        let (trend_value, trend_direction) = vwt.calculate(&close, &volume);
+
+        // Should show negative trend in downtrend
+        assert!(trend_value[20] < 0.0, "trend_value[20] = {} should be < 0", trend_value[20]);
+        assert_eq!(trend_direction[20], -1.0);
+    }
+
+    #[test]
+    fn test_volume_weighted_trend_validation() {
+        assert!(VolumeWeightedTrend::new(4, 3).is_err());
+        assert!(VolumeWeightedTrend::new(5, 0).is_err());
+        assert!(VolumeWeightedTrend::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_momentum_oscillator() {
+        let (_, _, close, volume) = make_test_data();
+        let vmo = VolumeMomentumOscillator::new(5, 15, 5).unwrap();
+        let (oscillator, signal, histogram) = vmo.calculate(&close, &volume);
+
+        assert_eq!(oscillator.len(), close.len());
+        assert_eq!(signal.len(), close.len());
+        assert_eq!(histogram.len(), close.len());
+        // Should produce values after sufficient data
+        assert!(oscillator.iter().skip(20).any(|&v| v != 0.0));
+    }
+
+    #[test]
+    fn test_volume_momentum_oscillator_crossover() {
+        // Strong uptrend should produce positive oscillator
+        let close: Vec<f64> = (0..30).map(|i| 100.0 + i as f64 * 3.0).collect();
+        let volume: Vec<f64> = (0..30).map(|i| 1000.0 + i as f64 * 200.0).collect();
+
+        let vmo = VolumeMomentumOscillator::new(5, 12, 5).unwrap();
+        let (oscillator, _, _) = vmo.calculate(&close, &volume);
+
+        // Should show positive oscillator in strong uptrend
+        assert!(oscillator[25] > 0.0, "oscillator[25] = {} should be > 0", oscillator[25]);
+    }
+
+    #[test]
+    fn test_volume_momentum_oscillator_validation() {
+        assert!(VolumeMomentumOscillator::new(1, 10, 5).is_err());
+        assert!(VolumeMomentumOscillator::new(10, 5, 5).is_err()); // slow <= fast
+        assert!(VolumeMomentumOscillator::new(5, 10, 1).is_err());
+        assert!(VolumeMomentumOscillator::new(5, 10, 5).is_ok());
+    }
+
+    #[test]
+    fn test_volume_accumulation_trend() {
+        let (high, low, close, volume) = make_test_data();
+        let vat = VolumeAccumulationTrend::new(10, 3).unwrap();
+        let (trend_value, trend_signal) = vat.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(trend_value.len(), close.len());
+        assert_eq!(trend_signal.len(), close.len());
+        // Signal should be -1, 0, or 1
+        assert!(trend_signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_accumulation_trend_accumulation() {
+        // Price closing near highs = accumulation
+        let high: Vec<f64> = (0..25).map(|i| 102.0 + i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..25).map(|i| 98.0 + i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..25).map(|i| 101.5 + i as f64 * 2.0).collect(); // Close near high
+        let volume = vec![1000.0; 25];
+
+        let vat = VolumeAccumulationTrend::new(5, 3).unwrap();
+        let (trend_value, _) = vat.calculate(&high, &low, &close, &volume);
+
+        // Should show positive accumulation trend
+        assert!(trend_value[20] > 0.0 || trend_value[15] > 0.0,
+            "trend should be positive when closing near highs");
+    }
+
+    #[test]
+    fn test_volume_accumulation_trend_distribution() {
+        // Price closing near lows = distribution
+        let high: Vec<f64> = (0..25).map(|i| 102.0 + i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..25).map(|i| 98.0 + i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..25).map(|i| 98.5 + i as f64 * 2.0).collect(); // Close near low
+        let volume = vec![1000.0; 25];
+
+        let vat = VolumeAccumulationTrend::new(5, 3).unwrap();
+        let (trend_value, _) = vat.calculate(&high, &low, &close, &volume);
+
+        // Should show negative distribution trend
+        assert!(trend_value[20] < 0.0 || trend_value[15] < 0.0,
+            "trend should be negative when closing near lows");
+    }
+
+    #[test]
+    fn test_volume_accumulation_trend_validation() {
+        assert!(VolumeAccumulationTrend::new(4, 3).is_err());
+        assert!(VolumeAccumulationTrend::new(5, 0).is_err());
+        assert!(VolumeAccumulationTrend::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_volume_ma() {
+        let (_, _, close, volume) = make_test_data();
+        let avma = AdaptiveVolumeMA::new(10, 0.5, 0.1).unwrap();
+        let (adaptive_ma, volume_ratio) = avma.calculate(&close, &volume);
+
+        assert_eq!(adaptive_ma.len(), close.len());
+        assert_eq!(volume_ratio.len(), close.len());
+        // MA should track price
+        assert!(adaptive_ma[20] > 0.0);
+    }
+
+    #[test]
+    fn test_adaptive_volume_ma_with_period() {
+        let (_, _, close, volume) = make_test_data();
+        let avma = AdaptiveVolumeMA::with_period(10).unwrap();
+        let (adaptive_ma, _) = avma.calculate(&close, &volume);
+
+        assert_eq!(adaptive_ma.len(), close.len());
+        // Should track close prices
+        let last_ma = adaptive_ma[29];
+        let last_close = close[29];
+        // MA should be somewhat close to recent prices
+        assert!((last_ma - last_close).abs() < 30.0,
+            "MA {} should be close to close price {}", last_ma, last_close);
+    }
+
+    #[test]
+    fn test_adaptive_volume_ma_responsiveness() {
+        // Test that high volume makes MA more responsive
+        let close = vec![100.0; 20];
+        let mut volume = vec![1000.0; 20];
+
+        // Sudden price jump at index 15
+        let mut close_spike = close.clone();
+        close_spike[15] = 110.0;
+        close_spike[16] = 112.0;
+        close_spike[17] = 114.0;
+        close_spike[18] = 116.0;
+        close_spike[19] = 118.0;
+
+        // High volume during spike
+        let mut volume_high = volume.clone();
+        volume_high[15] = 5000.0;
+        volume_high[16] = 5000.0;
+        volume_high[17] = 5000.0;
+
+        let avma = AdaptiveVolumeMA::new(10, 0.5, 0.1).unwrap();
+        let (ma_high_vol, _) = avma.calculate(&close_spike, &volume_high);
+        let (ma_low_vol, _) = avma.calculate(&close_spike, &volume);
+
+        // With high volume, MA should respond faster (be closer to new price)
+        assert!(ma_high_vol[17] > ma_low_vol[17],
+            "High volume MA {} should be more responsive than low volume MA {}",
+            ma_high_vol[17], ma_low_vol[17]);
+    }
+
+    #[test]
+    fn test_adaptive_volume_ma_validation() {
+        assert!(AdaptiveVolumeMA::new(4, 0.5, 0.1).is_err());
+        assert!(AdaptiveVolumeMA::new(5, 0.0, 0.1).is_err()); // fast_factor <= 0
+        assert!(AdaptiveVolumeMA::new(5, 1.5, 0.1).is_err()); // fast_factor > 1
+        assert!(AdaptiveVolumeMA::new(5, 0.5, 0.5).is_err()); // slow >= fast
+        assert!(AdaptiveVolumeMA::new(5, 0.5, -0.1).is_err()); // slow < 0
+        assert!(AdaptiveVolumeMA::new(5, 0.5, 0.1).is_ok());
+    }
+
+    #[test]
+    fn test_volume_flow_index() {
+        let (high, low, close, volume) = make_test_data();
+        let vfi = VolumeFlowIndex::new(10, 3).unwrap();
+        let (flow_index, flow_direction) = vfi.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(flow_index.len(), close.len());
+        assert_eq!(flow_direction.len(), close.len());
+        // Flow index should be within bounds
+        assert!(flow_index.iter().all(|&v| v >= -100.0 && v <= 100.0));
+        // Direction should be -1, 0, or 1
+        assert!(flow_direction.iter().all(|&d| d == -1.0 || d == 0.0 || d == 1.0));
+    }
+
+    #[test]
+    fn test_volume_flow_index_inflow() {
+        // Strong uptrend = inflow
+        let high: Vec<f64> = (0..25).map(|i| 102.0 + i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..25).map(|i| 98.0 + i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume = vec![1000.0; 25];
+
+        let vfi = VolumeFlowIndex::new(5, 3).unwrap();
+        let (flow_index, flow_direction) = vfi.calculate(&high, &low, &close, &volume);
+
+        // Should show positive flow (inflow) in uptrend
+        assert!(flow_index[20] > 0.0, "flow_index[20] = {} should be > 0", flow_index[20]);
+        assert_eq!(flow_direction[20], 1.0);
+    }
+
+    #[test]
+    fn test_volume_flow_index_outflow() {
+        // Strong downtrend = outflow
+        let high: Vec<f64> = (0..25).map(|i| 152.0 - i as f64 * 2.0).collect();
+        let low: Vec<f64> = (0..25).map(|i| 148.0 - i as f64 * 2.0).collect();
+        let close: Vec<f64> = (0..25).map(|i| 150.0 - i as f64 * 2.0).collect();
+        let volume = vec![1000.0; 25];
+
+        let vfi = VolumeFlowIndex::new(5, 3).unwrap();
+        let (flow_index, flow_direction) = vfi.calculate(&high, &low, &close, &volume);
+
+        // Should show negative flow (outflow) in downtrend
+        assert!(flow_index[20] < 0.0, "flow_index[20] = {} should be < 0", flow_index[20]);
+        assert_eq!(flow_direction[20], -1.0);
+    }
+
+    #[test]
+    fn test_volume_flow_index_validation() {
+        assert!(VolumeFlowIndex::new(4, 3).is_err());
+        assert!(VolumeFlowIndex::new(5, 0).is_err());
+        assert!(VolumeFlowIndex::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_pressure_index() {
+        let (high, low, close, volume) = make_test_data();
+        let vpi = VolumePressureIndex::new(10).unwrap();
+        let (pressure_index, pressure_signal) = vpi.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(pressure_index.len(), close.len());
+        assert_eq!(pressure_signal.len(), close.len());
+        // Pressure index should be between 0 and 100
+        assert!(pressure_index.iter().all(|&v| v >= 0.0 && v <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(pressure_signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_pressure_index_buying_pressure() {
+        // Close near highs = buying pressure
+        let high = vec![105.0; 20];
+        let low = vec![95.0; 20];
+        let close = vec![104.0; 20]; // Close near high
+        let volume = vec![1000.0; 20];
+
+        let vpi = VolumePressureIndex::new(5).unwrap();
+        let (pressure_index, pressure_signal) = vpi.calculate(&high, &low, &close, &volume);
+
+        // Should show buying pressure (> 60)
+        assert!(pressure_index[15] > 60.0,
+            "pressure_index[15] = {} should be > 60 for buying pressure", pressure_index[15]);
+        assert_eq!(pressure_signal[15], 1.0);
+    }
+
+    #[test]
+    fn test_volume_pressure_index_selling_pressure() {
+        // Close near lows = selling pressure
+        let high = vec![105.0; 20];
+        let low = vec![95.0; 20];
+        let close = vec![96.0; 20]; // Close near low
+        let volume = vec![1000.0; 20];
+
+        let vpi = VolumePressureIndex::new(5).unwrap();
+        let (pressure_index, pressure_signal) = vpi.calculate(&high, &low, &close, &volume);
+
+        // Should show selling pressure (< 40)
+        assert!(pressure_index[15] < 40.0,
+            "pressure_index[15] = {} should be < 40 for selling pressure", pressure_index[15]);
+        assert_eq!(pressure_signal[15], -1.0);
+    }
+
+    #[test]
+    fn test_volume_pressure_index_balanced() {
+        // Close in middle = balanced pressure
+        let high = vec![105.0; 20];
+        let low = vec![95.0; 20];
+        let close = vec![100.0; 20]; // Close in middle
+        let volume = vec![1000.0; 20];
+
+        let vpi = VolumePressureIndex::new(5).unwrap();
+        let (pressure_index, pressure_signal) = vpi.calculate(&high, &low, &close, &volume);
+
+        // Should show balanced pressure (around 50)
+        assert!(pressure_index[15] >= 40.0 && pressure_index[15] <= 60.0,
+            "pressure_index[15] = {} should be around 50 for balanced pressure", pressure_index[15]);
+        assert_eq!(pressure_signal[15], 0.0);
+    }
+
+    #[test]
+    fn test_volume_pressure_index_validation() {
+        assert!(VolumePressureIndex::new(4).is_err());
+        assert!(VolumePressureIndex::new(5).is_ok());
+    }
+
+    #[test]
+    fn test_new_volume_indicators_parameter_validation() {
+        // VolumeWeightedTrend
+        assert!(VolumeWeightedTrend::new(4, 3).is_err());
+        assert!(VolumeWeightedTrend::new(5, 0).is_err());
+        assert!(VolumeWeightedTrend::new(5, 3).is_ok());
+
+        // VolumeMomentumOscillator
+        assert!(VolumeMomentumOscillator::new(1, 10, 5).is_err());
+        assert!(VolumeMomentumOscillator::new(10, 5, 5).is_err());
+        assert!(VolumeMomentumOscillator::new(5, 10, 1).is_err());
+        assert!(VolumeMomentumOscillator::new(5, 10, 5).is_ok());
+
+        // VolumeAccumulationTrend
+        assert!(VolumeAccumulationTrend::new(4, 3).is_err());
+        assert!(VolumeAccumulationTrend::new(5, 0).is_err());
+        assert!(VolumeAccumulationTrend::new(5, 3).is_ok());
+
+        // AdaptiveVolumeMA
+        assert!(AdaptiveVolumeMA::new(4, 0.5, 0.1).is_err());
+        assert!(AdaptiveVolumeMA::new(5, 0.0, 0.1).is_err());
+        assert!(AdaptiveVolumeMA::new(5, 1.5, 0.1).is_err());
+        assert!(AdaptiveVolumeMA::new(5, 0.5, 0.5).is_err());
+        assert!(AdaptiveVolumeMA::new(5, 0.5, 0.1).is_ok());
+
+        // VolumeFlowIndex
+        assert!(VolumeFlowIndex::new(4, 3).is_err());
+        assert!(VolumeFlowIndex::new(5, 0).is_err());
+        assert!(VolumeFlowIndex::new(5, 3).is_ok());
+
+        // VolumePressureIndex
+        assert!(VolumePressureIndex::new(4).is_err());
+        assert!(VolumePressureIndex::new(5).is_ok());
+    }
+
+    #[test]
+    fn test_new_volume_indicators_technical_indicator_trait() {
+        let (high, low, close, volume) = make_test_data();
+
+        // Create OHLCVSeries for compute tests
+        let data = OHLCVSeries {
+            open: close.clone(),
+            high: high.clone(),
+            low: low.clone(),
+            close: close.clone(),
+            volume: volume.clone(),
+        };
+
+        // Test VolumeWeightedTrend
+        let vwt = VolumeWeightedTrend::new(5, 3).unwrap();
+        assert_eq!(vwt.name(), "Volume Weighted Trend");
+        assert_eq!(vwt.min_periods(), 6);
+        assert!(vwt.compute(&data).is_ok());
+
+        // Test VolumeMomentumOscillator
+        let vmo = VolumeMomentumOscillator::new(5, 10, 5).unwrap();
+        assert_eq!(vmo.name(), "Volume Momentum Oscillator");
+        assert_eq!(vmo.min_periods(), 15);
+        assert_eq!(vmo.output_features(), 3);
+        assert!(vmo.compute(&data).is_ok());
+
+        // Test VolumeAccumulationTrend
+        let vat = VolumeAccumulationTrend::new(5, 3).unwrap();
+        assert_eq!(vat.name(), "Volume Accumulation Trend");
+        assert_eq!(vat.min_periods(), 6);
+        assert!(vat.compute(&data).is_ok());
+
+        // Test AdaptiveVolumeMA
+        let avma = AdaptiveVolumeMA::new(5, 0.5, 0.1).unwrap();
+        assert_eq!(avma.name(), "Adaptive Volume MA");
+        assert_eq!(avma.min_periods(), 6);
+        assert!(avma.compute(&data).is_ok());
+
+        // Test VolumeFlowIndex
+        let vfi = VolumeFlowIndex::new(5, 3).unwrap();
+        assert_eq!(vfi.name(), "Volume Flow Index");
+        assert_eq!(vfi.min_periods(), 6);
+        assert!(vfi.compute(&data).is_ok());
+
+        // Test VolumePressureIndex
+        let vpi = VolumePressureIndex::new(5).unwrap();
+        assert_eq!(vpi.name(), "Volume Pressure Index");
+        assert_eq!(vpi.min_periods(), 6);
+        assert!(vpi.compute(&data).is_ok());
+    }
+
+    #[test]
+    fn test_new_volume_indicators_insufficient_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0],
+            high: vec![102.0, 103.0],
+            low: vec![98.0, 99.0],
+            close: vec![100.0, 101.0],
+            volume: vec![1000.0, 1100.0],
+        };
+
+        // All should fail with insufficient data
+        let vwt = VolumeWeightedTrend::new(10, 3).unwrap();
+        assert!(vwt.compute(&short_data).is_err());
+
+        let vmo = VolumeMomentumOscillator::new(5, 10, 5).unwrap();
+        assert!(vmo.compute(&short_data).is_err());
+
+        let vat = VolumeAccumulationTrend::new(10, 3).unwrap();
+        assert!(vat.compute(&short_data).is_err());
+
+        let avma = AdaptiveVolumeMA::new(10, 0.5, 0.1).unwrap();
+        assert!(avma.compute(&short_data).is_err());
+
+        let vfi = VolumeFlowIndex::new(10, 3).unwrap();
+        assert!(vfi.compute(&short_data).is_err());
+
+        let vpi = VolumePressureIndex::new(10).unwrap();
+        assert!(vpi.compute(&short_data).is_err());
     }
 }

@@ -63,4 +63,7 @@ pub use advanced::{
     TrendPersistenceMetric, TrendCycleFinder, TrendVolatilityRatio,
     TrendContinuity, TrendMomentumConvergence, AdaptiveTrendStrength,
     TrendDirectionIndex, TrendMaturity, MultiPeriodTrendAlignment,
+    // New trend indicators
+    TrendAccelerationIndex, TrendConsistencyRating, TrendMaturityScore,
+    TrendReversalEstimator, DynamicAdaptiveTrendLine, TrendMomentumDivergence,
 };

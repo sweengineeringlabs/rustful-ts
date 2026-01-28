@@ -24,6 +24,7 @@ pub mod demark;
 pub mod intermarket;
 pub mod crypto;
 pub mod sentiment;
+pub mod momentum;
 
 #[cfg(feature = "simd")]
 pub mod simd;
@@ -347,6 +348,14 @@ pub use sentiment::{
     SentimentContrarianSignal, SentimentVolatility, SentimentCycle,
     SentimentStrength, SentimentAcceleration, SentimentMeanReversion,
     CrowdBehaviorIndex, SentimentRegimeDetector, ContraSentimentSignal,
+};
+
+// ============================================================================
+// Momentum Exports
+// ============================================================================
+pub use momentum::{
+    MomentumDivergenceIndex, MomentumPersistence, MomentumRegime,
+    RelativeMomentumIndex, MomentumAccelerator, AdaptiveMomentumFilter,
 };
 
 // ============================================================================

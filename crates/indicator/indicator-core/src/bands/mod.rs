@@ -58,4 +58,7 @@ pub use advanced::{
     CycleBands, DynamicEnvelope,
     AdaptiveKeltnerChannels, VolatilityWeightedBands, TrendFollowingChannel,
     DynamicSupportResistanceBands, MomentumBandwidth, PriceEnvelopeOscillator,
+    // New band indicators (Jan 2026)
+    VolatilityBandwidth, BandBreakoutStrength, DynamicPriceBands,
+    TrendAlignedBands, MomentumDrivenBands, AdaptiveEnvelopeBands,
 };

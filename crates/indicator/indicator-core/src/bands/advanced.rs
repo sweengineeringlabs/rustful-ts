@@ -1928,6 +1928,759 @@ impl TechnicalIndicator for DynamicEnvelope {
     }
 }
 
+/// Volatility Bandwidth - Measures bandwidth as percentage of price
+///
+/// Calculates the width of volatility bands as a percentage of the middle band.
+/// This indicator helps identify periods of low and high volatility (squeeze/expansion).
+/// Values are expressed as percentages - lower values indicate squeeze conditions.
+///
+/// Formula: Bandwidth = (Upper - Lower) / Middle * 100
+#[derive(Debug, Clone)]
+pub struct VolatilityBandwidth {
+    period: usize,
+    mult: f64,
+}
+
+impl VolatilityBandwidth {
+    pub fn new(period: usize, mult: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self { period, mult })
+    }
+
+    /// Calculate volatility bandwidth as percentage
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut bandwidth = vec![0.0; n];
+
+        if n == 0 {
+            return bandwidth;
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let slice = &close[start..=i];
+
+            // Calculate SMA (middle band)
+            let ma: f64 = slice.iter().sum::<f64>() / self.period as f64;
+
+            // Calculate standard deviation
+            let variance: f64 = slice.iter()
+                .map(|x| (x - ma).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            // Calculate bands
+            let upper = ma + self.mult * std_dev;
+            let lower = ma - self.mult * std_dev;
+
+            // Bandwidth as percentage
+            if ma > 1e-10 {
+                bandwidth[i] = (upper - lower) / ma * 100.0;
+            }
+        }
+
+        bandwidth
+    }
+
+    /// Calculate with bands returned as well (middle, upper, lower, bandwidth)
+    pub fn calculate_with_bands(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+        let mut bandwidth = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower, bandwidth);
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let slice = &close[start..=i];
+
+            let ma: f64 = slice.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = slice.iter()
+                .map(|x| (x - ma).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            middle[i] = ma;
+            upper[i] = ma + self.mult * std_dev;
+            lower[i] = ma - self.mult * std_dev;
+
+            if ma > 1e-10 {
+                bandwidth[i] = (upper[i] - lower[i]) / ma * 100.0;
+            }
+        }
+
+        (middle, upper, lower, bandwidth)
+    }
+}
+
+impl TechnicalIndicator for VolatilityBandwidth {
+    fn name(&self) -> &str {
+        "Volatility Bandwidth"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let values = self.calculate(&data.close);
+        Ok(IndicatorOutput::single(values))
+    }
+}
+
+/// Band Breakout Strength - Measures strength of band breakouts
+///
+/// Quantifies how strongly price has broken through the upper or lower band.
+/// Positive values indicate upward breakouts, negative values indicate downward breakouts.
+/// The magnitude indicates breakout strength relative to band width.
+///
+/// Formula: Strength = (Close - Band) / BandWidth * 100
+/// Where Band is upper band for closes above, lower band for closes below
+#[derive(Debug, Clone)]
+pub struct BandBreakoutStrength {
+    period: usize,
+    mult: f64,
+}
+
+impl BandBreakoutStrength {
+    pub fn new(period: usize, mult: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        Ok(Self { period, mult })
+    }
+
+    /// Calculate band breakout strength
+    /// Returns values typically in range [-100, 100] when within bands
+    /// Values exceed this range during breakouts
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut strength = vec![0.0; n];
+
+        if n == 0 {
+            return strength;
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let slice = &close[start..=i];
+
+            // Calculate bands
+            let ma: f64 = slice.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = slice.iter()
+                .map(|x| (x - ma).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            let upper = ma + self.mult * std_dev;
+            let lower = ma - self.mult * std_dev;
+            let band_width = upper - lower;
+
+            if band_width > 1e-10 {
+                // Calculate position relative to bands
+                if close[i] > upper {
+                    // Upward breakout: positive strength beyond 100
+                    strength[i] = 100.0 + (close[i] - upper) / band_width * 200.0;
+                } else if close[i] < lower {
+                    // Downward breakout: negative strength beyond -100
+                    strength[i] = -100.0 - (lower - close[i]) / band_width * 200.0;
+                } else {
+                    // Within bands: -100 to +100 range
+                    // 0 at middle, +100 at upper, -100 at lower
+                    strength[i] = (close[i] - ma) / (band_width / 2.0) * 100.0;
+                }
+            }
+        }
+
+        strength
+    }
+
+    /// Calculate with bands returned as well (middle, upper, lower)
+    pub fn calculate_bands(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        for i in (self.period - 1)..n {
+            let start = i + 1 - self.period;
+            let slice = &close[start..=i];
+
+            let ma: f64 = slice.iter().sum::<f64>() / self.period as f64;
+            let variance: f64 = slice.iter()
+                .map(|x| (x - ma).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            middle[i] = ma;
+            upper[i] = ma + self.mult * std_dev;
+            lower[i] = ma - self.mult * std_dev;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for BandBreakoutStrength {
+    fn name(&self) -> &str {
+        "Band Breakout Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let values = self.calculate(&data.close);
+        Ok(IndicatorOutput::single(values))
+    }
+}
+
+/// Dynamic Price Bands - Price bands that adapt to volatility regime
+///
+/// Creates bands that dynamically adjust their width based on the current
+/// volatility regime (low, normal, or high volatility). The bands expand
+/// during high volatility and contract during low volatility, using a
+/// percentile-based regime detection.
+///
+/// This differs from other adaptive bands by using regime classification
+/// rather than continuous adjustment.
+#[derive(Debug, Clone)]
+pub struct DynamicPriceBands {
+    period: usize,
+    volatility_lookback: usize,
+    low_vol_mult: f64,
+    high_vol_mult: f64,
+}
+
+impl DynamicPriceBands {
+    pub fn new(period: usize, volatility_lookback: usize, low_vol_mult: f64, high_vol_mult: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if volatility_lookback < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_lookback".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if low_vol_mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "low_vol_mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if high_vol_mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "high_vol_mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if low_vol_mult >= high_vol_mult {
+            return Err(IndicatorError::InvalidParameter {
+                name: "low_vol_mult".to_string(),
+                reason: "must be less than high_vol_mult".to_string(),
+            });
+        }
+        Ok(Self { period, volatility_lookback, low_vol_mult, high_vol_mult })
+    }
+
+    /// Calculate dynamic price bands (middle, upper, lower)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len());
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate ATR for volatility measurement
+        let mut atr_values = vec![0.0; n];
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+
+            if i < self.period {
+                // Simple average during warmup
+                let mut sum = tr;
+                for j in 1..i {
+                    let tr_j = (high[j] - low[j])
+                        .max((high[j] - close[j - 1]).abs())
+                        .max((low[j] - close[j - 1]).abs());
+                    sum += tr_j;
+                }
+                atr_values[i] = sum / i as f64;
+            } else {
+                let alpha = 2.0 / (self.period as f64 + 1.0);
+                atr_values[i] = alpha * tr + (1.0 - alpha) * atr_values[i - 1];
+            }
+        }
+
+        let start_idx = self.period.max(self.volatility_lookback);
+
+        for i in start_idx..n {
+            // Calculate SMA for middle band
+            let ma_start = i.saturating_sub(self.period - 1);
+            let ma: f64 = close[ma_start..=i].iter().sum::<f64>() / self.period as f64;
+
+            // Calculate current ATR
+            let current_atr = atr_values[i];
+
+            // Determine volatility regime using percentile
+            let lookback_start = i.saturating_sub(self.volatility_lookback - 1);
+            let atr_slice = &atr_values[lookback_start..=i];
+
+            let count_below = atr_slice.iter().filter(|&&v| v < current_atr).count();
+            let percentile = count_below as f64 / atr_slice.len() as f64;
+
+            // Regime-based multiplier selection
+            // Low volatility (bottom 33%): use low_vol_mult
+            // High volatility (top 33%): use high_vol_mult
+            // Normal volatility: interpolate between them
+            let mult = if percentile < 0.33 {
+                self.low_vol_mult
+            } else if percentile > 0.67 {
+                self.high_vol_mult
+            } else {
+                // Linear interpolation for normal regime
+                let regime_position = (percentile - 0.33) / 0.34;
+                self.low_vol_mult + regime_position * (self.high_vol_mult - self.low_vol_mult)
+            };
+
+            middle[i] = ma;
+            upper[i] = ma + mult * current_atr;
+            lower[i] = ma - mult * current_atr;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for DynamicPriceBands {
+    fn name(&self) -> &str {
+        "Dynamic Price Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.volatility_lookback) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// Trend Aligned Bands - Bands that shift based on trend direction
+///
+/// Creates bands where the center line shifts toward the trend direction.
+/// In uptrends, the middle band is biased upward; in downtrends, biased downward.
+/// This helps keep price within the bands during trending markets.
+///
+/// Uses linear regression to determine trend direction and strength.
+#[derive(Debug, Clone)]
+pub struct TrendAlignedBands {
+    period: usize,
+    trend_period: usize,
+    mult: f64,
+    max_shift: f64,
+}
+
+impl TrendAlignedBands {
+    pub fn new(period: usize, trend_period: usize, mult: f64, max_shift: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if trend_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if max_shift <= 0.0 || max_shift > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_shift".to_string(),
+                reason: "must be between 0 and 1 (exclusive of 0)".to_string(),
+            });
+        }
+        Ok(Self { period, trend_period, mult, max_shift })
+    }
+
+    /// Calculate trend aligned bands (middle, upper, lower)
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        let start_idx = self.period.max(self.trend_period);
+
+        for i in start_idx..n {
+            // Calculate base SMA
+            let ma_start = i.saturating_sub(self.period - 1);
+            let ma: f64 = close[ma_start..=i].iter().sum::<f64>() / self.period as f64;
+
+            // Calculate standard deviation for band width
+            let variance: f64 = close[ma_start..=i].iter()
+                .map(|x| (x - ma).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            // Calculate linear regression slope for trend
+            let trend_start = i.saturating_sub(self.trend_period - 1);
+            let mut sum_x = 0.0;
+            let mut sum_y = 0.0;
+            let mut sum_xy = 0.0;
+            let mut sum_xx = 0.0;
+            let count = (i - trend_start + 1) as f64;
+
+            for (j, &price) in close[trend_start..=i].iter().enumerate() {
+                let x = j as f64;
+                sum_x += x;
+                sum_y += price;
+                sum_xy += x * price;
+                sum_xx += x * x;
+            }
+
+            let denom = count * sum_xx - sum_x * sum_x;
+            let slope = if denom.abs() > 1e-10 {
+                (count * sum_xy - sum_x * sum_y) / denom
+            } else {
+                0.0
+            };
+
+            // Normalize slope as percentage of price
+            let norm_slope = if ma > 1e-10 {
+                (slope * self.trend_period as f64) / ma
+            } else {
+                0.0
+            };
+
+            // Calculate trend shift (clamped to max_shift)
+            let trend_shift = norm_slope.max(-self.max_shift).min(self.max_shift);
+
+            // Shift middle band based on trend
+            let band_width = self.mult * std_dev;
+            let shifted_middle = ma + trend_shift * band_width;
+
+            middle[i] = shifted_middle;
+            upper[i] = shifted_middle + band_width;
+            lower[i] = shifted_middle - band_width;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for TrendAlignedBands {
+    fn name(&self) -> &str {
+        "Trend Aligned Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.trend_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// Momentum Driven Bands - Bands scaled by momentum strength
+///
+/// Creates bands where the width is directly proportional to price momentum.
+/// During strong momentum moves, bands widen; during consolidation, they narrow.
+/// Uses the Rate of Change (ROC) absolute value to scale band width.
+///
+/// This differs from MomentumBandsAdvanced by using momentum as the primary
+/// scaling factor rather than just an adjustment.
+#[derive(Debug, Clone)]
+pub struct MomentumDrivenBands {
+    period: usize,
+    momentum_period: usize,
+    min_mult: f64,
+    max_mult: f64,
+}
+
+impl MomentumDrivenBands {
+    pub fn new(period: usize, momentum_period: usize, min_mult: f64, max_mult: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if min_mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if max_mult <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_mult".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if min_mult >= max_mult {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_mult".to_string(),
+                reason: "must be less than max_mult".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_period, min_mult, max_mult })
+    }
+
+    /// Calculate momentum driven bands (middle, upper, lower)
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate absolute ROC values for momentum
+        let mut abs_roc = vec![0.0; n];
+        for i in self.momentum_period..n {
+            if close[i - self.momentum_period].abs() > 1e-10 {
+                abs_roc[i] = ((close[i] - close[i - self.momentum_period])
+                    / close[i - self.momentum_period]).abs() * 100.0;
+            }
+        }
+
+        // Calculate rolling max ROC for normalization
+        let start_idx = self.period.max(self.momentum_period);
+        let lookback = self.period * 2; // Use 2x period for max ROC lookback
+
+        for i in start_idx..n {
+            // Calculate SMA for middle band
+            let ma_start = i.saturating_sub(self.period - 1);
+            let ma: f64 = close[ma_start..=i].iter().sum::<f64>() / self.period as f64;
+
+            // Calculate standard deviation
+            let variance: f64 = close[ma_start..=i].iter()
+                .map(|x| (x - ma).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let std_dev = variance.sqrt();
+
+            // Get max ROC over lookback for normalization
+            let roc_start = i.saturating_sub(lookback - 1);
+            let max_roc = abs_roc[roc_start..=i].iter()
+                .cloned()
+                .fold(0.0_f64, f64::max)
+                .max(0.01); // Prevent division by zero
+
+            // Normalize current ROC to 0-1 range
+            let normalized_momentum = (abs_roc[i] / max_roc).min(1.0);
+
+            // Scale multiplier based on momentum
+            let mult = self.min_mult + normalized_momentum * (self.max_mult - self.min_mult);
+
+            middle[i] = ma;
+            upper[i] = ma + mult * std_dev;
+            lower[i] = ma - mult * std_dev;
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for MomentumDrivenBands {
+    fn name(&self) -> &str {
+        "Momentum Driven Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.momentum_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
+/// Adaptive Envelope Bands - Envelope bands with adaptive percentage
+///
+/// Traditional envelope bands use a fixed percentage above/below the moving average.
+/// This indicator adapts the percentage based on recent price volatility,
+/// making the envelope tighter in calm markets and wider in volatile markets.
+///
+/// The adaptive percentage is calculated using the coefficient of variation
+/// (standard deviation / mean) over a lookback period.
+#[derive(Debug, Clone)]
+pub struct AdaptiveEnvelopeBands {
+    period: usize,
+    volatility_period: usize,
+    min_percent: f64,
+    max_percent: f64,
+}
+
+impl AdaptiveEnvelopeBands {
+    pub fn new(period: usize, volatility_period: usize, min_percent: f64, max_percent: f64) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if volatility_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if min_percent <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_percent".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if max_percent <= 0.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_percent".to_string(),
+                reason: "must be positive".to_string(),
+            });
+        }
+        if min_percent >= max_percent {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_percent".to_string(),
+                reason: "must be less than max_percent".to_string(),
+            });
+        }
+        Ok(Self { period, volatility_period, min_percent, max_percent })
+    }
+
+    /// Calculate adaptive envelope bands (middle, upper, lower)
+    pub fn calculate(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut middle = vec![0.0; n];
+        let mut upper = vec![0.0; n];
+        let mut lower = vec![0.0; n];
+
+        if n == 0 {
+            return (middle, upper, lower);
+        }
+
+        // Calculate coefficient of variation (CV) for each point
+        let mut cv_values = vec![0.0; n];
+        for i in (self.volatility_period - 1)..n {
+            let vol_start = i + 1 - self.volatility_period;
+            let slice = &close[vol_start..=i];
+
+            let mean: f64 = slice.iter().sum::<f64>() / self.volatility_period as f64;
+            if mean > 1e-10 {
+                let variance: f64 = slice.iter()
+                    .map(|x| (x - mean).powi(2))
+                    .sum::<f64>() / self.volatility_period as f64;
+                cv_values[i] = variance.sqrt() / mean;
+            }
+        }
+
+        // Find typical CV range for normalization
+        let start_idx = self.period.max(self.volatility_period);
+        let lookback = self.volatility_period * 2;
+
+        for i in start_idx..n {
+            // Calculate SMA for middle band
+            let ma_start = i.saturating_sub(self.period - 1);
+            let ma: f64 = close[ma_start..=i].iter().sum::<f64>() / self.period as f64;
+
+            // Get min/max CV over lookback for normalization
+            let cv_start = i.saturating_sub(lookback - 1);
+            let cv_slice = &cv_values[cv_start..=i];
+
+            let min_cv = cv_slice.iter().cloned().fold(f64::MAX, f64::min);
+            let max_cv = cv_slice.iter().cloned().fold(0.0_f64, f64::max);
+            let cv_range = (max_cv - min_cv).max(1e-10);
+
+            // Normalize current CV to 0-1 range
+            let normalized_cv = ((cv_values[i] - min_cv) / cv_range).max(0.0).min(1.0);
+
+            // Calculate adaptive percentage
+            let adaptive_percent = self.min_percent + normalized_cv * (self.max_percent - self.min_percent);
+
+            middle[i] = ma;
+            upper[i] = ma * (1.0 + adaptive_percent / 100.0);
+            lower[i] = ma * (1.0 - adaptive_percent / 100.0);
+        }
+
+        (middle, upper, lower)
+    }
+}
+
+impl TechnicalIndicator for AdaptiveEnvelopeBands {
+    fn name(&self) -> &str {
+        "Adaptive Envelope Bands"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period.max(self.volatility_period) + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (middle, upper, lower) = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(middle, upper, lower))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2787,6 +3540,541 @@ mod tests {
         let small_close: Vec<f64> = (0..50).map(|i| 1e-6 + (i as f64) * 1e-8).collect();
 
         let (m, u, l) = akc.calculate(&small_high, &small_low, &small_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+    }
+
+    // ============================================================
+    // Tests for the 6 NEW Indicators (Jan 2026 additions)
+    // ============================================================
+
+    // --- VolatilityBandwidth Tests ---
+
+    #[test]
+    fn test_volatility_bandwidth() {
+        let (_, _, close) = make_extended_test_data();
+        let vbw = VolatilityBandwidth::new(20, 2.0).unwrap();
+        let bandwidth = vbw.calculate(&close);
+
+        assert_eq!(bandwidth.len(), close.len());
+        let idx = 25;
+        assert!(bandwidth[idx] >= 0.0); // Bandwidth should be non-negative
+    }
+
+    #[test]
+    fn test_volatility_bandwidth_validation() {
+        assert!(VolatilityBandwidth::new(1, 2.0).is_err());
+        assert!(VolatilityBandwidth::new(20, 0.0).is_err());
+        assert!(VolatilityBandwidth::new(20, -1.0).is_err());
+        assert!(VolatilityBandwidth::new(20, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_volatility_bandwidth_trait() {
+        let vbw = VolatilityBandwidth::new(20, 2.0).unwrap();
+        assert_eq!(vbw.name(), "Volatility Bandwidth");
+        assert_eq!(vbw.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_volatility_bandwidth_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let vbw = VolatilityBandwidth::new(20, 2.0).unwrap();
+        let bandwidth = vbw.calculate(&empty);
+        assert!(bandwidth.is_empty());
+    }
+
+    #[test]
+    fn test_volatility_bandwidth_with_bands() {
+        let (_, _, close) = make_extended_test_data();
+        let vbw = VolatilityBandwidth::new(10, 2.0).unwrap();
+        let (middle, upper, lower, bandwidth) = vbw.calculate_with_bands(&close);
+
+        let idx = 20;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+        // Verify bandwidth calculation matches bands
+        let expected_bw = (upper[idx] - lower[idx]) / middle[idx] * 100.0;
+        assert!((bandwidth[idx] - expected_bw).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_volatility_bandwidth_squeeze_detection() {
+        // Test that bandwidth is lower during low volatility
+        let mut close_low_vol: Vec<f64> = vec![100.0; 50];
+        let mut close_high_vol: Vec<f64> = (0..50).map(|i| {
+            100.0 + 5.0 * ((i as f64) * 0.5).sin()
+        }).collect();
+
+        let vbw = VolatilityBandwidth::new(10, 2.0).unwrap();
+        let bw_low = vbw.calculate(&close_low_vol);
+        let bw_high = vbw.calculate(&close_high_vol);
+
+        // Flat data should have near-zero bandwidth
+        // (after warmup, all values are same so std_dev = 0)
+        let idx = 30;
+        assert!(bw_low[idx] < bw_high[idx],
+            "Low volatility should have smaller bandwidth");
+    }
+
+    // --- BandBreakoutStrength Tests ---
+
+    #[test]
+    fn test_band_breakout_strength() {
+        let (_, _, close) = make_extended_test_data();
+        let bbs = BandBreakoutStrength::new(20, 2.0).unwrap();
+        let strength = bbs.calculate(&close);
+
+        assert_eq!(strength.len(), close.len());
+        let idx = 25;
+        // Strength should be calculated
+        assert!(strength[idx].is_finite());
+    }
+
+    #[test]
+    fn test_band_breakout_strength_validation() {
+        assert!(BandBreakoutStrength::new(1, 2.0).is_err());
+        assert!(BandBreakoutStrength::new(20, 0.0).is_err());
+        assert!(BandBreakoutStrength::new(20, -1.0).is_err());
+        assert!(BandBreakoutStrength::new(20, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_band_breakout_strength_trait() {
+        let bbs = BandBreakoutStrength::new(20, 2.0).unwrap();
+        assert_eq!(bbs.name(), "Band Breakout Strength");
+        assert_eq!(bbs.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_band_breakout_strength_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let bbs = BandBreakoutStrength::new(20, 2.0).unwrap();
+        let strength = bbs.calculate(&empty);
+        assert!(strength.is_empty());
+    }
+
+    #[test]
+    fn test_band_breakout_strength_within_bands() {
+        // Flat data should have strength near 0 (at middle)
+        let close = vec![100.0; 30];
+        let bbs = BandBreakoutStrength::new(10, 2.0).unwrap();
+        let strength = bbs.calculate(&close);
+
+        // At middle band, strength should be 0
+        // But with flat data, std_dev is 0, so bands collapse
+        // We need varying data to test properly
+        let varying: Vec<f64> = (0..30).map(|i| 100.0 + (i % 3) as f64 - 1.0).collect();
+        let strength2 = bbs.calculate(&varying);
+        let idx = 20;
+        // Should be within -100 to 100 range when within bands
+        assert!(strength2[idx] >= -100.0 && strength2[idx] <= 100.0);
+    }
+
+    #[test]
+    fn test_band_breakout_strength_breakout() {
+        // Create data with a clear breakout
+        let mut close = vec![100.0; 30];
+        for i in 0..30 {
+            close[i] = 100.0 + ((i % 5) as f64 - 2.0);
+        }
+        // Create upward breakout
+        close[25] = 130.0; // Way above upper band
+
+        let bbs = BandBreakoutStrength::new(10, 2.0).unwrap();
+        let strength = bbs.calculate(&close);
+
+        // Breakout should exceed 100
+        assert!(strength[25] > 100.0,
+            "Upward breakout should produce strength > 100, got {}", strength[25]);
+    }
+
+    #[test]
+    fn test_band_breakout_strength_bands() {
+        let (_, _, close) = make_extended_test_data();
+        let bbs = BandBreakoutStrength::new(10, 2.0).unwrap();
+        let (middle, upper, lower) = bbs.calculate_bands(&close);
+
+        let idx = 20;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    // --- DynamicPriceBands Tests ---
+
+    #[test]
+    fn test_dynamic_price_bands() {
+        let (high, low, close) = make_extended_test_data();
+        let dpb = DynamicPriceBands::new(20, 50, 1.0, 3.0).unwrap();
+        let (middle, upper, lower) = dpb.calculate(&high, &low, &close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 60;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_dynamic_price_bands_validation() {
+        assert!(DynamicPriceBands::new(1, 50, 1.0, 3.0).is_err());
+        assert!(DynamicPriceBands::new(20, 1, 1.0, 3.0).is_err());
+        assert!(DynamicPriceBands::new(20, 50, 0.0, 3.0).is_err());
+        assert!(DynamicPriceBands::new(20, 50, -1.0, 3.0).is_err());
+        assert!(DynamicPriceBands::new(20, 50, 1.0, 0.0).is_err());
+        assert!(DynamicPriceBands::new(20, 50, 1.0, -1.0).is_err());
+        assert!(DynamicPriceBands::new(20, 50, 3.0, 1.0).is_err()); // low >= high
+        assert!(DynamicPriceBands::new(20, 50, 1.0, 3.0).is_ok());
+    }
+
+    #[test]
+    fn test_dynamic_price_bands_trait() {
+        let dpb = DynamicPriceBands::new(20, 50, 1.0, 3.0).unwrap();
+        assert_eq!(dpb.name(), "Dynamic Price Bands");
+        assert_eq!(dpb.min_periods(), 51); // max(20, 50) + 1
+    }
+
+    #[test]
+    fn test_dynamic_price_bands_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let dpb = DynamicPriceBands::new(20, 50, 1.0, 3.0).unwrap();
+        let (m, u, l) = dpb.calculate(&empty, &empty, &empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_dynamic_price_bands_regime_adaptation() {
+        // Create data with different volatility regimes
+        let mut high = vec![102.0; 100];
+        let mut low = vec![98.0; 100];
+        let mut close = vec![100.0; 100];
+
+        // High volatility period at end
+        for i in 70..100 {
+            high[i] = 120.0;
+            low[i] = 80.0;
+            close[i] = 100.0;
+        }
+
+        let dpb = DynamicPriceBands::new(10, 20, 1.0, 3.0).unwrap();
+        let (_, upper, _) = dpb.calculate(&high, &low, &close);
+
+        // Bands should be wider in high volatility period
+        let low_vol_idx = 50;
+        let high_vol_idx = 90;
+        let width_low = upper[low_vol_idx] - close[low_vol_idx];
+        let width_high = upper[high_vol_idx] - close[high_vol_idx];
+
+        assert!(width_high > width_low,
+            "High volatility regime should have wider bands");
+    }
+
+    // --- TrendAlignedBands Tests ---
+
+    #[test]
+    fn test_trend_aligned_bands() {
+        let (_, _, close) = make_extended_test_data();
+        let tab = TrendAlignedBands::new(20, 10, 2.0, 0.5).unwrap();
+        let (middle, upper, lower) = tab.calculate(&close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 30;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_trend_aligned_bands_validation() {
+        assert!(TrendAlignedBands::new(1, 10, 2.0, 0.5).is_err());
+        assert!(TrendAlignedBands::new(20, 1, 2.0, 0.5).is_err());
+        assert!(TrendAlignedBands::new(20, 10, 0.0, 0.5).is_err());
+        assert!(TrendAlignedBands::new(20, 10, -1.0, 0.5).is_err());
+        assert!(TrendAlignedBands::new(20, 10, 2.0, 0.0).is_err()); // max_shift = 0
+        assert!(TrendAlignedBands::new(20, 10, 2.0, 1.5).is_err()); // max_shift > 1
+        assert!(TrendAlignedBands::new(20, 10, 2.0, 0.5).is_ok());
+    }
+
+    #[test]
+    fn test_trend_aligned_bands_trait() {
+        let tab = TrendAlignedBands::new(20, 10, 2.0, 0.5).unwrap();
+        assert_eq!(tab.name(), "Trend Aligned Bands");
+        assert_eq!(tab.min_periods(), 21); // max(20, 10) + 1
+    }
+
+    #[test]
+    fn test_trend_aligned_bands_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let tab = TrendAlignedBands::new(20, 10, 2.0, 0.5).unwrap();
+        let (m, u, l) = tab.calculate(&empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_trend_aligned_bands_uptrend_shift() {
+        // Create strong uptrend data
+        let uptrend: Vec<f64> = (0..50).map(|i| 100.0 + (i as f64) * 2.0).collect();
+
+        let tab = TrendAlignedBands::new(10, 10, 2.0, 0.5).unwrap();
+        let (middle, _, _) = tab.calculate(&uptrend);
+
+        // In uptrend, middle should be shifted up from simple SMA
+        let idx: usize = 30;
+        let ma_start = idx.saturating_sub(9);
+        let simple_ma: f64 = uptrend[ma_start..=idx].iter().sum::<f64>() / 10.0;
+
+        // Middle should be >= simple MA in uptrend (shifted up)
+        assert!(middle[idx] >= simple_ma,
+            "In uptrend, middle should be shifted upward from SMA");
+    }
+
+    // --- MomentumDrivenBands Tests ---
+
+    #[test]
+    fn test_momentum_driven_bands() {
+        let (_, _, close) = make_extended_test_data();
+        let mdb = MomentumDrivenBands::new(20, 10, 1.0, 3.0).unwrap();
+        let (middle, upper, lower) = mdb.calculate(&close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 30;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_momentum_driven_bands_validation() {
+        assert!(MomentumDrivenBands::new(1, 10, 1.0, 3.0).is_err());
+        assert!(MomentumDrivenBands::new(20, 1, 1.0, 3.0).is_err());
+        assert!(MomentumDrivenBands::new(20, 10, 0.0, 3.0).is_err());
+        assert!(MomentumDrivenBands::new(20, 10, -1.0, 3.0).is_err());
+        assert!(MomentumDrivenBands::new(20, 10, 1.0, 0.0).is_err());
+        assert!(MomentumDrivenBands::new(20, 10, 1.0, -1.0).is_err());
+        assert!(MomentumDrivenBands::new(20, 10, 3.0, 1.0).is_err()); // min >= max
+        assert!(MomentumDrivenBands::new(20, 10, 1.0, 3.0).is_ok());
+    }
+
+    #[test]
+    fn test_momentum_driven_bands_trait() {
+        let mdb = MomentumDrivenBands::new(20, 10, 1.0, 3.0).unwrap();
+        assert_eq!(mdb.name(), "Momentum Driven Bands");
+        assert_eq!(mdb.min_periods(), 21); // max(20, 10) + 1
+    }
+
+    #[test]
+    fn test_momentum_driven_bands_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let mdb = MomentumDrivenBands::new(20, 10, 1.0, 3.0).unwrap();
+        let (m, u, l) = mdb.calculate(&empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_momentum_driven_bands_high_momentum_wider() {
+        // Create low momentum data (slow drift)
+        let low_momentum: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64) * 0.1).collect();
+        // Create high momentum data (fast move)
+        let high_momentum: Vec<f64> = (0..60).map(|i| 100.0 + (i as f64) * 2.0).collect();
+
+        let mdb = MomentumDrivenBands::new(10, 5, 1.0, 3.0).unwrap();
+        let (_, upper_low, _) = mdb.calculate(&low_momentum);
+        let (middle_high, upper_high, _) = mdb.calculate(&high_momentum);
+
+        let idx = 40;
+        let width_low = upper_low[idx] - low_momentum[idx];
+        let width_high = upper_high[idx] - middle_high[idx];
+
+        // High momentum should have wider bands (relative to price movement)
+        // We check the multiplier effect by comparing relative widths
+        assert!(width_high > width_low,
+            "Higher momentum should produce wider bands");
+    }
+
+    // --- AdaptiveEnvelopeBands Tests ---
+
+    #[test]
+    fn test_adaptive_envelope_bands() {
+        let (_, _, close) = make_extended_test_data();
+        let aeb = AdaptiveEnvelopeBands::new(20, 10, 1.0, 5.0).unwrap();
+        let (middle, upper, lower) = aeb.calculate(&close);
+
+        assert_eq!(middle.len(), close.len());
+        let idx = 30;
+        assert!(middle[idx] > 0.0);
+        assert!(upper[idx] > middle[idx]);
+        assert!(lower[idx] < middle[idx]);
+    }
+
+    #[test]
+    fn test_adaptive_envelope_bands_validation() {
+        assert!(AdaptiveEnvelopeBands::new(1, 10, 1.0, 5.0).is_err());
+        assert!(AdaptiveEnvelopeBands::new(20, 1, 1.0, 5.0).is_err());
+        assert!(AdaptiveEnvelopeBands::new(20, 10, 0.0, 5.0).is_err());
+        assert!(AdaptiveEnvelopeBands::new(20, 10, -1.0, 5.0).is_err());
+        assert!(AdaptiveEnvelopeBands::new(20, 10, 1.0, 0.0).is_err());
+        assert!(AdaptiveEnvelopeBands::new(20, 10, 1.0, -1.0).is_err());
+        assert!(AdaptiveEnvelopeBands::new(20, 10, 5.0, 1.0).is_err()); // min >= max
+        assert!(AdaptiveEnvelopeBands::new(20, 10, 1.0, 5.0).is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_envelope_bands_trait() {
+        let aeb = AdaptiveEnvelopeBands::new(20, 10, 1.0, 5.0).unwrap();
+        assert_eq!(aeb.name(), "Adaptive Envelope Bands");
+        assert_eq!(aeb.min_periods(), 21); // max(20, 10) + 1
+    }
+
+    #[test]
+    fn test_adaptive_envelope_bands_empty_data() {
+        let empty: Vec<f64> = vec![];
+        let aeb = AdaptiveEnvelopeBands::new(20, 10, 1.0, 5.0).unwrap();
+        let (m, u, l) = aeb.calculate(&empty);
+        assert!(m.is_empty());
+        assert!(u.is_empty());
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn test_adaptive_envelope_bands_percentage_relationship() {
+        let (_, _, close) = make_extended_test_data();
+        let aeb = AdaptiveEnvelopeBands::new(10, 10, 2.0, 8.0).unwrap();
+        let (middle, upper, lower) = aeb.calculate(&close);
+
+        let idx = 30;
+        // Upper should be a percentage above middle
+        let upper_pct = (upper[idx] - middle[idx]) / middle[idx] * 100.0;
+        let lower_pct = (middle[idx] - lower[idx]) / middle[idx] * 100.0;
+
+        // Percentages should be within the min/max range (with small tolerance for edge cases)
+        // The adaptive algorithm may hit bounds depending on CV normalization
+        assert!(upper_pct >= 1.9 && upper_pct <= 8.1,
+            "Upper percentage {} should be approximately between 2% and 8%", upper_pct);
+        assert!(lower_pct >= 1.9 && lower_pct <= 8.1,
+            "Lower percentage {} should be approximately between 2% and 8%", lower_pct);
+
+        // Upper and lower should be symmetric (they use the same percentage)
+        assert!((upper_pct - lower_pct).abs() < 0.1,
+            "Envelope should be symmetric, got upper={} lower={}", upper_pct, lower_pct);
+    }
+
+    #[test]
+    fn test_adaptive_envelope_bands_volatility_adaptation() {
+        // Create data with low then high volatility
+        let mut close = Vec::with_capacity(80);
+        // Low volatility period
+        for i in 0..40 {
+            close.push(100.0 + (i % 2) as f64 * 0.5);
+        }
+        // High volatility period
+        for i in 40..80 {
+            close.push(100.0 + ((i % 4) as f64 - 1.5) * 5.0);
+        }
+
+        let aeb = AdaptiveEnvelopeBands::new(10, 10, 1.0, 5.0).unwrap();
+        let (middle, upper, _) = aeb.calculate(&close);
+
+        let low_vol_idx = 30;
+        let high_vol_idx = 70;
+
+        let pct_low = (upper[low_vol_idx] - middle[low_vol_idx]) / middle[low_vol_idx] * 100.0;
+        let pct_high = (upper[high_vol_idx] - middle[high_vol_idx]) / middle[high_vol_idx] * 100.0;
+
+        // High volatility period should have larger percentage envelope
+        assert!(pct_high > pct_low,
+            "High volatility period should have larger envelope percentage");
+    }
+
+    // --- Combined Tests for All 6 NEW Indicators ---
+
+    #[test]
+    fn test_all_6_new_indicators_short_data() {
+        let short_high = vec![102.0, 103.0, 104.0];
+        let short_low = vec![98.0, 99.0, 100.0];
+        let short_close = vec![100.0, 101.0, 102.0];
+
+        // VolatilityBandwidth
+        let vbw = VolatilityBandwidth::new(20, 2.0).unwrap();
+        let bw = vbw.calculate(&short_close);
+        assert_eq!(bw.len(), 3);
+
+        // BandBreakoutStrength
+        let bbs = BandBreakoutStrength::new(20, 2.0).unwrap();
+        let strength = bbs.calculate(&short_close);
+        assert_eq!(strength.len(), 3);
+
+        // DynamicPriceBands
+        let dpb = DynamicPriceBands::new(20, 30, 1.0, 3.0).unwrap();
+        let (m, u, l) = dpb.calculate(&short_high, &short_low, &short_close);
+        assert_eq!(m.len(), 3);
+
+        // TrendAlignedBands
+        let tab = TrendAlignedBands::new(20, 10, 2.0, 0.5).unwrap();
+        let (m, u, l) = tab.calculate(&short_close);
+        assert_eq!(m.len(), 3);
+
+        // MomentumDrivenBands
+        let mdb = MomentumDrivenBands::new(20, 10, 1.0, 3.0).unwrap();
+        let (m, u, l) = mdb.calculate(&short_close);
+        assert_eq!(m.len(), 3);
+
+        // AdaptiveEnvelopeBands
+        let aeb = AdaptiveEnvelopeBands::new(20, 10, 1.0, 5.0).unwrap();
+        let (m, u, l) = aeb.calculate(&short_close);
+        assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn test_all_6_new_indicators_numerical_stability() {
+        // Test with large values
+        let large_high: Vec<f64> = (0..60).map(|i| 1e8 + (i as f64) * 1000.0).collect();
+        let large_low: Vec<f64> = (0..60).map(|i| 1e8 - 1000.0 + (i as f64) * 1000.0).collect();
+        let large_close: Vec<f64> = (0..60).map(|i| 1e8 + (i as f64) * 1000.0).collect();
+        let idx = 50;
+
+        // VolatilityBandwidth
+        let vbw = VolatilityBandwidth::new(10, 2.0).unwrap();
+        let bw = vbw.calculate(&large_close);
+        assert!(bw[idx].is_finite());
+
+        // BandBreakoutStrength
+        let bbs = BandBreakoutStrength::new(10, 2.0).unwrap();
+        let strength = bbs.calculate(&large_close);
+        assert!(strength[idx].is_finite());
+
+        // DynamicPriceBands
+        let dpb = DynamicPriceBands::new(10, 20, 1.0, 3.0).unwrap();
+        let (m, u, l) = dpb.calculate(&large_high, &large_low, &large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // TrendAlignedBands
+        let tab = TrendAlignedBands::new(10, 10, 2.0, 0.5).unwrap();
+        let (m, u, l) = tab.calculate(&large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // MomentumDrivenBands
+        let mdb = MomentumDrivenBands::new(10, 5, 1.0, 3.0).unwrap();
+        let (m, u, l) = mdb.calculate(&large_close);
+        assert!(m[idx].is_finite());
+        assert!(u[idx].is_finite());
+        assert!(l[idx].is_finite());
+
+        // AdaptiveEnvelopeBands
+        let aeb = AdaptiveEnvelopeBands::new(10, 10, 1.0, 5.0).unwrap();
+        let (m, u, l) = aeb.calculate(&large_close);
         assert!(m[idx].is_finite());
         assert!(u[idx].is_finite());
         assert!(l[idx].is_finite());
