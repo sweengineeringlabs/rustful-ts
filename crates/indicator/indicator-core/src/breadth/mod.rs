@@ -51,6 +51,9 @@ pub use advanced::{
     HighLowIndex as AdvancedHighLowIndex, PercentAboveMA as AdvancedPercentAboveMA, BreadthDiffusion,
     // 6 NEW breadth indicators (BreadthRatio, BreadthScore, MarketParticipation, etc.)
     BreadthRatio, BreadthScore, MarketParticipation, TrendBreadth, BreadthSignal,
+    // 5 NEW breadth indicators (SectorBreadthIndex, ParticipationOscillator, BreadthMomentumOscillator, etc.)
+    SectorBreadthIndex, ParticipationOscillator, BreadthRegimeClassifier, CumulativeParticipation,
+    BreadthMomentumOscillator,
 };
 
 // Re-export SPI types from crate root

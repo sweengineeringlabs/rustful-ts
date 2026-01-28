@@ -4123,6 +4123,817 @@ impl TechnicalIndicator for DojiReversal {
 }
 
 // ============================================================================
+// PriceActionSignal
+// ============================================================================
+
+/// Price Action Signal - Detects price action signals from candlestick combinations
+///
+/// Analyzes multiple candlestick patterns in combination to generate price action
+/// trading signals. Considers body size, wicks, and pattern sequences.
+#[derive(Debug, Clone)]
+pub struct PriceActionSignal {
+    /// Lookback period for pattern analysis
+    period: usize,
+    /// Minimum body ratio for significant candles
+    min_body_ratio: f64,
+}
+
+impl PriceActionSignal {
+    /// Create a new PriceActionSignal indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (2-20)
+    /// * `min_body_ratio` - Minimum body/range ratio for signal candles (0.3-0.8)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, min_body_ratio: f64) -> Result<Self> {
+        if period < 2 || period > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be between 2 and 20".to_string(),
+            });
+        }
+        if min_body_ratio < 0.3 || min_body_ratio > 0.8 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_body_ratio".to_string(),
+                reason: "must be between 0.3 and 0.8".to_string(),
+            });
+        }
+        Ok(Self { period, min_body_ratio })
+    }
+
+    /// Calculate price action signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish price action signal
+    /// * -1: Bearish price action signal
+    /// * 0: No signal
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period {
+            return result;
+        }
+
+        for i in self.period..n {
+            let range = high[i] - low[i];
+            if range < 1e-10 {
+                continue;
+            }
+
+            // Calculate average range over period
+            let avg_range: f64 = (0..self.period)
+                .map(|j| high[i - j] - low[i - j])
+                .sum::<f64>() / self.period as f64;
+
+            // Calculate average volume
+            let avg_volume: f64 = (0..self.period)
+                .map(|j| volume[i - j])
+                .sum::<f64>() / self.period as f64;
+
+            // Check for above average range (significant move)
+            let significant_range = range > avg_range * 1.2;
+
+            // Check for volume confirmation
+            let volume_confirm = volume[i] > avg_volume;
+
+            // Determine trend direction over lookback
+            let trend = close[i] - close[i - self.period + 1];
+
+            // Count bullish and bearish candles
+            let mut bullish_count = 0;
+            let mut bearish_count = 0;
+            for j in 0..self.period {
+                let idx = i - j;
+                if idx > 0 && close[idx] > close[idx - 1] {
+                    bullish_count += 1;
+                } else if idx > 0 && close[idx] < close[idx - 1] {
+                    bearish_count += 1;
+                }
+            }
+
+            // Bullish signal: strong upward move with volume
+            if trend > 0.0 && significant_range && volume_confirm && bullish_count > bearish_count {
+                // Check for higher lows pattern
+                let higher_lows = low[i] > low[i - 1] && (i < 2 || low[i - 1] > low[i - 2]);
+                if higher_lows {
+                    result[i] = 1.0;
+                }
+            }
+            // Bearish signal: strong downward move with volume
+            else if trend < 0.0 && significant_range && volume_confirm && bearish_count > bullish_count {
+                // Check for lower highs pattern
+                let lower_highs = high[i] < high[i - 1] && (i < 2 || high[i - 1] < high[i - 2]);
+                if lower_highs {
+                    result[i] = -1.0;
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PriceActionSignal {
+    fn name(&self) -> &str {
+        "Price Action Signal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// VolumeSurgePattern
+// ============================================================================
+
+/// Volume Surge Pattern - Identifies volume surge patterns with price confirmation
+///
+/// Detects unusual volume spikes combined with price direction to identify
+/// potential breakouts and momentum moves.
+#[derive(Debug, Clone)]
+pub struct VolumeSurgePattern {
+    /// Period for average volume calculation
+    period: usize,
+    /// Volume surge multiplier threshold
+    surge_multiplier: f64,
+}
+
+impl VolumeSurgePattern {
+    /// Create a new VolumeSurgePattern indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for average volume calculation (5-50)
+    /// * `surge_multiplier` - Volume surge threshold multiplier (1.5-5.0)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, surge_multiplier: f64) -> Result<Self> {
+        if period < 5 || period > 50 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be between 5 and 50".to_string(),
+            });
+        }
+        if surge_multiplier < 1.5 || surge_multiplier > 5.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "surge_multiplier".to_string(),
+                reason: "must be between 1.5 and 5.0".to_string(),
+            });
+        }
+        Ok(Self { period, surge_multiplier })
+    }
+
+    /// Calculate volume surge pattern signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish volume surge (surge with price increase)
+    /// * -1: Bearish volume surge (surge with price decrease)
+    /// * 0: No surge pattern
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return result;
+        }
+
+        for i in self.period..n {
+            // Calculate average volume excluding current bar
+            let avg_volume: f64 = (1..=self.period)
+                .map(|j| volume[i - j])
+                .sum::<f64>() / self.period as f64;
+
+            if avg_volume < 1e-10 {
+                continue;
+            }
+
+            // Check for volume surge
+            let volume_ratio = volume[i] / avg_volume;
+            if volume_ratio < self.surge_multiplier {
+                continue;
+            }
+
+            // Calculate price change
+            let price_change = close[i] - close[i - 1];
+            let range = high[i] - low[i];
+
+            // Check for strong close within range
+            let close_position = if range > 1e-10 {
+                (close[i] - low[i]) / range
+            } else {
+                0.5
+            };
+
+            // Bullish surge: volume spike with upward price and strong close
+            if price_change > 0.0 && close_position > 0.6 {
+                result[i] = 1.0;
+            }
+            // Bearish surge: volume spike with downward price and weak close
+            else if price_change < 0.0 && close_position < 0.4 {
+                result[i] = -1.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolumeSurgePattern {
+    fn name(&self) -> &str {
+        "Volume Surge Pattern"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// MomentumContinuationPattern
+// ============================================================================
+
+/// Momentum Continuation Pattern - Detects momentum continuation setups
+///
+/// Identifies patterns where momentum is likely to continue in the same direction,
+/// such as pullbacks in strong trends and flag patterns.
+#[derive(Debug, Clone)]
+pub struct MomentumContinuationPattern {
+    /// Period for momentum calculation
+    period: usize,
+    /// Pullback threshold as percentage of move
+    pullback_threshold: f64,
+}
+
+impl MomentumContinuationPattern {
+    /// Create a new MomentumContinuationPattern indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for momentum analysis (5-30)
+    /// * `pullback_threshold` - Pullback threshold percentage (0.2-0.6)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, pullback_threshold: f64) -> Result<Self> {
+        if period < 5 || period > 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be between 5 and 30".to_string(),
+            });
+        }
+        if pullback_threshold < 0.2 || pullback_threshold > 0.6 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "pullback_threshold".to_string(),
+                reason: "must be between 0.2 and 0.6".to_string(),
+            });
+        }
+        Ok(Self { period, pullback_threshold })
+    }
+
+    /// Calculate momentum continuation signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish continuation (momentum resuming upward)
+    /// * -1: Bearish continuation (momentum resuming downward)
+    /// * 0: No continuation pattern
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period * 2 {
+            return result;
+        }
+
+        for i in (self.period * 2)..n {
+            // Calculate momentum over first half of period
+            let momentum_start = i - self.period * 2;
+            let momentum_mid = i - self.period;
+
+            let initial_move = close[momentum_mid] - close[momentum_start];
+            if initial_move.abs() < 1e-10 {
+                continue;
+            }
+
+            // Find high/low of the move
+            let (move_high, move_low) = if initial_move > 0.0 {
+                let h = high[momentum_start..=momentum_mid].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let l = low[momentum_start..=momentum_mid].iter().cloned().fold(f64::INFINITY, f64::min);
+                (h, l)
+            } else {
+                let h = high[momentum_start..=momentum_mid].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let l = low[momentum_start..=momentum_mid].iter().cloned().fold(f64::INFINITY, f64::min);
+                (h, l)
+            };
+
+            // Calculate pullback from the move
+            let pullback = if initial_move > 0.0 {
+                move_high - close[i - 1]
+            } else {
+                close[i - 1] - move_low
+            };
+
+            let pullback_ratio = pullback / initial_move.abs();
+
+            // Check if we have a valid pullback (not too deep, not too shallow)
+            if pullback_ratio < 0.1 || pullback_ratio > self.pullback_threshold {
+                continue;
+            }
+
+            // Check for resumption in direction of original move
+            let resumption = close[i] - close[i - 1];
+
+            // Volume analysis - look for lower volume on pullback, higher on resumption
+            let pullback_vol_avg: f64 = (1..self.period / 2 + 1)
+                .map(|j| volume[i - j])
+                .sum::<f64>() / (self.period / 2) as f64;
+
+            // Bullish continuation
+            if initial_move > 0.0 && resumption > 0.0 && volume[i] > pullback_vol_avg {
+                result[i] = 1.0;
+            }
+            // Bearish continuation
+            else if initial_move < 0.0 && resumption < 0.0 && volume[i] > pullback_vol_avg {
+                result[i] = -1.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MomentumContinuationPattern {
+    fn name(&self) -> &str {
+        "Momentum Continuation Pattern"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period * 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// TrendPausePattern
+// ============================================================================
+
+/// Trend Pause Pattern - Identifies trend pause/consolidation patterns
+///
+/// Detects periods where a trending market pauses and consolidates before
+/// potentially continuing or reversing.
+#[derive(Debug, Clone)]
+pub struct TrendPausePattern {
+    /// Period for trend analysis
+    period: usize,
+    /// Maximum range contraction ratio for pause
+    consolidation_ratio: f64,
+}
+
+impl TrendPausePattern {
+    /// Create a new TrendPausePattern indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for trend and consolidation analysis (5-30)
+    /// * `consolidation_ratio` - Range contraction threshold (0.3-0.7)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, consolidation_ratio: f64) -> Result<Self> {
+        if period < 5 || period > 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be between 5 and 30".to_string(),
+            });
+        }
+        if consolidation_ratio < 0.3 || consolidation_ratio > 0.7 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "consolidation_ratio".to_string(),
+                reason: "must be between 0.3 and 0.7".to_string(),
+            });
+        }
+        Ok(Self { period, consolidation_ratio })
+    }
+
+    /// Calculate trend pause pattern signals.
+    ///
+    /// Returns:
+    /// * +1: Pause in uptrend (potential bullish continuation)
+    /// * -1: Pause in downtrend (potential bearish continuation)
+    /// * 0: No pause pattern
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period * 2 {
+            return result;
+        }
+
+        // Calculate ATR-like measure for each bar
+        let mut atr = vec![0.0; n];
+        for i in 1..n {
+            let tr = (high[i] - low[i])
+                .max((high[i] - close[i - 1]).abs())
+                .max((low[i] - close[i - 1]).abs());
+            atr[i] = tr;
+        }
+
+        for i in (self.period * 2)..n {
+            // Calculate trend from first half of lookback
+            let trend_start = i - self.period * 2;
+            let trend_mid = i - self.period;
+            let trend_change = close[trend_mid] - close[trend_start];
+
+            if trend_change.abs() < 1e-10 {
+                continue;
+            }
+
+            // Calculate average range during trend period
+            let trend_avg_range: f64 = (trend_start..=trend_mid)
+                .map(|j| atr[j])
+                .sum::<f64>() / self.period as f64;
+
+            // Calculate average range during consolidation period
+            let consol_avg_range: f64 = (trend_mid + 1..=i)
+                .map(|j| atr[j])
+                .sum::<f64>() / self.period as f64;
+
+            if trend_avg_range < 1e-10 {
+                continue;
+            }
+
+            // Check for range contraction (consolidation)
+            let range_ratio = consol_avg_range / trend_avg_range;
+            if range_ratio > self.consolidation_ratio {
+                continue;
+            }
+
+            // Check for volume contraction (typical in pauses)
+            let trend_avg_vol: f64 = (trend_start..=trend_mid)
+                .map(|j| volume[j])
+                .sum::<f64>() / self.period as f64;
+            let consol_avg_vol: f64 = (trend_mid + 1..=i)
+                .map(|j| volume[j])
+                .sum::<f64>() / self.period as f64;
+
+            let volume_contracted = trend_avg_vol > 1e-10 && consol_avg_vol < trend_avg_vol;
+
+            // Calculate consolidation range
+            let consol_high = high[trend_mid + 1..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let consol_low = low[trend_mid + 1..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+
+            // Check price is within consolidation range (not breaking out yet)
+            let in_range = close[i] >= consol_low && close[i] <= consol_high;
+
+            if in_range && volume_contracted {
+                // Uptrend pause
+                if trend_change > 0.0 {
+                    result[i] = 1.0;
+                }
+                // Downtrend pause
+                else {
+                    result[i] = -1.0;
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendPausePattern {
+    fn name(&self) -> &str {
+        "Trend Pause Pattern"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period * 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// BreakoutRetest
+// ============================================================================
+
+/// Breakout Retest - Detects breakout and retest patterns
+///
+/// Identifies breakouts from consolidation or support/resistance levels
+/// followed by retests of those levels.
+#[derive(Debug, Clone)]
+pub struct BreakoutRetest {
+    /// Period for level identification
+    period: usize,
+    /// Retest tolerance as percentage of breakout distance
+    retest_tolerance: f64,
+}
+
+impl BreakoutRetest {
+    /// Create a new BreakoutRetest indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for level identification (5-30)
+    /// * `retest_tolerance` - Retest proximity tolerance (0.1-0.5)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, retest_tolerance: f64) -> Result<Self> {
+        if period < 5 || period > 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be between 5 and 30".to_string(),
+            });
+        }
+        if retest_tolerance < 0.1 || retest_tolerance > 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "retest_tolerance".to_string(),
+                reason: "must be between 0.1 and 0.5".to_string(),
+            });
+        }
+        Ok(Self { period, retest_tolerance })
+    }
+
+    /// Calculate breakout retest signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish breakout retest (retest of broken resistance as support)
+    /// * -1: Bearish breakout retest (retest of broken support as resistance)
+    /// * 0: No breakout retest pattern
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period * 3 {
+            return result;
+        }
+
+        for i in (self.period * 3)..n {
+            // Define the three periods: base, breakout, retest
+            let base_start = i - self.period * 3;
+            let base_end = i - self.period * 2;
+            let breakout_start = base_end + 1;
+            let breakout_end = i - self.period;
+            let retest_start = breakout_end + 1;
+
+            // Find base period high and low (potential S/R levels)
+            let base_high = high[base_start..=base_end].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let base_low = low[base_start..=base_end].iter().cloned().fold(f64::INFINITY, f64::min);
+
+            // Check for breakout in breakout period
+            let breakout_high = high[breakout_start..=breakout_end].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let breakout_low = low[breakout_start..=breakout_end].iter().cloned().fold(f64::INFINITY, f64::min);
+
+            let broke_resistance = breakout_high > base_high;
+            let broke_support = breakout_low < base_low;
+
+            // Calculate breakout distance
+            let resistance_breakout_dist = breakout_high - base_high;
+            let support_breakout_dist = base_low - breakout_low;
+
+            // Check for retest in retest period
+            let retest_low = low[retest_start..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+            let retest_high = high[retest_start..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+            // Current price position
+            let current_above_base_high = close[i] > base_high;
+            let current_below_base_low = close[i] < base_low;
+
+            // Bullish breakout retest: broke resistance, retested, now holding above
+            if broke_resistance && resistance_breakout_dist > 1e-10 {
+                let tolerance = resistance_breakout_dist * self.retest_tolerance;
+                let retested_resistance = retest_low <= base_high + tolerance && retest_low >= base_high - tolerance;
+
+                if retested_resistance && current_above_base_high && close[i] > close[i - 1] {
+                    result[i] = 1.0;
+                    continue;
+                }
+            }
+
+            // Bearish breakout retest: broke support, retested, now holding below
+            if broke_support && support_breakout_dist > 1e-10 {
+                let tolerance = support_breakout_dist * self.retest_tolerance;
+                let retested_support = retest_high >= base_low - tolerance && retest_high <= base_low + tolerance;
+
+                if retested_support && current_below_base_low && close[i] < close[i - 1] {
+                    result[i] = -1.0;
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreakoutRetest {
+    fn name(&self) -> &str {
+        "Breakout Retest"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period * 3
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
+// SwingFailure
+// ============================================================================
+
+/// Swing Failure - Identifies swing failure patterns (failed breakouts)
+///
+/// Detects failed breakout attempts where price breaks a swing high/low
+/// but fails to sustain, leading to a reversal.
+#[derive(Debug, Clone)]
+pub struct SwingFailure {
+    /// Period for swing point identification
+    period: usize,
+    /// Minimum breakout distance as ratio of range
+    min_breakout_ratio: f64,
+}
+
+impl SwingFailure {
+    /// Create a new SwingFailure indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for swing point identification (3-20)
+    /// * `min_breakout_ratio` - Minimum breakout distance ratio (0.1-0.5)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, min_breakout_ratio: f64) -> Result<Self> {
+        if period < 3 || period > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be between 3 and 20".to_string(),
+            });
+        }
+        if min_breakout_ratio < 0.1 || min_breakout_ratio > 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_breakout_ratio".to_string(),
+                reason: "must be between 0.1 and 0.5".to_string(),
+            });
+        }
+        Ok(Self { period, min_breakout_ratio })
+    }
+
+    /// Calculate swing failure signals.
+    ///
+    /// Returns:
+    /// * +1: Bullish swing failure (failed breakdown, potential reversal up)
+    /// * -1: Bearish swing failure (failed breakout, potential reversal down)
+    /// * 0: No swing failure pattern
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.period * 2 + 2 {
+            return result;
+        }
+
+        // First, identify swing highs and lows
+        let mut swing_highs = vec![f64::NAN; n];
+        let mut swing_lows = vec![f64::NAN; n];
+
+        for i in self.period..(n - self.period) {
+            // Check for swing high
+            let is_swing_high = (0..self.period).all(|j| high[i] >= high[i - j - 1])
+                && (0..self.period).all(|j| high[i] >= high[i + j + 1]);
+            if is_swing_high {
+                swing_highs[i] = high[i];
+            }
+
+            // Check for swing low
+            let is_swing_low = (0..self.period).all(|j| low[i] <= low[i - j - 1])
+                && (0..self.period).all(|j| low[i] <= low[i + j + 1]);
+            if is_swing_low {
+                swing_lows[i] = low[i];
+            }
+        }
+
+        // Now look for failed breakouts
+        for i in (self.period * 2 + 1)..n {
+            // Find the most recent swing high and low
+            let mut recent_swing_high = f64::NAN;
+            let mut recent_swing_low = f64::NAN;
+
+            for j in (0..i - self.period).rev() {
+                if !swing_highs[j].is_nan() && recent_swing_high.is_nan() {
+                    recent_swing_high = swing_highs[j];
+                }
+                if !swing_lows[j].is_nan() && recent_swing_low.is_nan() {
+                    recent_swing_low = swing_lows[j];
+                }
+                if !recent_swing_high.is_nan() && !recent_swing_low.is_nan() {
+                    break;
+                }
+            }
+
+            if recent_swing_high.is_nan() || recent_swing_low.is_nan() {
+                continue;
+            }
+
+            let range = recent_swing_high - recent_swing_low;
+            if range < 1e-10 {
+                continue;
+            }
+
+            let min_breakout = range * self.min_breakout_ratio;
+
+            // Check for bearish swing failure (failed breakout above swing high)
+            // Price went above swing high but now closing back below
+            let prev_high_above = high[i - 1] > recent_swing_high + min_breakout;
+            let now_below = close[i] < recent_swing_high;
+            let bearish_close = close[i] < close[i - 1];
+
+            if prev_high_above && now_below && bearish_close {
+                result[i] = -1.0;
+                continue;
+            }
+
+            // Check for bullish swing failure (failed breakdown below swing low)
+            // Price went below swing low but now closing back above
+            let prev_low_below = low[i - 1] < recent_swing_low - min_breakout;
+            let now_above = close[i] > recent_swing_low;
+            let bullish_close = close[i] > close[i - 1];
+
+            if prev_low_below && now_above && bullish_close {
+                result[i] = 1.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SwingFailure {
+    fn name(&self) -> &str {
+        "Swing Failure"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period * 2 + 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.high, &data.low, &data.close, &data.volume)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -6167,5 +6978,398 @@ mod tests {
         for val in &result {
             assert_eq!(*val, 0.0);
         }
+    }
+
+    // ========== PriceActionSignal Tests ==========
+
+    #[test]
+    fn test_price_action_signal_new_valid() {
+        let indicator = PriceActionSignal::new(5, 0.5);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_price_action_signal_invalid_period() {
+        assert!(PriceActionSignal::new(1, 0.5).is_err());
+        assert!(PriceActionSignal::new(25, 0.5).is_err());
+    }
+
+    #[test]
+    fn test_price_action_signal_invalid_body_ratio() {
+        assert!(PriceActionSignal::new(5, 0.2).is_err());
+        assert!(PriceActionSignal::new(5, 0.9).is_err());
+    }
+
+    #[test]
+    fn test_price_action_signal_calculate() {
+        let data = make_test_data();
+        let indicator = PriceActionSignal::new(5, 0.5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_price_action_signal_min_periods() {
+        let indicator = PriceActionSignal::new(10, 0.5).unwrap();
+        assert_eq!(indicator.min_periods(), 11);
+    }
+
+    #[test]
+    fn test_price_action_signal_name() {
+        let indicator = PriceActionSignal::new(5, 0.5).unwrap();
+        assert_eq!(indicator.name(), "Price Action Signal");
+    }
+
+    #[test]
+    fn test_price_action_signal_compute() {
+        let data = make_test_data();
+        let indicator = PriceActionSignal::new(5, 0.5).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== VolumeSurgePattern Tests ==========
+
+    #[test]
+    fn test_volume_surge_pattern_new_valid() {
+        let indicator = VolumeSurgePattern::new(10, 2.0);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_volume_surge_pattern_invalid_period() {
+        assert!(VolumeSurgePattern::new(3, 2.0).is_err());
+        assert!(VolumeSurgePattern::new(60, 2.0).is_err());
+    }
+
+    #[test]
+    fn test_volume_surge_pattern_invalid_multiplier() {
+        assert!(VolumeSurgePattern::new(10, 1.2).is_err());
+        assert!(VolumeSurgePattern::new(10, 6.0).is_err());
+    }
+
+    #[test]
+    fn test_volume_surge_pattern_calculate() {
+        let data = make_test_data();
+        let indicator = VolumeSurgePattern::new(10, 2.0).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_volume_surge_pattern_min_periods() {
+        let indicator = VolumeSurgePattern::new(15, 2.0).unwrap();
+        assert_eq!(indicator.min_periods(), 16);
+    }
+
+    #[test]
+    fn test_volume_surge_pattern_name() {
+        let indicator = VolumeSurgePattern::new(10, 2.0).unwrap();
+        assert_eq!(indicator.name(), "Volume Surge Pattern");
+    }
+
+    #[test]
+    fn test_volume_surge_pattern_compute() {
+        let data = make_test_data();
+        let indicator = VolumeSurgePattern::new(10, 2.0).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== MomentumContinuationPattern Tests ==========
+
+    #[test]
+    fn test_momentum_continuation_new_valid() {
+        let indicator = MomentumContinuationPattern::new(10, 0.4);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_momentum_continuation_invalid_period() {
+        assert!(MomentumContinuationPattern::new(3, 0.4).is_err());
+        assert!(MomentumContinuationPattern::new(40, 0.4).is_err());
+    }
+
+    #[test]
+    fn test_momentum_continuation_invalid_threshold() {
+        assert!(MomentumContinuationPattern::new(10, 0.1).is_err());
+        assert!(MomentumContinuationPattern::new(10, 0.8).is_err());
+    }
+
+    #[test]
+    fn test_momentum_continuation_calculate() {
+        let data = make_test_data();
+        let indicator = MomentumContinuationPattern::new(10, 0.4).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_momentum_continuation_min_periods() {
+        let indicator = MomentumContinuationPattern::new(10, 0.4).unwrap();
+        assert_eq!(indicator.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_momentum_continuation_name() {
+        let indicator = MomentumContinuationPattern::new(10, 0.4).unwrap();
+        assert_eq!(indicator.name(), "Momentum Continuation Pattern");
+    }
+
+    #[test]
+    fn test_momentum_continuation_compute() {
+        let data = make_test_data();
+        let indicator = MomentumContinuationPattern::new(10, 0.4).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== TrendPausePattern Tests ==========
+
+    #[test]
+    fn test_trend_pause_new_valid() {
+        let indicator = TrendPausePattern::new(10, 0.5);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_trend_pause_invalid_period() {
+        assert!(TrendPausePattern::new(3, 0.5).is_err());
+        assert!(TrendPausePattern::new(40, 0.5).is_err());
+    }
+
+    #[test]
+    fn test_trend_pause_invalid_ratio() {
+        assert!(TrendPausePattern::new(10, 0.2).is_err());
+        assert!(TrendPausePattern::new(10, 0.8).is_err());
+    }
+
+    #[test]
+    fn test_trend_pause_calculate() {
+        let data = make_test_data();
+        let indicator = TrendPausePattern::new(10, 0.5).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_trend_pause_min_periods() {
+        let indicator = TrendPausePattern::new(10, 0.5).unwrap();
+        assert_eq!(indicator.min_periods(), 20);
+    }
+
+    #[test]
+    fn test_trend_pause_name() {
+        let indicator = TrendPausePattern::new(10, 0.5).unwrap();
+        assert_eq!(indicator.name(), "Trend Pause Pattern");
+    }
+
+    #[test]
+    fn test_trend_pause_compute() {
+        let data = make_test_data();
+        let indicator = TrendPausePattern::new(10, 0.5).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== BreakoutRetest Tests ==========
+
+    #[test]
+    fn test_breakout_retest_new_valid() {
+        let indicator = BreakoutRetest::new(10, 0.3);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_breakout_retest_invalid_period() {
+        assert!(BreakoutRetest::new(3, 0.3).is_err());
+        assert!(BreakoutRetest::new(40, 0.3).is_err());
+    }
+
+    #[test]
+    fn test_breakout_retest_invalid_tolerance() {
+        assert!(BreakoutRetest::new(10, 0.05).is_err());
+        assert!(BreakoutRetest::new(10, 0.6).is_err());
+    }
+
+    #[test]
+    fn test_breakout_retest_calculate() {
+        let data = make_test_data();
+        let indicator = BreakoutRetest::new(10, 0.3).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_breakout_retest_min_periods() {
+        let indicator = BreakoutRetest::new(10, 0.3).unwrap();
+        assert_eq!(indicator.min_periods(), 30);
+    }
+
+    #[test]
+    fn test_breakout_retest_name() {
+        let indicator = BreakoutRetest::new(10, 0.3).unwrap();
+        assert_eq!(indicator.name(), "Breakout Retest");
+    }
+
+    #[test]
+    fn test_breakout_retest_compute() {
+        let data = make_test_data();
+        let indicator = BreakoutRetest::new(10, 0.3).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== SwingFailure Tests ==========
+
+    #[test]
+    fn test_swing_failure_new_valid() {
+        let indicator = SwingFailure::new(5, 0.2);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_swing_failure_invalid_period() {
+        assert!(SwingFailure::new(2, 0.2).is_err());
+        assert!(SwingFailure::new(25, 0.2).is_err());
+    }
+
+    #[test]
+    fn test_swing_failure_invalid_ratio() {
+        assert!(SwingFailure::new(5, 0.05).is_err());
+        assert!(SwingFailure::new(5, 0.6).is_err());
+    }
+
+    #[test]
+    fn test_swing_failure_calculate() {
+        let data = make_test_data();
+        let indicator = SwingFailure::new(5, 0.2).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+
+        // Values should be -1, 0, or 1
+        for val in &result {
+            assert!(*val == -1.0 || *val == 0.0 || *val == 1.0);
+        }
+    }
+
+    #[test]
+    fn test_swing_failure_min_periods() {
+        let indicator = SwingFailure::new(5, 0.2).unwrap();
+        assert_eq!(indicator.min_periods(), 12);
+    }
+
+    #[test]
+    fn test_swing_failure_name() {
+        let indicator = SwingFailure::new(5, 0.2).unwrap();
+        assert_eq!(indicator.name(), "Swing Failure");
+    }
+
+    #[test]
+    fn test_swing_failure_compute() {
+        let data = make_test_data();
+        let indicator = SwingFailure::new(5, 0.2).unwrap();
+        let output = indicator.compute(&data);
+        assert!(output.is_ok());
+    }
+
+    // ========== Edge Cases for Advanced Pattern Indicators Batch 2 ==========
+
+    #[test]
+    fn test_advanced_pattern_indicators_batch2_empty_data() {
+        let empty_data = OHLCVSeries {
+            open: vec![],
+            high: vec![],
+            low: vec![],
+            close: vec![],
+            volume: vec![],
+        };
+
+        let pas = PriceActionSignal::new(5, 0.5).unwrap();
+        assert_eq!(pas.calculate(&empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+
+        let vsp = VolumeSurgePattern::new(10, 2.0).unwrap();
+        assert_eq!(vsp.calculate(&empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+
+        let mcp = MomentumContinuationPattern::new(10, 0.4).unwrap();
+        assert_eq!(mcp.calculate(&empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+
+        let tpp = TrendPausePattern::new(10, 0.5).unwrap();
+        assert_eq!(tpp.calculate(&empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+
+        let br = BreakoutRetest::new(10, 0.3).unwrap();
+        assert_eq!(br.calculate(&empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+
+        let sf = SwingFailure::new(5, 0.2).unwrap();
+        assert_eq!(sf.calculate(&empty_data.high, &empty_data.low, &empty_data.close, &empty_data.volume).len(), 0);
+    }
+
+    #[test]
+    fn test_advanced_pattern_indicators_short_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0, 102.0],
+            high: vec![101.0, 102.0, 103.0],
+            low: vec![99.0, 100.0, 101.0],
+            close: vec![100.5, 101.5, 102.5],
+            volume: vec![1000.0, 1100.0, 1200.0],
+        };
+
+        let pas = PriceActionSignal::new(5, 0.5).unwrap();
+        let result = pas.calculate(&short_data.high, &short_data.low, &short_data.close, &short_data.volume);
+        assert_eq!(result.len(), 3);
+        for val in &result {
+            assert_eq!(*val, 0.0);
+        }
+
+        let vsp = VolumeSurgePattern::new(10, 2.0).unwrap();
+        let result = vsp.calculate(&short_data.high, &short_data.low, &short_data.close, &short_data.volume);
+        assert_eq!(result.len(), 3);
+
+        let mcp = MomentumContinuationPattern::new(10, 0.4).unwrap();
+        let result = mcp.calculate(&short_data.high, &short_data.low, &short_data.close, &short_data.volume);
+        assert_eq!(result.len(), 3);
+
+        let tpp = TrendPausePattern::new(10, 0.5).unwrap();
+        let result = tpp.calculate(&short_data.high, &short_data.low, &short_data.close, &short_data.volume);
+        assert_eq!(result.len(), 3);
+
+        let br = BreakoutRetest::new(5, 0.3).unwrap();
+        let result = br.calculate(&short_data.high, &short_data.low, &short_data.close, &short_data.volume);
+        assert_eq!(result.len(), 3);
+
+        let sf = SwingFailure::new(3, 0.2).unwrap();
+        let result = sf.calculate(&short_data.high, &short_data.low, &short_data.close, &short_data.volume);
+        assert_eq!(result.len(), 3);
     }
 }

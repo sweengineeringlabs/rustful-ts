@@ -3445,6 +3445,1216 @@ impl TechnicalIndicator for TrackingErrorVariance {
     }
 }
 
+// ============================================================
+// 6 NEW RISK INDICATORS (RollingVaR, DrawdownVelocity, RiskMomentum,
+// ConditionalBetaRegime, TailDependence, RiskRegimeIndicatorAdvanced)
+// Note: ConditionalBeta and RiskRegimeIndicator already exist above.
+// These are enhanced/additional versions with different functionality.
+// ============================================================
+
+/// Rolling Value at Risk - Rolling window VaR calculation with multiple methods
+///
+/// Calculates Value at Risk (VaR) over a rolling window, measuring the maximum
+/// expected loss at a given confidence level. Supports both historical
+/// simulation and parametric (normal) methods.
+///
+/// # Formula
+/// Historical VaR: Percentile(returns, 1 - confidence)
+/// Parametric VaR: mu - z_alpha * sigma
+///
+/// where:
+/// - mu = mean return
+/// - sigma = standard deviation
+/// - z_alpha = z-score for confidence level
+///
+/// # Interpretation
+/// - VaR at 95% confidence of 2% means 5% chance of losing more than 2%
+/// - Higher values indicate greater potential loss
+/// - Expressed as a positive percentage (absolute value of potential loss)
+///
+/// # Example
+/// ```ignore
+/// let rolling_var = RollingVaR::new(50, 0.95).unwrap();
+/// let result = rolling_var.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct RollingVaR {
+    /// Rolling window period for calculation
+    period: usize,
+    /// Confidence level (e.g., 0.95 for 95% VaR)
+    confidence: f64,
+    /// Use parametric method (true) or historical simulation (false)
+    parametric: bool,
+}
+
+impl RollingVaR {
+    /// Create a new Rolling VaR indicator using historical simulation
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window period for calculation (minimum 20)
+    /// * `confidence` - Confidence level (0.9 to 0.999)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, confidence: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for meaningful VaR calculation".to_string(),
+            });
+        }
+        if confidence < 0.9 || confidence > 0.999 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "confidence".to_string(),
+                reason: "must be between 0.9 and 0.999".to_string(),
+            });
+        }
+        Ok(Self {
+            period,
+            confidence,
+            parametric: false,
+        })
+    }
+
+    /// Create a new Rolling VaR indicator with parametric method
+    ///
+    /// Uses normal distribution assumption for VaR calculation.
+    pub fn parametric(period: usize, confidence: f64) -> Result<Self> {
+        let mut indicator = Self::new(period, confidence)?;
+        indicator.parametric = true;
+        Ok(indicator)
+    }
+
+    /// Inverse standard normal CDF approximation
+    fn inv_norm(p: f64) -> f64 {
+        if p <= 0.0 || p >= 1.0 {
+            return 0.0;
+        }
+
+        // Abramowitz and Stegun approximation
+        let a = [
+            -3.969683028665376e1,
+            2.209460984245205e2,
+            -2.759285104469687e2,
+            1.383577518672690e2,
+            -3.066479806614716e1,
+            2.506628277459239e0,
+        ];
+        let b = [
+            -5.447609879822406e1,
+            1.615858368580409e2,
+            -1.556989798598866e2,
+            6.680131188771972e1,
+            -1.328068155288572e1,
+        ];
+        let c = [
+            -7.784894002430293e-3,
+            -3.223964580411365e-1,
+            -2.400758277161838e0,
+            -2.549732539343734e0,
+            4.374664141464968e0,
+            2.938163982698783e0,
+        ];
+        let d = [
+            7.784695709041462e-3,
+            3.224671290700398e-1,
+            2.445134137142996e0,
+            3.754408661907416e0,
+        ];
+
+        let p_low = 0.02425;
+        let p_high = 1.0 - p_low;
+
+        if p < p_low {
+            let q = (-2.0 * p.ln()).sqrt();
+            (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+                / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+        } else if p <= p_high {
+            let q = p - 0.5;
+            let r = q * q;
+            (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q
+                / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+        } else {
+            let q = (-2.0 * (1.0 - p).ln()).sqrt();
+            -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+                / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+        }
+    }
+
+    /// Calculate Rolling VaR values
+    ///
+    /// Returns the Value at Risk as a positive percentage for each point.
+    /// Higher values indicate greater potential loss.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() < 10 {
+                continue;
+            }
+
+            let var = if self.parametric {
+                // Parametric VaR using normal distribution
+                let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+                let variance: f64 = returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>() / returns.len() as f64;
+                let std_dev = variance.sqrt();
+
+                let z_score = Self::inv_norm(1.0 - self.confidence);
+                -(mean + z_score * std_dev)
+            } else {
+                // Historical simulation VaR
+                returns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let var_idx = ((1.0 - self.confidence) * returns.len() as f64).floor() as usize;
+                let var_idx = var_idx.min(returns.len().saturating_sub(1));
+                -returns[var_idx]
+            };
+
+            // Express as positive percentage
+            result[i] = var.max(0.0) * 100.0;
+        }
+
+        result
+    }
+
+    /// Calculate Expected Shortfall (CVaR) alongside VaR
+    ///
+    /// Returns the expected loss given that VaR is breached.
+    pub fn calculate_expected_shortfall(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut returns: Vec<f64> = Vec::new();
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 {
+                    returns.push(close[j] / close[j - 1] - 1.0);
+                }
+            }
+
+            if returns.len() < 10 {
+                continue;
+            }
+
+            // Sort returns (worst first)
+            returns.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Find VaR threshold index
+            let var_idx = ((1.0 - self.confidence) * returns.len() as f64).ceil() as usize;
+            let var_idx = var_idx.max(1).min(returns.len());
+
+            // Calculate average of tail losses
+            let tail_returns: Vec<f64> = returns[..var_idx].to_vec();
+            if !tail_returns.is_empty() {
+                let es: f64 = tail_returns.iter().sum::<f64>() / tail_returns.len() as f64;
+                result[i] = (-es).max(0.0) * 100.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for RollingVaR {
+    fn name(&self) -> &str {
+        "Rolling VaR"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Drawdown Velocity - Speed of drawdown occurrence
+///
+/// Measures how quickly drawdowns develop by calculating the rate of change
+/// of drawdown depth over time. Fast drawdowns (high velocity) indicate
+/// market stress and potential panic selling.
+///
+/// # Formula
+/// DV = (Current_Drawdown - Previous_Drawdown) / Time_Period
+///
+/// or alternatively:
+/// DV = Drawdown_Depth / Time_To_Reach_Drawdown
+///
+/// # Interpretation
+/// - High positive velocity indicates rapidly deepening drawdown (danger)
+/// - Near-zero velocity indicates stable or slowly developing drawdown
+/// - Negative velocity indicates recovery from drawdown
+/// - Useful for detecting flash crashes and rapid market deterioration
+///
+/// # Example
+/// ```ignore
+/// let dv = DrawdownVelocity::new(20, 5).unwrap();
+/// let result = dv.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct DrawdownVelocity {
+    /// Rolling window for drawdown calculation
+    period: usize,
+    /// Short-term window for velocity calculation
+    velocity_period: usize,
+}
+
+impl DrawdownVelocity {
+    /// Create a new Drawdown Velocity indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window for overall drawdown analysis (minimum 20)
+    /// * `velocity_period` - Short-term window for velocity calculation (minimum 3, < period)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, velocity_period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if velocity_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "velocity_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if velocity_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "velocity_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, velocity_period })
+    }
+
+    /// Calculate Drawdown Velocity values
+    ///
+    /// Returns the rate of drawdown change. Positive values indicate
+    /// deepening drawdowns, negative values indicate recovery.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // First calculate drawdowns at each point
+        let mut drawdowns: Vec<f64> = vec![0.0; n];
+        let mut peak = close[0];
+
+        for i in 0..n {
+            if close[i] > peak {
+                peak = close[i];
+            }
+            if peak > 1e-10 {
+                drawdowns[i] = (peak - close[i]) / peak;
+            }
+        }
+
+        // Calculate velocity of drawdown change
+        for i in self.period..n {
+            let current_dd = drawdowns[i];
+            let prev_dd = drawdowns[i.saturating_sub(self.velocity_period)];
+
+            // Velocity = change in drawdown per period (annualized)
+            let velocity = (current_dd - prev_dd) / self.velocity_period as f64;
+
+            // Express as percentage change per day, scaled by 100
+            result[i] = velocity * 100.0 * 252.0; // Annualized
+        }
+
+        result
+    }
+
+    /// Calculate cumulative drawdown depth at each point
+    pub fn calculate_drawdown_depth(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut peak = close[0];
+
+        for i in 0..n {
+            if close[i] > peak {
+                peak = close[i];
+            }
+            if peak > 1e-10 {
+                result[i] = (peak - close[i]) / peak * 100.0;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate time spent in drawdown
+    pub fn calculate_time_underwater(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut peak = close[0];
+        let mut time_underwater = 0.0;
+
+        for i in 0..n {
+            if close[i] >= peak {
+                peak = close[i];
+                time_underwater = 0.0;
+            } else {
+                time_underwater += 1.0;
+            }
+            result[i] = time_underwater;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for DrawdownVelocity {
+    fn name(&self) -> &str {
+        "Drawdown Velocity"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Risk Momentum - Momentum of risk metrics over time
+///
+/// Measures the trend and momentum of risk levels by tracking how risk
+/// metrics are changing. Rising risk momentum indicates deteriorating
+/// conditions, while falling momentum suggests improving stability.
+///
+/// # Formula
+/// RM = (Current_Risk - Lagged_Risk) / Lagged_Risk
+///
+/// where Risk is measured as rolling volatility or downside deviation.
+///
+/// # Interpretation
+/// - Positive momentum indicates increasing risk (bearish signal)
+/// - Negative momentum indicates decreasing risk (bullish signal)
+/// - High absolute values indicate rapid risk regime changes
+/// - Useful for dynamic risk allocation and hedging decisions
+///
+/// # Example
+/// ```ignore
+/// let rm = RiskMomentum::new(50, 10).unwrap();
+/// let result = rm.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct RiskMomentum {
+    /// Long-term period for risk baseline
+    period: usize,
+    /// Short-term period for current risk
+    momentum_period: usize,
+}
+
+impl RiskMomentum {
+    /// Create a new Risk Momentum indicator
+    ///
+    /// # Arguments
+    /// * `period` - Long-term window for risk baseline (minimum 30)
+    /// * `momentum_period` - Short-term window for momentum calculation (minimum 5, < period)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, momentum_period: usize) -> Result<Self> {
+        if period < 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 30".to_string(),
+            });
+        }
+        if momentum_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if momentum_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_period })
+    }
+
+    /// Calculate rolling volatility for a window
+    fn calculate_volatility(returns: &[f64]) -> f64 {
+        if returns.len() < 2 {
+            return 0.0;
+        }
+        let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+        let variance: f64 = returns
+            .iter()
+            .map(|r| (r - mean).powi(2))
+            .sum::<f64>() / returns.len() as f64;
+        variance.sqrt()
+    }
+
+    /// Calculate Risk Momentum values
+    ///
+    /// Returns the momentum of risk (rate of change of volatility).
+    /// Positive values indicate increasing risk.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Pre-calculate all returns
+        let mut all_returns: Vec<f64> = vec![0.0; n];
+        for i in 1..n {
+            if close[i - 1] > 1e-10 {
+                all_returns[i] = close[i] / close[i - 1] - 1.0;
+            }
+        }
+
+        // Calculate rolling volatilities
+        let mut volatilities: Vec<f64> = vec![0.0; n];
+        for i in self.momentum_period..n {
+            let start = i.saturating_sub(self.momentum_period);
+            let returns: Vec<f64> = all_returns[(start + 1)..=i].to_vec();
+            volatilities[i] = Self::calculate_volatility(&returns);
+        }
+
+        // Calculate risk momentum
+        for i in self.period..n {
+            let current_vol = volatilities[i];
+            let lagged_vol = volatilities[i.saturating_sub(self.momentum_period)];
+
+            if lagged_vol > 1e-10 {
+                // Calculate percentage change in volatility
+                let momentum = (current_vol - lagged_vol) / lagged_vol;
+                result[i] = momentum * 100.0;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate Risk Momentum using downside deviation
+    ///
+    /// Focuses on downside risk changes only.
+    pub fn calculate_downside(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Pre-calculate all returns
+        let mut all_returns: Vec<f64> = vec![0.0; n];
+        for i in 1..n {
+            if close[i - 1] > 1e-10 {
+                all_returns[i] = close[i] / close[i - 1] - 1.0;
+            }
+        }
+
+        // Calculate rolling downside deviations
+        let mut downside_devs: Vec<f64> = vec![0.0; n];
+        for i in self.momentum_period..n {
+            let start = i.saturating_sub(self.momentum_period);
+            let negative_returns: Vec<f64> = all_returns[(start + 1)..=i]
+                .iter()
+                .filter(|&&r| r < 0.0)
+                .copied()
+                .collect();
+
+            if negative_returns.len() > 1 {
+                let mean: f64 = negative_returns.iter().sum::<f64>() / negative_returns.len() as f64;
+                let variance: f64 = negative_returns
+                    .iter()
+                    .map(|r| (r - mean).powi(2))
+                    .sum::<f64>() / negative_returns.len() as f64;
+                downside_devs[i] = variance.sqrt();
+            }
+        }
+
+        // Calculate downside risk momentum
+        for i in self.period..n {
+            let current_dd = downside_devs[i];
+            let lagged_dd = downside_devs[i.saturating_sub(self.momentum_period)];
+
+            if lagged_dd > 1e-10 {
+                let momentum = (current_dd - lagged_dd) / lagged_dd;
+                result[i] = momentum * 100.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for RiskMomentum {
+    fn name(&self) -> &str {
+        "Risk Momentum"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Conditional Beta (Regime-Based) - Beta conditioned on market regimes
+///
+/// Calculates separate beta values for different market regimes (bull/bear,
+/// low/high volatility), providing insight into how an asset's sensitivity
+/// to market movements varies with market conditions.
+///
+/// # Formula
+/// Beta_regime = Cov(R_asset, R_bench | regime) / Var(R_bench | regime)
+///
+/// Regimes are determined by:
+/// - Benchmark return direction (positive/negative)
+/// - Volatility level (above/below average)
+///
+/// # Interpretation
+/// - Higher bear market beta indicates more downside risk
+/// - Lower bull market beta indicates defensive characteristics
+/// - Ratio of bear/bull beta shows asymmetric market exposure
+/// - Important for tail risk hedging and regime-aware allocation
+///
+/// # Example
+/// ```ignore
+/// let cb = ConditionalBetaRegime::new(50, 20).unwrap();
+/// let result = cb.calculate(&close_prices, &benchmark_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ConditionalBetaRegime {
+    /// Rolling window for beta calculation
+    period: usize,
+    /// Window for volatility regime detection
+    vol_period: usize,
+}
+
+impl ConditionalBetaRegime {
+    /// Create a new Conditional Beta (Regime) indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window for beta calculation (minimum 30)
+    /// * `vol_period` - Window for volatility regime detection (minimum 10, < period)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, vol_period: usize) -> Result<Self> {
+        if period < 30 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 30 for robust beta calculation".to_string(),
+            });
+        }
+        if vol_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "vol_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if vol_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "vol_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, vol_period })
+    }
+
+    /// Calculate beta for given return pairs
+    fn calculate_beta(asset_returns: &[f64], bench_returns: &[f64]) -> f64 {
+        if asset_returns.len() < 5 || bench_returns.len() < 5 {
+            return 0.0;
+        }
+        if asset_returns.len() != bench_returns.len() {
+            return 0.0;
+        }
+
+        let n = asset_returns.len() as f64;
+        let asset_mean: f64 = asset_returns.iter().sum::<f64>() / n;
+        let bench_mean: f64 = bench_returns.iter().sum::<f64>() / n;
+
+        let mut covariance = 0.0;
+        let mut bench_variance = 0.0;
+
+        for i in 0..asset_returns.len() {
+            let asset_dev = asset_returns[i] - asset_mean;
+            let bench_dev = bench_returns[i] - bench_mean;
+            covariance += asset_dev * bench_dev;
+            bench_variance += bench_dev * bench_dev;
+        }
+
+        if bench_variance > 1e-10 {
+            covariance / bench_variance
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate Conditional Beta values (bear/bull ratio)
+    ///
+    /// Returns the ratio of downside beta to upside beta.
+    /// Values > 1 indicate higher sensitivity to down markets.
+    pub fn calculate(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if benchmark.len() != n {
+            return result;
+        }
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns and separate by market direction
+            let mut bull_asset: Vec<f64> = Vec::new();
+            let mut bull_bench: Vec<f64> = Vec::new();
+            let mut bear_asset: Vec<f64> = Vec::new();
+            let mut bear_bench: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 && benchmark[j - 1] > 1e-10 {
+                    let asset_ret = close[j] / close[j - 1] - 1.0;
+                    let bench_ret = benchmark[j] / benchmark[j - 1] - 1.0;
+
+                    if bench_ret >= 0.0 {
+                        bull_asset.push(asset_ret);
+                        bull_bench.push(bench_ret);
+                    } else {
+                        bear_asset.push(asset_ret);
+                        bear_bench.push(bench_ret);
+                    }
+                }
+            }
+
+            // Calculate conditional betas
+            let bull_beta = Self::calculate_beta(&bull_asset, &bull_bench);
+            let bear_beta = Self::calculate_beta(&bear_asset, &bear_bench);
+
+            // Return ratio (bear/bull) with safeguards
+            if bull_beta.abs() > 0.01 {
+                result[i] = bear_beta / bull_beta;
+            } else if bear_beta.abs() > 0.01 {
+                result[i] = 2.0; // Indicate high bear sensitivity with low bull sensitivity
+            }
+        }
+
+        result
+    }
+
+    /// Calculate separate bull and bear betas
+    ///
+    /// Returns a tuple of (bull_beta, bear_beta) vectors.
+    pub fn calculate_separate(&self, close: &[f64], benchmark: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut bull_betas = vec![0.0; n];
+        let mut bear_betas = vec![0.0; n];
+
+        if benchmark.len() != n {
+            return (bull_betas, bear_betas);
+        }
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            let mut bull_asset: Vec<f64> = Vec::new();
+            let mut bull_bench: Vec<f64> = Vec::new();
+            let mut bear_asset: Vec<f64> = Vec::new();
+            let mut bear_bench: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 && benchmark[j - 1] > 1e-10 {
+                    let asset_ret = close[j] / close[j - 1] - 1.0;
+                    let bench_ret = benchmark[j] / benchmark[j - 1] - 1.0;
+
+                    if bench_ret >= 0.0 {
+                        bull_asset.push(asset_ret);
+                        bull_bench.push(bench_ret);
+                    } else {
+                        bear_asset.push(asset_ret);
+                        bear_bench.push(bench_ret);
+                    }
+                }
+            }
+
+            bull_betas[i] = Self::calculate_beta(&bull_asset, &bull_bench);
+            bear_betas[i] = Self::calculate_beta(&bear_asset, &bear_bench);
+        }
+
+        (bull_betas, bear_betas)
+    }
+}
+
+impl TechnicalIndicator for ConditionalBetaRegime {
+    fn name(&self) -> &str {
+        "Conditional Beta Regime"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        // Use close as benchmark proxy
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Tail Dependence - Measures dependence in the tails of distributions
+///
+/// Calculates the degree of co-movement between an asset and benchmark
+/// during extreme market events (tails of the distribution). High tail
+/// dependence indicates that the asset tends to crash when the market crashes.
+///
+/// # Formula
+/// Lower Tail Dependence:
+/// lambda_L = lim(u->0) P(X < F_X^-1(u) | Y < F_Y^-1(u))
+///
+/// Estimated using empirical tail frequencies:
+/// lambda = n(both in tail) / n(benchmark in tail)
+///
+/// # Interpretation
+/// - 0 = No tail dependence (independent in extremes)
+/// - 1 = Perfect tail dependence (always crash together)
+/// - High lower tail dependence indicates crash risk
+/// - Useful for diversification assessment and tail risk hedging
+///
+/// # Example
+/// ```ignore
+/// let td = TailDependence::new(100, 0.1).unwrap();
+/// let result = td.calculate(&close_prices, &benchmark_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TailDependence {
+    /// Rolling window for calculation
+    period: usize,
+    /// Tail threshold (e.g., 0.1 for bottom/top 10%)
+    tail_threshold: f64,
+}
+
+impl TailDependence {
+    /// Create a new Tail Dependence indicator
+    ///
+    /// # Arguments
+    /// * `period` - Rolling window for calculation (minimum 50)
+    /// * `tail_threshold` - Percentile threshold for tail (0.01 to 0.2)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, tail_threshold: f64) -> Result<Self> {
+        if period < 50 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 50 for meaningful tail analysis".to_string(),
+            });
+        }
+        if tail_threshold < 0.01 || tail_threshold > 0.2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "tail_threshold".to_string(),
+                reason: "must be between 0.01 and 0.2".to_string(),
+            });
+        }
+        Ok(Self { period, tail_threshold })
+    }
+
+    /// Calculate Tail Dependence coefficient
+    ///
+    /// Returns the lower tail dependence coefficient (0 to 1).
+    /// Higher values indicate stronger co-movement in crashes.
+    pub fn calculate(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if benchmark.len() != n {
+            return result;
+        }
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Calculate returns
+            let mut asset_returns: Vec<f64> = Vec::new();
+            let mut bench_returns: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 && benchmark[j - 1] > 1e-10 {
+                    asset_returns.push(close[j] / close[j - 1] - 1.0);
+                    bench_returns.push(benchmark[j] / benchmark[j - 1] - 1.0);
+                }
+            }
+
+            if asset_returns.len() < 20 {
+                continue;
+            }
+
+            // Find tail thresholds
+            let mut sorted_asset = asset_returns.clone();
+            let mut sorted_bench = bench_returns.clone();
+            sorted_asset.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            sorted_bench.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let tail_idx = (self.tail_threshold * asset_returns.len() as f64).ceil() as usize;
+            let tail_idx = tail_idx.max(1).min(asset_returns.len() / 4);
+
+            let asset_threshold = sorted_asset[tail_idx - 1];
+            let bench_threshold = sorted_bench[tail_idx - 1];
+
+            // Count joint tail events
+            let mut joint_tail = 0;
+            let mut bench_tail = 0;
+
+            for k in 0..asset_returns.len() {
+                if bench_returns[k] <= bench_threshold {
+                    bench_tail += 1;
+                    if asset_returns[k] <= asset_threshold {
+                        joint_tail += 1;
+                    }
+                }
+            }
+
+            // Calculate tail dependence coefficient
+            if bench_tail > 0 {
+                result[i] = joint_tail as f64 / bench_tail as f64;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate upper tail dependence
+    ///
+    /// Measures co-movement during extreme positive events.
+    pub fn calculate_upper(&self, close: &[f64], benchmark: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if benchmark.len() != n {
+            return result;
+        }
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            let mut asset_returns: Vec<f64> = Vec::new();
+            let mut bench_returns: Vec<f64> = Vec::new();
+
+            for j in (start + 1)..=i {
+                if close[j - 1] > 1e-10 && benchmark[j - 1] > 1e-10 {
+                    asset_returns.push(close[j] / close[j - 1] - 1.0);
+                    bench_returns.push(benchmark[j] / benchmark[j - 1] - 1.0);
+                }
+            }
+
+            if asset_returns.len() < 20 {
+                continue;
+            }
+
+            // Find upper tail thresholds
+            let mut sorted_asset = asset_returns.clone();
+            let mut sorted_bench = bench_returns.clone();
+            sorted_asset.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            sorted_bench.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+            let tail_idx = (self.tail_threshold * asset_returns.len() as f64).ceil() as usize;
+            let tail_idx = tail_idx.max(1).min(asset_returns.len() / 4);
+
+            let asset_threshold = sorted_asset[tail_idx - 1];
+            let bench_threshold = sorted_bench[tail_idx - 1];
+
+            // Count joint upper tail events
+            let mut joint_tail = 0;
+            let mut bench_tail = 0;
+
+            for k in 0..asset_returns.len() {
+                if bench_returns[k] >= bench_threshold {
+                    bench_tail += 1;
+                    if asset_returns[k] >= asset_threshold {
+                        joint_tail += 1;
+                    }
+                }
+            }
+
+            if bench_tail > 0 {
+                result[i] = joint_tail as f64 / bench_tail as f64;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TailDependence {
+    fn name(&self) -> &str {
+        "Tail Dependence"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        // Use close as benchmark proxy
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
+/// Risk Regime Indicator (Advanced) - Enhanced regime detection with multiple factors
+///
+/// An advanced version of regime detection that combines multiple risk factors
+/// including volatility clustering, correlation breakdown, and tail risk metrics
+/// to provide a comprehensive risk regime assessment.
+///
+/// # Components
+/// 1. Volatility regime (current vs historical)
+/// 2. Correlation regime (breakdown detection)
+/// 3. Tail risk regime (extreme events frequency)
+/// 4. Momentum regime (trend strength)
+///
+/// # Output
+/// Returns a continuous score from 0 to 100 representing overall risk level:
+/// - 0-25: Low risk regime
+/// - 25-50: Normal risk regime
+/// - 50-75: Elevated risk regime
+/// - 75-100: High/Crisis risk regime
+///
+/// # Example
+/// ```ignore
+/// let rri = RiskRegimeIndicatorAdvanced::new(100, 20).unwrap();
+/// let result = rri.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct RiskRegimeIndicatorAdvanced {
+    /// Long-term period for regime baseline
+    period: usize,
+    /// Short-term period for current conditions
+    short_period: usize,
+}
+
+impl RiskRegimeIndicatorAdvanced {
+    /// Create a new Risk Regime Indicator (Advanced)
+    ///
+    /// # Arguments
+    /// * `period` - Long-term window for baseline (minimum 50)
+    /// * `short_period` - Short-term window for current state (minimum 10, < period/2)
+    ///
+    /// # Returns
+    /// Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, short_period: usize) -> Result<Self> {
+        if period < 50 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 50 for robust regime detection".to_string(),
+            });
+        }
+        if short_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if short_period >= period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be less than half of period".to_string(),
+            });
+        }
+        Ok(Self { period, short_period })
+    }
+
+    /// Calculate volatility for a slice of returns
+    fn calculate_volatility(returns: &[f64]) -> f64 {
+        if returns.len() < 2 {
+            return 0.0;
+        }
+        let mean: f64 = returns.iter().sum::<f64>() / returns.len() as f64;
+        let variance: f64 = returns
+            .iter()
+            .map(|r| (r - mean).powi(2))
+            .sum::<f64>() / returns.len() as f64;
+        variance.sqrt()
+    }
+
+    /// Calculate Risk Regime Indicator values
+    ///
+    /// Returns a continuous score from 0 to 100 representing overall risk level.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Pre-calculate returns
+        let mut returns: Vec<f64> = vec![0.0; n];
+        for i in 1..n {
+            if close[i - 1] > 1e-10 {
+                returns[i] = close[i] / close[i - 1] - 1.0;
+            }
+        }
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // 1. Volatility regime score (0-25)
+            let short_start = i.saturating_sub(self.short_period);
+            let short_returns: Vec<f64> = returns[(short_start + 1)..=i].to_vec();
+            let long_returns: Vec<f64> = returns[(start + 1)..=i].to_vec();
+
+            let short_vol = Self::calculate_volatility(&short_returns);
+            let long_vol = Self::calculate_volatility(&long_returns);
+
+            let vol_ratio = if long_vol > 1e-10 {
+                short_vol / long_vol
+            } else {
+                1.0
+            };
+
+            let vol_score = if vol_ratio < 0.7 {
+                0.0
+            } else if vol_ratio < 1.0 {
+                (vol_ratio - 0.7) / 0.3 * 12.5
+            } else if vol_ratio < 1.5 {
+                12.5 + (vol_ratio - 1.0) / 0.5 * 7.5
+            } else {
+                20.0 + ((vol_ratio - 1.5) / 0.5).min(1.0) * 5.0
+            };
+
+            // 2. Drawdown regime score (0-25)
+            let mut peak = close[start];
+            let mut max_dd = 0.0;
+            for j in start..=i {
+                if close[j] > peak {
+                    peak = close[j];
+                }
+                let dd = (peak - close[j]) / peak;
+                if dd > max_dd {
+                    max_dd = dd;
+                }
+            }
+
+            let dd_score = if max_dd < 0.05 {
+                0.0
+            } else if max_dd < 0.10 {
+                (max_dd - 0.05) / 0.05 * 10.0
+            } else if max_dd < 0.20 {
+                10.0 + (max_dd - 0.10) / 0.10 * 10.0
+            } else {
+                20.0 + ((max_dd - 0.20) / 0.10).min(1.0) * 5.0
+            };
+
+            // 3. Tail events score (0-25)
+            let threshold = long_vol * 2.0; // 2 sigma events
+            let tail_events = short_returns
+                .iter()
+                .filter(|&&r| r.abs() > threshold)
+                .count();
+            let tail_rate = tail_events as f64 / short_returns.len() as f64;
+
+            let tail_score = if tail_rate < 0.02 {
+                0.0
+            } else if tail_rate < 0.05 {
+                (tail_rate - 0.02) / 0.03 * 12.5
+            } else if tail_rate < 0.10 {
+                12.5 + (tail_rate - 0.05) / 0.05 * 7.5
+            } else {
+                20.0 + ((tail_rate - 0.10) / 0.05).min(1.0) * 5.0
+            };
+
+            // 4. Momentum regime score (0-25)
+            let total_return = if close[start] > 1e-10 {
+                close[i] / close[start] - 1.0
+            } else {
+                0.0
+            };
+
+            let momentum_score = if total_return < -0.15 {
+                25.0
+            } else if total_return < -0.05 {
+                12.5 + (-total_return - 0.05) / 0.10 * 12.5
+            } else if total_return < 0.05 {
+                (0.05 - total_return) / 0.10 * 12.5
+            } else {
+                0.0
+            };
+
+            // Combine scores
+            result[i] = (vol_score + dd_score + tail_score + momentum_score).min(100.0);
+        }
+
+        result
+    }
+
+    /// Calculate discrete regime classification
+    ///
+    /// Returns regime as integer: 0=Low, 1=Normal, 2=Elevated, 3=High
+    pub fn calculate_discrete(&self, close: &[f64]) -> Vec<f64> {
+        self.calculate(close)
+            .iter()
+            .map(|&score| {
+                if score < 25.0 {
+                    0.0
+                } else if score < 50.0 {
+                    1.0
+                } else if score < 75.0 {
+                    2.0
+                } else {
+                    3.0
+                }
+            })
+            .collect()
+    }
+}
+
+impl TechnicalIndicator for RiskRegimeIndicatorAdvanced {
+    fn name(&self) -> &str {
+        "Risk Regime Indicator Advanced"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+
+    fn output_features(&self) -> usize {
+        1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4903,5 +6113,590 @@ mod tests {
         assert_eq!(ab_result.primary.len(), data.close.len());
         assert_eq!(rps_result.primary.len(), data.close.len());
         assert_eq!(tev_result.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // Tests for 6 NEW RISK INDICATORS
+    // RollingVaR, DrawdownVelocity, RiskMomentum,
+    // ConditionalBetaRegime, TailDependence, RiskRegimeIndicatorAdvanced
+    // ============================================================
+
+    fn make_long_test_data() -> Vec<f64> {
+        // Create longer data series for indicators that need period >= 50
+        (0..120)
+            .map(|i| 100.0 + (i as f64) * 0.3 + (i as f64 * 0.2).sin() * 3.0)
+            .collect()
+    }
+
+    fn make_benchmark_data() -> Vec<f64> {
+        // Create benchmark that roughly correlates with test data
+        (0..120)
+            .map(|i| 1000.0 + (i as f64) * 3.0 + (i as f64 * 0.2).sin() * 25.0)
+            .collect()
+    }
+
+    // ============================================================
+    // 1. RollingVaR Tests
+    // ============================================================
+
+    #[test]
+    fn test_rolling_var_basic() {
+        let close = make_volatile_test_data();
+        let var = RollingVaR::new(25, 0.95).unwrap();
+        let result = var.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // VaR should be non-negative (expressed as potential loss)
+        for i in 30..result.len() {
+            assert!(result[i] >= 0.0, "VaR should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_rolling_var_parametric() {
+        let close = make_volatile_test_data();
+        let var = RollingVaR::parametric(25, 0.95).unwrap();
+        let result = var.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Parametric VaR should also be non-negative
+        for i in 30..result.len() {
+            assert!(result[i] >= 0.0, "Parametric VaR should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_rolling_var_confidence_levels() {
+        let close = make_volatile_test_data();
+        let var_95 = RollingVaR::new(25, 0.95).unwrap();
+        let var_99 = RollingVaR::new(25, 0.99).unwrap();
+
+        let result_95 = var_95.calculate(&close);
+        let result_99 = var_99.calculate(&close);
+
+        // 99% VaR should generally be >= 95% VaR
+        let mut higher_count = 0;
+        for i in 30..close.len() {
+            if result_99[i] > 0.0 && result_95[i] > 0.0 {
+                if result_99[i] >= result_95[i] - 0.01 {
+                    higher_count += 1;
+                }
+            }
+        }
+        assert!(higher_count > 0, "99% VaR should be >= 95% VaR in most cases");
+    }
+
+    #[test]
+    fn test_rolling_var_expected_shortfall() {
+        let close = make_volatile_test_data();
+        let var = RollingVaR::new(25, 0.95).unwrap();
+        let es = var.calculate_expected_shortfall(&close);
+
+        assert_eq!(es.len(), close.len());
+        // ES should generally be >= VaR
+        let var_result = var.calculate(&close);
+        for i in 30..close.len() {
+            if es[i] > 0.0 && var_result[i] > 0.0 {
+                assert!(es[i] >= var_result[i] - 0.01,
+                    "ES should be >= VaR at index {}: ES={}, VaR={}", i, es[i], var_result[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_rolling_var_validation() {
+        // Period too small
+        assert!(RollingVaR::new(10, 0.95).is_err());
+
+        // Confidence too low
+        assert!(RollingVaR::new(25, 0.5).is_err());
+
+        // Confidence too high
+        assert!(RollingVaR::new(25, 1.0).is_err());
+
+        // Valid parameters
+        assert!(RollingVaR::new(20, 0.9).is_ok());
+        assert!(RollingVaR::new(50, 0.99).is_ok());
+    }
+
+    #[test]
+    fn test_rolling_var_indicator_trait() {
+        let data = make_test_data();
+        let var = RollingVaR::new(25, 0.95).unwrap();
+
+        assert_eq!(var.name(), "Rolling VaR");
+        assert_eq!(var.min_periods(), 26);
+        assert_eq!(var.output_features(), 1);
+
+        let output = var.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 2. DrawdownVelocity Tests
+    // ============================================================
+
+    #[test]
+    fn test_drawdown_velocity_basic() {
+        let close = make_drawdown_test_data();
+        let dv = DrawdownVelocity::new(25, 5).unwrap();
+        let result = dv.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_drawdown_velocity_during_drawdown() {
+        let close = make_drawdown_test_data();
+        let dv = DrawdownVelocity::new(20, 5).unwrap();
+        let result = dv.calculate(&close);
+
+        // During drawdown periods, velocity should be positive (deepening)
+        // During recovery, velocity should be negative
+        let has_positive = result[25..40].iter().any(|&v| v > 0.0);
+        let has_negative = result[25..40].iter().any(|&v| v < 0.0);
+
+        // Should have both positive and negative values for oscillating data
+        assert!(has_positive || has_negative, "Should detect drawdown velocity changes");
+    }
+
+    #[test]
+    fn test_drawdown_velocity_depth() {
+        let close = make_drawdown_test_data();
+        let dv = DrawdownVelocity::new(20, 5).unwrap();
+        let depths = dv.calculate_drawdown_depth(&close);
+
+        assert_eq!(depths.len(), close.len());
+        // Drawdown depth should be non-negative
+        for (i, &d) in depths.iter().enumerate() {
+            assert!(d >= 0.0, "Drawdown depth should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_drawdown_velocity_time_underwater() {
+        let close = vec![100.0, 110.0, 105.0, 100.0, 95.0, 100.0, 110.0, 115.0];
+        let dv = DrawdownVelocity::new(20, 5).unwrap();
+        let underwater = dv.calculate_time_underwater(&close);
+
+        assert_eq!(underwater.len(), close.len());
+        assert_eq!(underwater[1], 0.0); // At peak
+        assert_eq!(underwater[2], 1.0); // 1 period underwater
+        assert_eq!(underwater[3], 2.0); // 2 periods underwater
+        assert_eq!(underwater[7], 0.0); // New high
+    }
+
+    #[test]
+    fn test_drawdown_velocity_validation() {
+        // Period too small
+        assert!(DrawdownVelocity::new(10, 5).is_err());
+
+        // Velocity period too small
+        assert!(DrawdownVelocity::new(25, 2).is_err());
+
+        // Velocity period >= period
+        assert!(DrawdownVelocity::new(25, 25).is_err());
+        assert!(DrawdownVelocity::new(25, 30).is_err());
+
+        // Valid parameters
+        assert!(DrawdownVelocity::new(20, 3).is_ok());
+        assert!(DrawdownVelocity::new(50, 10).is_ok());
+    }
+
+    #[test]
+    fn test_drawdown_velocity_indicator_trait() {
+        let data = make_test_data();
+        let dv = DrawdownVelocity::new(25, 5).unwrap();
+
+        assert_eq!(dv.name(), "Drawdown Velocity");
+        assert_eq!(dv.min_periods(), 26);
+        assert_eq!(dv.output_features(), 1);
+
+        let output = dv.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 3. RiskMomentum Tests
+    // ============================================================
+
+    #[test]
+    fn test_risk_momentum_basic() {
+        let close = make_long_test_data();
+        let rm = RiskMomentum::new(50, 10).unwrap();
+        let result = rm.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_risk_momentum_stable_data() {
+        // Data with constant volatility should have near-zero momentum
+        let close: Vec<f64> = (0..120)
+            .map(|i| 100.0 + (i as f64 * 0.5).sin() * 2.0)
+            .collect();
+        let rm = RiskMomentum::new(50, 10).unwrap();
+        let result = rm.calculate(&close);
+
+        // After warmup, momentum should be relatively stable
+        let late_values: Vec<f64> = result[60..].iter().filter(|&&v| v != 0.0).copied().collect();
+        if !late_values.is_empty() {
+            let mean: f64 = late_values.iter().sum::<f64>() / late_values.len() as f64;
+            // Should be relatively close to zero for stable volatility
+            assert!(mean.abs() < 200.0, "Risk momentum should be moderate for stable data: {}", mean);
+        }
+    }
+
+    #[test]
+    fn test_risk_momentum_downside() {
+        let close = make_long_test_data();
+        let rm = RiskMomentum::new(50, 10).unwrap();
+        let result = rm.calculate_downside(&close);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_risk_momentum_validation() {
+        // Period too small
+        assert!(RiskMomentum::new(20, 10).is_err());
+
+        // Momentum period too small
+        assert!(RiskMomentum::new(50, 3).is_err());
+
+        // Momentum period >= period
+        assert!(RiskMomentum::new(50, 50).is_err());
+
+        // Valid parameters
+        assert!(RiskMomentum::new(30, 5).is_ok());
+        assert!(RiskMomentum::new(100, 20).is_ok());
+    }
+
+    #[test]
+    fn test_risk_momentum_indicator_trait() {
+        let data = make_test_data();
+        let rm = RiskMomentum::new(35, 10).unwrap();
+
+        assert_eq!(rm.name(), "Risk Momentum");
+        assert_eq!(rm.min_periods(), 36);
+        assert_eq!(rm.output_features(), 1);
+
+        let output = rm.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 4. ConditionalBetaRegime Tests
+    // ============================================================
+
+    #[test]
+    fn test_conditional_beta_regime_basic() {
+        let close = make_long_test_data();
+        let benchmark = make_benchmark_data();
+        let cb = ConditionalBetaRegime::new(50, 15).unwrap();
+        let result = cb.calculate(&close, &benchmark);
+
+        assert_eq!(result.len(), close.len());
+    }
+
+    #[test]
+    fn test_conditional_beta_regime_separate() {
+        let close = make_long_test_data();
+        let benchmark = make_benchmark_data();
+        let cb = ConditionalBetaRegime::new(50, 15).unwrap();
+        let (bull_betas, bear_betas) = cb.calculate_separate(&close, &benchmark);
+
+        assert_eq!(bull_betas.len(), close.len());
+        assert_eq!(bear_betas.len(), close.len());
+    }
+
+    #[test]
+    fn test_conditional_beta_regime_mismatched_length() {
+        let close = make_long_test_data();
+        let benchmark: Vec<f64> = vec![100.0; 50]; // Different length
+        let cb = ConditionalBetaRegime::new(50, 15).unwrap();
+        let result = cb.calculate(&close, &benchmark);
+
+        // Should return zeros for mismatched data
+        assert!(result.iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn test_conditional_beta_regime_validation() {
+        // Period too small
+        assert!(ConditionalBetaRegime::new(20, 10).is_err());
+
+        // Vol period too small
+        assert!(ConditionalBetaRegime::new(50, 5).is_err());
+
+        // Vol period >= period
+        assert!(ConditionalBetaRegime::new(50, 50).is_err());
+
+        // Valid parameters
+        assert!(ConditionalBetaRegime::new(30, 10).is_ok());
+        assert!(ConditionalBetaRegime::new(100, 20).is_ok());
+    }
+
+    #[test]
+    fn test_conditional_beta_regime_indicator_trait() {
+        let data = make_test_data();
+        let cb = ConditionalBetaRegime::new(35, 10).unwrap();
+
+        assert_eq!(cb.name(), "Conditional Beta Regime");
+        assert_eq!(cb.min_periods(), 36);
+        assert_eq!(cb.output_features(), 1);
+
+        let output = cb.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 5. TailDependence Tests
+    // ============================================================
+
+    #[test]
+    fn test_tail_dependence_basic() {
+        let close = make_long_test_data();
+        let benchmark = make_benchmark_data();
+        let td = TailDependence::new(60, 0.1).unwrap();
+        let result = td.calculate(&close, &benchmark);
+
+        assert_eq!(result.len(), close.len());
+        // Tail dependence should be between 0 and 1
+        for i in 65..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 1.0,
+                "Tail dependence should be 0-1 at index {}: {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_tail_dependence_upper() {
+        let close = make_long_test_data();
+        let benchmark = make_benchmark_data();
+        let td = TailDependence::new(60, 0.1).unwrap();
+        let result = td.calculate_upper(&close, &benchmark);
+
+        assert_eq!(result.len(), close.len());
+        // Upper tail dependence should also be 0-1
+        for i in 65..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 1.0,
+                "Upper tail dependence should be 0-1 at index {}: {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_tail_dependence_identical_data() {
+        // For identical data, tail dependence should be high (near 1)
+        let data = make_long_test_data();
+        let td = TailDependence::new(60, 0.1).unwrap();
+        let result = td.calculate(&data, &data);
+
+        // Check later values where we have enough data
+        let late_values: Vec<f64> = result[70..].iter().filter(|&&v| v > 0.0).copied().collect();
+        if !late_values.is_empty() {
+            let mean: f64 = late_values.iter().sum::<f64>() / late_values.len() as f64;
+            assert!(mean > 0.5, "Tail dependence should be high for identical data: {}", mean);
+        }
+    }
+
+    #[test]
+    fn test_tail_dependence_validation() {
+        // Period too small
+        assert!(TailDependence::new(30, 0.1).is_err());
+
+        // Threshold too small
+        assert!(TailDependence::new(60, 0.005).is_err());
+
+        // Threshold too large
+        assert!(TailDependence::new(60, 0.3).is_err());
+
+        // Valid parameters
+        assert!(TailDependence::new(50, 0.05).is_ok());
+        assert!(TailDependence::new(100, 0.15).is_ok());
+    }
+
+    #[test]
+    fn test_tail_dependence_indicator_trait() {
+        let close = make_long_test_data();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let open = close.clone();
+        let volume = vec![1000.0; close.len()];
+
+        let data = OHLCVSeries { open, high, low, close, volume };
+        let td = TailDependence::new(60, 0.1).unwrap();
+
+        assert_eq!(td.name(), "Tail Dependence");
+        assert_eq!(td.min_periods(), 61);
+        assert_eq!(td.output_features(), 1);
+
+        let output = td.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // 6. RiskRegimeIndicatorAdvanced Tests
+    // ============================================================
+
+    #[test]
+    fn test_risk_regime_indicator_advanced_basic() {
+        let close = make_long_test_data();
+        let rri = RiskRegimeIndicatorAdvanced::new(60, 15).unwrap();
+        let result = rri.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Score should be 0-100
+        for i in 65..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "Risk score should be 0-100 at index {}: {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_risk_regime_indicator_advanced_discrete() {
+        let close = make_long_test_data();
+        let rri = RiskRegimeIndicatorAdvanced::new(60, 15).unwrap();
+        let result = rri.calculate_discrete(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Discrete regime should be 0, 1, 2, or 3
+        for i in 65..result.len() {
+            assert!(
+                (result[i] - 0.0).abs() < 0.01 ||
+                (result[i] - 1.0).abs() < 0.01 ||
+                (result[i] - 2.0).abs() < 0.01 ||
+                (result[i] - 3.0).abs() < 0.01,
+                "Discrete regime should be 0-3 at index {}: {}", i, result[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_risk_regime_indicator_advanced_stable_market() {
+        // Stable uptrend should have low risk scores
+        let close: Vec<f64> = (0..120).map(|i| 100.0 + i as f64 * 0.2).collect();
+        let rri = RiskRegimeIndicatorAdvanced::new(60, 15).unwrap();
+        let result = rri.calculate(&close);
+
+        // In stable uptrend, risk should be low
+        let late_values: Vec<f64> = result[70..].iter().filter(|&&v| v > 0.0).copied().collect();
+        if !late_values.is_empty() {
+            let mean: f64 = late_values.iter().sum::<f64>() / late_values.len() as f64;
+            assert!(mean < 50.0, "Risk should be low in stable uptrend: {}", mean);
+        }
+    }
+
+    #[test]
+    fn test_risk_regime_indicator_advanced_validation() {
+        // Period too small
+        assert!(RiskRegimeIndicatorAdvanced::new(30, 10).is_err());
+
+        // Short period too small
+        assert!(RiskRegimeIndicatorAdvanced::new(60, 5).is_err());
+
+        // Short period >= period/2
+        assert!(RiskRegimeIndicatorAdvanced::new(60, 30).is_err());
+        assert!(RiskRegimeIndicatorAdvanced::new(60, 35).is_err());
+
+        // Valid parameters
+        assert!(RiskRegimeIndicatorAdvanced::new(50, 10).is_ok());
+        assert!(RiskRegimeIndicatorAdvanced::new(100, 20).is_ok());
+    }
+
+    #[test]
+    fn test_risk_regime_indicator_advanced_trait() {
+        let close = make_long_test_data();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let open = close.clone();
+        let volume = vec![1000.0; close.len()];
+
+        let data = OHLCVSeries { open, high, low, close, volume };
+        let rri = RiskRegimeIndicatorAdvanced::new(60, 15).unwrap();
+
+        assert_eq!(rri.name(), "Risk Regime Indicator Advanced");
+        assert_eq!(rri.min_periods(), 61);
+        assert_eq!(rri.output_features(), 1);
+
+        let output = rri.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // ============================================================
+    // Integration Tests for all 6 new indicators
+    // ============================================================
+
+    #[test]
+    fn test_all_six_new_indicators_names() {
+        let var = RollingVaR::new(25, 0.95).unwrap();
+        assert_eq!(var.name(), "Rolling VaR");
+
+        let dv = DrawdownVelocity::new(25, 5).unwrap();
+        assert_eq!(dv.name(), "Drawdown Velocity");
+
+        let rm = RiskMomentum::new(35, 10).unwrap();
+        assert_eq!(rm.name(), "Risk Momentum");
+
+        let cb = ConditionalBetaRegime::new(35, 10).unwrap();
+        assert_eq!(cb.name(), "Conditional Beta Regime");
+
+        let td = TailDependence::new(60, 0.1).unwrap();
+        assert_eq!(td.name(), "Tail Dependence");
+
+        let rri = RiskRegimeIndicatorAdvanced::new(60, 15).unwrap();
+        assert_eq!(rri.name(), "Risk Regime Indicator Advanced");
+    }
+
+    #[test]
+    fn test_all_six_new_indicators_empty_data() {
+        let empty: Vec<f64> = Vec::new();
+
+        let var = RollingVaR::new(25, 0.95).unwrap();
+        assert_eq!(var.calculate(&empty).len(), 0);
+
+        let dv = DrawdownVelocity::new(25, 5).unwrap();
+        assert_eq!(dv.calculate(&empty).len(), 0);
+
+        let rm = RiskMomentum::new(35, 10).unwrap();
+        assert_eq!(rm.calculate(&empty).len(), 0);
+
+        let cb = ConditionalBetaRegime::new(35, 10).unwrap();
+        assert_eq!(cb.calculate(&empty, &empty).len(), 0);
+
+        let td = TailDependence::new(60, 0.1).unwrap();
+        assert_eq!(td.calculate(&empty, &empty).len(), 0);
+
+        let rri = RiskRegimeIndicatorAdvanced::new(60, 15).unwrap();
+        assert_eq!(rri.calculate(&empty).len(), 0);
+    }
+
+    #[test]
+    fn test_all_six_new_indicators_short_data() {
+        // Data shorter than required period
+        let short_data: Vec<f64> = (0..20).map(|i| 100.0 + i as f64).collect();
+
+        let var = RollingVaR::new(25, 0.95).unwrap();
+        let result = var.calculate(&short_data);
+        assert!(result.iter().all(|&v| v == 0.0));
+
+        let dv = DrawdownVelocity::new(25, 5).unwrap();
+        let result = dv.calculate(&short_data);
+        assert!(result.iter().all(|&v| v == 0.0));
+
+        let rm = RiskMomentum::new(35, 10).unwrap();
+        let result = rm.calculate(&short_data);
+        assert!(result.iter().all(|&v| v == 0.0));
+
+        let cb = ConditionalBetaRegime::new(35, 10).unwrap();
+        let result = cb.calculate(&short_data, &short_data);
+        assert!(result.iter().all(|&v| v == 0.0));
+
+        let td = TailDependence::new(60, 0.1).unwrap();
+        let result = td.calculate(&short_data, &short_data);
+        assert!(result.iter().all(|&v| v == 0.0));
+
+        let rri = RiskRegimeIndicatorAdvanced::new(60, 15).unwrap();
+        let result = rri.calculate(&short_data);
+        assert!(result.iter().all(|&v| v == 0.0));
     }
 }

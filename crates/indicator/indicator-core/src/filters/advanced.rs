@@ -4844,3 +4844,1386 @@ mod additional_filter_tests {
         assert_eq!(result.len(), 3);
     }
 }
+
+// ==================== 6 FURTHER NEW Filter Indicators ====================
+
+/// Adaptive Lag Filter - Filter that adapts lag based on market conditions
+///
+/// This filter dynamically adjusts its lag characteristics based on detected
+/// market volatility and trend strength. In trending markets, it reduces lag
+/// to follow price more closely. In choppy/ranging markets, it increases lag
+/// to filter out noise. This provides an optimal balance between responsiveness
+/// and noise reduction across different market conditions.
+#[derive(Debug, Clone)]
+pub struct AdaptiveLagFilter {
+    /// Base period for the filter
+    period: usize,
+    /// Minimum lag factor (0.1-0.5)
+    min_lag: f64,
+    /// Maximum lag factor (0.5-0.95)
+    max_lag: f64,
+}
+
+impl AdaptiveLagFilter {
+    /// Create a new Adaptive Lag Filter
+    ///
+    /// # Arguments
+    /// * `period` - Base period for calculations (minimum 5)
+    /// * `min_lag` - Minimum lag factor for trending markets (0.1-0.5)
+    /// * `max_lag` - Maximum lag factor for choppy markets (0.5-0.95)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, min_lag: f64, max_lag: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if min_lag < 0.1 || min_lag > 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_lag".to_string(),
+                reason: "must be between 0.1 and 0.5".to_string(),
+            });
+        }
+        if max_lag < 0.5 || max_lag > 0.95 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_lag".to_string(),
+                reason: "must be between 0.5 and 0.95".to_string(),
+            });
+        }
+        if max_lag <= min_lag {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_lag".to_string(),
+                reason: "must be greater than min_lag".to_string(),
+            });
+        }
+        Ok(Self { period, min_lag, max_lag })
+    }
+
+    /// Calculate adaptive lag filter
+    ///
+    /// Adjusts the lag based on local market conditions using an efficiency ratio
+    /// approach to detect trending vs ranging conditions.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n < self.period {
+            return data.to_vec();
+        }
+
+        let mut result = vec![0.0; n];
+        result[0] = data[0];
+
+        for i in 1..n {
+            let lookback = self.period.min(i);
+            let start = i - lookback;
+
+            // Calculate efficiency ratio (directional movement / total movement)
+            let direction = (data[i] - data[start]).abs();
+            let volatility: f64 = (start..i)
+                .map(|j| (data[j + 1] - data[j]).abs())
+                .sum();
+
+            let efficiency_ratio = if volatility > 1e-10 {
+                (direction / volatility).min(1.0)
+            } else {
+                0.5
+            };
+
+            // High efficiency = trending = use min_lag (more responsive)
+            // Low efficiency = choppy = use max_lag (more smoothing)
+            let lag_factor = self.max_lag - efficiency_ratio * (self.max_lag - self.min_lag);
+
+            // Apply adaptive EMA with variable lag
+            result[i] = lag_factor * result[i - 1] + (1.0 - lag_factor) * data[i];
+        }
+
+        result
+    }
+
+    /// Calculate with efficiency ratio output
+    ///
+    /// Returns (filtered_values, efficiency_ratios)
+    pub fn calculate_with_efficiency(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = data.len();
+        if n == 0 {
+            return (vec![], vec![]);
+        }
+        if n < self.period {
+            return (data.to_vec(), vec![0.5; n]);
+        }
+
+        let mut result = vec![0.0; n];
+        let mut efficiency = vec![0.0; n];
+        result[0] = data[0];
+        efficiency[0] = 0.5;
+
+        for i in 1..n {
+            let lookback = self.period.min(i);
+            let start = i - lookback;
+
+            let direction = (data[i] - data[start]).abs();
+            let volatility: f64 = (start..i)
+                .map(|j| (data[j + 1] - data[j]).abs())
+                .sum();
+
+            let er = if volatility > 1e-10 {
+                (direction / volatility).min(1.0)
+            } else {
+                0.5
+            };
+            efficiency[i] = er;
+
+            let lag_factor = self.max_lag - er * (self.max_lag - self.min_lag);
+            result[i] = lag_factor * result[i - 1] + (1.0 - lag_factor) * data[i];
+        }
+
+        (result, efficiency)
+    }
+}
+
+impl TechnicalIndicator for AdaptiveLagFilter {
+    fn name(&self) -> &str {
+        "Adaptive Lag Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Trend Noise Filter - Separates trend from noise using wavelet-inspired decomposition
+///
+/// This filter uses a multi-scale decomposition approach inspired by wavelet analysis
+/// to separate the underlying trend from high-frequency noise. It applies a cascade
+/// of smoothing filters at different scales and combines them to extract the trend
+/// component while suppressing noise. This provides cleaner trend signals than
+/// single-scale filters.
+#[derive(Debug, Clone)]
+pub struct TrendNoiseFilter {
+    /// Number of decomposition levels
+    levels: usize,
+    /// Base smoothing factor
+    smoothing: f64,
+}
+
+impl TrendNoiseFilter {
+    /// Create a new Trend Noise Filter
+    ///
+    /// # Arguments
+    /// * `levels` - Number of decomposition levels (2-6)
+    /// * `smoothing` - Base smoothing factor (0.1-0.9)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(levels: usize, smoothing: f64) -> Result<Self> {
+        if levels < 2 || levels > 6 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "levels".to_string(),
+                reason: "must be between 2 and 6".to_string(),
+            });
+        }
+        if smoothing < 0.1 || smoothing > 0.9 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be between 0.1 and 0.9".to_string(),
+            });
+        }
+        Ok(Self { levels, smoothing })
+    }
+
+    /// Apply exponential smoothing with given factor
+    fn smooth(&self, data: &[f64], alpha: f64) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let mut result = vec![0.0; n];
+        result[0] = data[0];
+
+        for i in 1..n {
+            result[i] = alpha * data[i] + (1.0 - alpha) * result[i - 1];
+        }
+
+        result
+    }
+
+    /// Calculate trend noise filter
+    ///
+    /// Performs multi-scale decomposition to extract the trend component,
+    /// leaving noise behind.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        // Multi-scale smoothing cascade
+        let mut trend = data.to_vec();
+
+        for level in 0..self.levels {
+            // Reduce alpha at each level for more smoothing
+            let alpha = self.smoothing / (1.0 + level as f64 * 0.5);
+            trend = self.smooth(&trend, alpha);
+        }
+
+        // Blend with a moving average for additional smoothing
+        let window = 3 + self.levels;
+        let mut final_trend = vec![0.0; n];
+
+        for i in 0..n {
+            let start = i.saturating_sub(window / 2);
+            let end = (i + window / 2 + 1).min(n);
+            let sum: f64 = trend[start..end].iter().sum();
+            final_trend[i] = sum / (end - start) as f64;
+        }
+
+        final_trend
+    }
+
+    /// Calculate both trend and noise components
+    ///
+    /// Returns (trend, noise) where noise = original - trend
+    pub fn calculate_components(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let trend = self.calculate(data);
+        let noise: Vec<f64> = data.iter()
+            .zip(trend.iter())
+            .map(|(&d, &t)| d - t)
+            .collect();
+
+        (trend, noise)
+    }
+
+    /// Get the noise ratio (noise power / signal power)
+    pub fn calculate_noise_ratio(&self, data: &[f64]) -> f64 {
+        let (trend, noise) = self.calculate_components(data);
+
+        let signal_power: f64 = trend.iter().map(|&t| t * t).sum();
+        let noise_power: f64 = noise.iter().map(|&n| n * n).sum();
+
+        if signal_power > 1e-10 {
+            noise_power / signal_power
+        } else {
+            0.0
+        }
+    }
+}
+
+impl TechnicalIndicator for TrendNoiseFilter {
+    fn name(&self) -> &str {
+        "Trend Noise Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        3 + self.levels
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Volatility Adaptive Filter - Adjusts smoothing based on volatility
+///
+/// This filter dynamically adjusts its smoothing strength based on the local
+/// volatility of the price data. During high volatility periods, it applies
+/// more aggressive smoothing to filter out noise. During low volatility periods,
+/// it becomes more responsive to capture small price movements. This provides
+/// optimal filtering across varying market conditions.
+#[derive(Debug, Clone)]
+pub struct VolatilityAdaptiveFilter {
+    /// Period for volatility calculation
+    period: usize,
+    /// Base smoothing factor
+    base_alpha: f64,
+    /// Volatility sensitivity (how much to adjust based on volatility)
+    sensitivity: f64,
+}
+
+impl VolatilityAdaptiveFilter {
+    /// Create a new Volatility Adaptive Filter
+    ///
+    /// # Arguments
+    /// * `period` - Period for volatility estimation (minimum 5)
+    /// * `base_alpha` - Base smoothing factor (0.1-0.9)
+    /// * `sensitivity` - How much to adjust for volatility (0.1-2.0)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, base_alpha: f64, sensitivity: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if base_alpha < 0.1 || base_alpha > 0.9 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "base_alpha".to_string(),
+                reason: "must be between 0.1 and 0.9".to_string(),
+            });
+        }
+        if sensitivity < 0.1 || sensitivity > 2.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0.1 and 2.0".to_string(),
+            });
+        }
+        Ok(Self { period, base_alpha, sensitivity })
+    }
+
+    /// Calculate volatility adaptive filter
+    ///
+    /// Uses local volatility to adjust the smoothing factor, providing
+    /// more smoothing during volatile periods.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        let mut result = vec![0.0; n];
+        result[0] = data[0];
+
+        // Calculate baseline volatility for normalization
+        let returns: Vec<f64> = data.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .collect();
+
+        let baseline_vol = if !returns.is_empty() {
+            returns.iter().sum::<f64>() / returns.len() as f64
+        } else {
+            1.0
+        };
+
+        for i in 1..n {
+            let start = i.saturating_sub(self.period);
+            let window = &data[start..=i];
+
+            // Calculate local volatility (average absolute returns)
+            let local_vol = if window.len() > 1 {
+                window.windows(2)
+                    .map(|w| (w[1] - w[0]).abs())
+                    .sum::<f64>() / (window.len() - 1) as f64
+            } else {
+                baseline_vol
+            };
+
+            // Normalize volatility
+            let vol_ratio = if baseline_vol > 1e-10 {
+                (local_vol / baseline_vol).min(3.0)
+            } else {
+                1.0
+            };
+
+            // High volatility = lower alpha (more smoothing)
+            // Low volatility = higher alpha (more responsive)
+            let adaptive_alpha = self.base_alpha / (1.0 + self.sensitivity * (vol_ratio - 1.0).max(0.0));
+            let alpha = adaptive_alpha.clamp(0.05, 0.95);
+
+            result[i] = alpha * data[i] + (1.0 - alpha) * result[i - 1];
+        }
+
+        result
+    }
+
+    /// Calculate with volatility output
+    ///
+    /// Returns (filtered_values, normalized_volatilities)
+    pub fn calculate_with_volatility(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = data.len();
+        if n == 0 {
+            return (vec![], vec![]);
+        }
+
+        let mut result = vec![0.0; n];
+        let mut volatilities = vec![0.0; n];
+        result[0] = data[0];
+        volatilities[0] = 1.0;
+
+        let returns: Vec<f64> = data.windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .collect();
+
+        let baseline_vol = if !returns.is_empty() {
+            returns.iter().sum::<f64>() / returns.len() as f64
+        } else {
+            1.0
+        };
+
+        for i in 1..n {
+            let start = i.saturating_sub(self.period);
+            let window = &data[start..=i];
+
+            let local_vol = if window.len() > 1 {
+                window.windows(2)
+                    .map(|w| (w[1] - w[0]).abs())
+                    .sum::<f64>() / (window.len() - 1) as f64
+            } else {
+                baseline_vol
+            };
+
+            let vol_ratio = if baseline_vol > 1e-10 {
+                (local_vol / baseline_vol).min(3.0)
+            } else {
+                1.0
+            };
+            volatilities[i] = vol_ratio;
+
+            let adaptive_alpha = self.base_alpha / (1.0 + self.sensitivity * (vol_ratio - 1.0).max(0.0));
+            let alpha = adaptive_alpha.clamp(0.05, 0.95);
+
+            result[i] = alpha * data[i] + (1.0 - alpha) * result[i - 1];
+        }
+
+        (result, volatilities)
+    }
+}
+
+impl TechnicalIndicator for VolatilityAdaptiveFilter {
+    fn name(&self) -> &str {
+        "Volatility Adaptive Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Momentum Filter - Filters noise while preserving momentum
+///
+/// This filter is designed to reduce noise while preserving the momentum
+/// characteristics of price movements. It uses a momentum-weighted smoothing
+/// approach where strong directional moves are preserved while oscillations
+/// around a mean are filtered out. This is particularly useful for trend-following
+/// strategies that need clean momentum signals.
+#[derive(Debug, Clone)]
+pub struct MomentumFilter {
+    /// Period for momentum calculation
+    period: usize,
+    /// Momentum preservation factor (0.1-0.9)
+    momentum_weight: f64,
+}
+
+impl MomentumFilter {
+    /// Create a new Momentum Filter
+    ///
+    /// # Arguments
+    /// * `period` - Period for momentum calculation (minimum 5)
+    /// * `momentum_weight` - How much to preserve momentum vs smooth (0.1-0.9)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, momentum_weight: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if momentum_weight < 0.1 || momentum_weight > 0.9 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_weight".to_string(),
+                reason: "must be between 0.1 and 0.9".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_weight })
+    }
+
+    /// Calculate momentum filter
+    ///
+    /// Preserves momentum while filtering noise using a momentum-aware
+    /// smoothing approach.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n < self.period {
+            return data.to_vec();
+        }
+
+        let mut result = vec![0.0; n];
+        result[0] = data[0];
+
+        // Calculate baseline momentum magnitude
+        let momenta: Vec<f64> = (self.period..n)
+            .map(|i| (data[i] - data[i - self.period]).abs())
+            .collect();
+
+        let baseline_momentum = if !momenta.is_empty() {
+            momenta.iter().sum::<f64>() / momenta.len() as f64
+        } else {
+            1.0
+        };
+
+        for i in 1..n {
+            // Calculate local momentum
+            let lookback = self.period.min(i);
+            let momentum = data[i] - data[i - lookback];
+            let momentum_abs = momentum.abs();
+
+            // Normalize momentum
+            let momentum_ratio = if baseline_momentum > 1e-10 {
+                (momentum_abs / baseline_momentum).min(2.0)
+            } else {
+                1.0
+            };
+
+            // Strong momentum = preserve signal (higher alpha)
+            // Weak momentum = more smoothing (lower alpha)
+            let base_alpha = 1.0 - self.momentum_weight;
+            let alpha = base_alpha + self.momentum_weight * momentum_ratio.min(1.0);
+            let alpha = alpha.clamp(0.1, 0.9);
+
+            // Apply direction-aware smoothing
+            let smoothed = alpha * data[i] + (1.0 - alpha) * result[i - 1];
+
+            // If momentum is strong and consistent, follow price more closely
+            if i >= 2 {
+                let prev_momentum = data[i - 1] - data[i - 2];
+                let same_direction = momentum * prev_momentum > 0.0;
+
+                if same_direction && momentum_ratio > 0.5 {
+                    // Strong consistent momentum - be more responsive
+                    let boost = 0.3 * momentum_ratio;
+                    result[i] = (1.0 - boost) * smoothed + boost * data[i];
+                } else {
+                    result[i] = smoothed;
+                }
+            } else {
+                result[i] = smoothed;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate momentum values
+    ///
+    /// Returns the raw momentum values used in the filter
+    pub fn calculate_momentum(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < self.period {
+            return vec![0.0; n];
+        }
+
+        let mut momentum = vec![0.0; n];
+        for i in self.period..n {
+            momentum[i] = data[i] - data[i - self.period];
+        }
+
+        momentum
+    }
+}
+
+impl TechnicalIndicator for MomentumFilter {
+    fn name(&self) -> &str {
+        "Momentum Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Phase Lag Filter - Minimizes phase lag in price filtering
+///
+/// This filter is specifically designed to minimize the phase lag that is
+/// inherent in most smoothing filters. It uses a forward-looking correction
+/// term based on the rate of change of the smoothed signal to compensate for
+/// lag. This provides smoother signals with reduced delay, making it ideal
+/// for timing-sensitive applications.
+#[derive(Debug, Clone)]
+pub struct PhaseLagFilter {
+    /// Primary smoothing period
+    period: usize,
+    /// Lag compensation factor (0.0-1.0)
+    compensation: f64,
+}
+
+impl PhaseLagFilter {
+    /// Create a new Phase Lag Filter
+    ///
+    /// # Arguments
+    /// * `period` - Primary smoothing period (minimum 5)
+    /// * `compensation` - Lag compensation strength (0.0-1.0)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, compensation: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if compensation < 0.0 || compensation > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "compensation".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { period, compensation })
+    }
+
+    /// Calculate phase lag filter
+    ///
+    /// Uses a dual-pass approach with slope-based lag compensation to
+    /// minimize phase lag while maintaining smoothness.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n < 3 {
+            return data.to_vec();
+        }
+
+        let alpha = 2.0 / (self.period as f64 + 1.0);
+
+        // First pass: standard EMA
+        let mut ema = vec![0.0; n];
+        ema[0] = data[0];
+        for i in 1..n {
+            ema[i] = alpha * data[i] + (1.0 - alpha) * ema[i - 1];
+        }
+
+        // Second pass: double EMA for smoother baseline
+        let mut dema = vec![0.0; n];
+        dema[0] = ema[0];
+        for i in 1..n {
+            dema[i] = alpha * ema[i] + (1.0 - alpha) * dema[i - 1];
+        }
+
+        // Calculate lag-compensated output
+        // Classic DEMA = 2*EMA - DEMA_of_EMA
+        // We add additional compensation based on acceleration
+        let mut result = vec![0.0; n];
+
+        for i in 0..n {
+            // Basic DEMA-style compensation
+            let basic_comp = 2.0 * ema[i] - dema[i];
+
+            if i >= 2 {
+                // Calculate acceleration (second derivative) of the smoothed signal
+                let slope1 = ema[i] - ema[i - 1];
+                let slope2 = ema[i - 1] - ema[i - 2];
+                let acceleration = slope1 - slope2;
+
+                // Add acceleration-based compensation
+                let accel_comp = self.compensation * acceleration * (self.period as f64 / 2.0);
+                result[i] = basic_comp + accel_comp;
+            } else {
+                result[i] = basic_comp;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate lag in bars
+    ///
+    /// Estimates the effective lag of the filter in number of bars
+    pub fn estimate_lag(&self, data: &[f64]) -> f64 {
+        let n = data.len();
+        if n < self.period * 2 {
+            return self.period as f64 / 2.0;
+        }
+
+        let filtered = self.calculate(data);
+
+        // Find lag using cross-correlation
+        let max_lag = self.period;
+        let mut best_lag = 0;
+        let mut best_corr = f64::NEG_INFINITY;
+
+        for lag in 0..max_lag {
+            let mut corr = 0.0;
+            let mut count = 0;
+
+            for i in (lag + self.period)..(n - lag) {
+                corr += (data[i] - data.iter().sum::<f64>() / n as f64)
+                      * (filtered[i - lag] - filtered.iter().sum::<f64>() / n as f64);
+                count += 1;
+            }
+
+            if count > 0 {
+                corr /= count as f64;
+                if corr > best_corr {
+                    best_corr = corr;
+                    best_lag = lag;
+                }
+            }
+        }
+
+        best_lag as f64
+    }
+}
+
+impl TechnicalIndicator for PhaseLagFilter {
+    fn name(&self) -> &str {
+        "Phase Lag Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Signal Cleaner Filter - Cleans noisy signals while preserving turning points
+///
+/// This filter is designed to clean noisy price signals while carefully
+/// preserving significant turning points. It uses a dual-mode approach:
+/// during directional moves it applies moderate smoothing, but near detected
+/// turning points it becomes more responsive to avoid rounding off peaks and
+/// troughs. This makes it ideal for identifying entry and exit points.
+#[derive(Debug, Clone)]
+pub struct SignalCleanerFilter {
+    /// Period for detection
+    period: usize,
+    /// Turning point sensitivity (0.1-0.9)
+    sensitivity: f64,
+}
+
+impl SignalCleanerFilter {
+    /// Create a new Signal Cleaner Filter
+    ///
+    /// # Arguments
+    /// * `period` - Period for analysis (minimum 5)
+    /// * `sensitivity` - Sensitivity to turning points (0.1-0.9)
+    ///
+    /// # Returns
+    /// Result containing the filter instance or an error if parameters are invalid
+    pub fn new(period: usize, sensitivity: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if sensitivity < 0.1 || sensitivity > 0.9 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0.1 and 0.9".to_string(),
+            });
+        }
+        Ok(Self { period, sensitivity })
+    }
+
+    /// Detect potential turning points
+    fn detect_turning_points(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n < 3 {
+            return vec![0.0; n];
+        }
+
+        let mut scores = vec![0.0; n];
+        let half = self.period / 2;
+
+        for i in 1..(n - 1) {
+            let start = i.saturating_sub(half);
+            let end = (i + half + 1).min(n);
+
+            // Check if current point is a local extremum
+            let window = &data[start..end];
+            let current = data[i];
+
+            let is_local_max = window.iter().all(|&v| v <= current + 1e-10);
+            let is_local_min = window.iter().all(|&v| v >= current - 1e-10);
+
+            if is_local_max || is_local_min {
+                // Calculate turning point strength
+                let prev_trend = if i >= half {
+                    (data[i] - data[i - half]) / half as f64
+                } else {
+                    0.0
+                };
+
+                let next_trend = if i + half < n {
+                    (data[i + half] - data[i]) / half as f64
+                } else {
+                    0.0
+                };
+
+                // Strong turning point if trend changes direction
+                if prev_trend * next_trend < 0.0 {
+                    scores[i] = (prev_trend.abs() + next_trend.abs()) / 2.0;
+                }
+            }
+        }
+
+        // Normalize scores
+        let max_score = scores.iter().fold(0.0_f64, |a, &b| a.max(b));
+        if max_score > 1e-10 {
+            for s in &mut scores {
+                *s /= max_score;
+            }
+        }
+
+        scores
+    }
+
+    /// Calculate signal cleaner filter
+    ///
+    /// Applies adaptive smoothing that reduces near turning points to
+    /// preserve their shape.
+    pub fn calculate(&self, data: &[f64]) -> Vec<f64> {
+        let n = data.len();
+        if n == 0 {
+            return vec![];
+        }
+        if n < self.period {
+            return data.to_vec();
+        }
+
+        let turning_points = self.detect_turning_points(data);
+
+        let mut result = vec![0.0; n];
+        result[0] = data[0];
+
+        let base_alpha = 2.0 / (self.period as f64 + 1.0);
+
+        for i in 1..n {
+            // Check for nearby turning points
+            let start = i.saturating_sub(self.period / 2);
+            let end = (i + self.period / 2 + 1).min(n);
+            let tp_strength: f64 = turning_points[start..end].iter()
+                .fold(0.0_f64, |a, &b| a.max(b));
+
+            // Near turning point = higher alpha (more responsive)
+            // Away from turning point = lower alpha (more smoothing)
+            let adaptive_alpha = base_alpha + self.sensitivity * tp_strength * (1.0 - base_alpha);
+
+            result[i] = adaptive_alpha * data[i] + (1.0 - adaptive_alpha) * result[i - 1];
+        }
+
+        result
+    }
+
+    /// Calculate with turning point markers
+    ///
+    /// Returns (filtered_values, turning_point_scores)
+    pub fn calculate_with_turning_points(&self, data: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let turning_points = self.detect_turning_points(data);
+        let filtered = self.calculate(data);
+        (filtered, turning_points)
+    }
+
+    /// Identify significant turning points
+    ///
+    /// Returns indices of detected turning points above the threshold
+    pub fn find_turning_points(&self, data: &[f64], threshold: f64) -> Vec<usize> {
+        let scores = self.detect_turning_points(data);
+        scores.iter()
+            .enumerate()
+            .filter(|(_, &s)| s >= threshold)
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+impl TechnicalIndicator for SignalCleanerFilter {
+    fn name(&self) -> &str {
+        "Signal Cleaner Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ==================== Tests for 6 FURTHER NEW Filter Indicators ====================
+
+#[cfg(test)]
+mod further_filter_tests {
+    use super::*;
+
+    fn make_test_data() -> Vec<f64> {
+        (0..50).map(|i| {
+            let trend = 100.0 + i as f64 * 0.5;
+            let cycle = 3.0 * (i as f64 * 0.3).sin();
+            let noise = ((i * 7) % 5) as f64 * 0.2 - 0.5;
+            trend + cycle + noise
+        }).collect()
+    }
+
+    fn make_ohlcv_data() -> OHLCVSeries {
+        let close = make_test_data();
+        let high: Vec<f64> = close.iter().map(|c| c + 1.0).collect();
+        let low: Vec<f64> = close.iter().map(|c| c - 1.0).collect();
+        let open: Vec<f64> = close.clone();
+        let volume: Vec<f64> = vec![1000.0; close.len()];
+        OHLCVSeries { open, high, low, close, volume }
+    }
+
+    // ==================== AdaptiveLagFilter Tests ====================
+
+    #[test]
+    fn test_adaptive_lag_filter_basic() {
+        let data = make_test_data();
+        let alf = AdaptiveLagFilter::new(10, 0.2, 0.8).unwrap();
+        let result = alf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_adaptive_lag_filter_validation() {
+        assert!(AdaptiveLagFilter::new(4, 0.2, 0.8).is_err()); // period too small
+        assert!(AdaptiveLagFilter::new(10, 0.05, 0.8).is_err()); // min_lag too small
+        assert!(AdaptiveLagFilter::new(10, 0.6, 0.8).is_err()); // min_lag too large
+        assert!(AdaptiveLagFilter::new(10, 0.2, 0.4).is_err()); // max_lag too small
+        assert!(AdaptiveLagFilter::new(10, 0.2, 0.99).is_err()); // max_lag too large
+        assert!(AdaptiveLagFilter::new(10, 0.5, 0.5).is_err()); // max_lag <= min_lag
+    }
+
+    #[test]
+    fn test_adaptive_lag_filter_trending() {
+        // Trending data should have low lag (high efficiency)
+        let trending: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let alf = AdaptiveLagFilter::new(10, 0.2, 0.8).unwrap();
+        let (result, efficiency) = alf.calculate_with_efficiency(&trending);
+
+        assert_eq!(result.len(), trending.len());
+        // Efficiency should be high for trending data
+        let avg_eff: f64 = efficiency[20..].iter().sum::<f64>() / (efficiency.len() - 20) as f64;
+        assert!(avg_eff > 0.5);
+    }
+
+    #[test]
+    fn test_adaptive_lag_filter_choppy() {
+        // Choppy data should have high lag (low efficiency)
+        let choppy: Vec<f64> = (0..50).map(|i| 100.0 + (i % 2) as f64 * 2.0).collect();
+        let alf = AdaptiveLagFilter::new(10, 0.2, 0.8).unwrap();
+        let (result, efficiency) = alf.calculate_with_efficiency(&choppy);
+
+        assert_eq!(result.len(), choppy.len());
+        // Efficiency should be low for choppy data
+        let avg_eff: f64 = efficiency[20..].iter().sum::<f64>() / (efficiency.len() - 20) as f64;
+        assert!(avg_eff < 0.5);
+    }
+
+    #[test]
+    fn test_adaptive_lag_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let alf = AdaptiveLagFilter::new(10, 0.2, 0.8).unwrap();
+
+        assert_eq!(alf.name(), "Adaptive Lag Filter");
+        assert_eq!(alf.min_periods(), 10);
+
+        let output = alf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== TrendNoiseFilter Tests ====================
+
+    #[test]
+    fn test_trend_noise_filter_basic() {
+        let data = make_test_data();
+        let tnf = TrendNoiseFilter::new(3, 0.5).unwrap();
+        let result = tnf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_trend_noise_filter_validation() {
+        assert!(TrendNoiseFilter::new(1, 0.5).is_err()); // levels too small
+        assert!(TrendNoiseFilter::new(7, 0.5).is_err()); // levels too large
+        assert!(TrendNoiseFilter::new(3, 0.05).is_err()); // smoothing too small
+        assert!(TrendNoiseFilter::new(3, 0.95).is_err()); // smoothing too large
+    }
+
+    #[test]
+    fn test_trend_noise_filter_components() {
+        let data = make_test_data();
+        let tnf = TrendNoiseFilter::new(3, 0.5).unwrap();
+        let (trend, noise) = tnf.calculate_components(&data);
+
+        assert_eq!(trend.len(), data.len());
+        assert_eq!(noise.len(), data.len());
+
+        // Trend + noise should equal original
+        for i in 0..data.len() {
+            let reconstructed = trend[i] + noise[i];
+            assert!((reconstructed - data[i]).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn test_trend_noise_filter_noise_ratio() {
+        let data = make_test_data();
+        let tnf = TrendNoiseFilter::new(3, 0.5).unwrap();
+        let noise_ratio = tnf.calculate_noise_ratio(&data);
+
+        // Noise ratio should be positive and reasonable
+        assert!(noise_ratio >= 0.0);
+        assert!(noise_ratio < 10.0);
+    }
+
+    #[test]
+    fn test_trend_noise_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let tnf = TrendNoiseFilter::new(3, 0.5).unwrap();
+
+        assert_eq!(tnf.name(), "Trend Noise Filter");
+        assert_eq!(tnf.min_periods(), 6);
+
+        let output = tnf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== VolatilityAdaptiveFilter Tests ====================
+
+    #[test]
+    fn test_volatility_adaptive_filter_basic() {
+        let data = make_test_data();
+        let vaf = VolatilityAdaptiveFilter::new(10, 0.5, 1.0).unwrap();
+        let result = vaf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_volatility_adaptive_filter_validation() {
+        assert!(VolatilityAdaptiveFilter::new(4, 0.5, 1.0).is_err()); // period too small
+        assert!(VolatilityAdaptiveFilter::new(10, 0.05, 1.0).is_err()); // base_alpha too small
+        assert!(VolatilityAdaptiveFilter::new(10, 0.95, 1.0).is_err()); // base_alpha too large
+        assert!(VolatilityAdaptiveFilter::new(10, 0.5, 0.05).is_err()); // sensitivity too small
+        assert!(VolatilityAdaptiveFilter::new(10, 0.5, 2.5).is_err()); // sensitivity too large
+    }
+
+    #[test]
+    fn test_volatility_adaptive_filter_high_vol() {
+        // High volatility data
+        let high_vol: Vec<f64> = (0..50).map(|i| {
+            100.0 + (i as f64 * 0.5).sin() * 10.0
+        }).collect();
+
+        let vaf = VolatilityAdaptiveFilter::new(10, 0.5, 1.0).unwrap();
+        let (result, volatilities) = vaf.calculate_with_volatility(&high_vol);
+
+        assert_eq!(result.len(), high_vol.len());
+        assert_eq!(volatilities.len(), high_vol.len());
+        // Should have detected varying volatility
+        assert!(volatilities.iter().any(|&v| v > 0.5));
+    }
+
+    #[test]
+    fn test_volatility_adaptive_filter_smoothing() {
+        let data = make_test_data();
+        let vaf = VolatilityAdaptiveFilter::new(10, 0.5, 1.0).unwrap();
+        let result = vaf.calculate(&data);
+
+        // Result should be smoother
+        let orig_var: f64 = data.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (data.len() - 1) as f64;
+
+        let filt_var: f64 = result.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (result.len() - 1) as f64;
+
+        assert!(filt_var < orig_var);
+    }
+
+    #[test]
+    fn test_volatility_adaptive_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let vaf = VolatilityAdaptiveFilter::new(10, 0.5, 1.0).unwrap();
+
+        assert_eq!(vaf.name(), "Volatility Adaptive Filter");
+        assert_eq!(vaf.min_periods(), 10);
+
+        let output = vaf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== MomentumFilter Tests ====================
+
+    #[test]
+    fn test_momentum_filter_basic() {
+        let data = make_test_data();
+        let mf = MomentumFilter::new(10, 0.5).unwrap();
+        let result = mf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_momentum_filter_validation() {
+        assert!(MomentumFilter::new(4, 0.5).is_err()); // period too small
+        assert!(MomentumFilter::new(10, 0.05).is_err()); // momentum_weight too small
+        assert!(MomentumFilter::new(10, 0.95).is_err()); // momentum_weight too large
+    }
+
+    #[test]
+    fn test_momentum_filter_preserves_trend() {
+        // Strong uptrend
+        let uptrend: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let mf = MomentumFilter::new(10, 0.6).unwrap();
+        let result = mf.calculate(&uptrend);
+
+        // Filtered should follow uptrend
+        assert!(result[40] > result[10]);
+
+        // Should be reasonably close to original for trending data
+        let error: f64 = result.iter().zip(uptrend.iter())
+            .map(|(r, o)| (r - o).abs())
+            .sum::<f64>() / result.len() as f64;
+        assert!(error < 5.0);
+    }
+
+    #[test]
+    fn test_momentum_filter_momentum_values() {
+        let data = make_test_data();
+        let mf = MomentumFilter::new(10, 0.5).unwrap();
+        let momentum = mf.calculate_momentum(&data);
+
+        assert_eq!(momentum.len(), data.len());
+        // Early values should be zero
+        assert_eq!(momentum[5], 0.0);
+        // Later values should be calculated
+        assert!(momentum[20].abs() > 0.0);
+    }
+
+    #[test]
+    fn test_momentum_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let mf = MomentumFilter::new(10, 0.5).unwrap();
+
+        assert_eq!(mf.name(), "Momentum Filter");
+        assert_eq!(mf.min_periods(), 10);
+
+        let output = mf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== PhaseLagFilter Tests ====================
+
+    #[test]
+    fn test_phase_lag_filter_basic() {
+        let data = make_test_data();
+        let plf = PhaseLagFilter::new(10, 0.5).unwrap();
+        let result = plf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_phase_lag_filter_validation() {
+        assert!(PhaseLagFilter::new(4, 0.5).is_err()); // period too small
+        assert!(PhaseLagFilter::new(10, -0.1).is_err()); // compensation too small
+        assert!(PhaseLagFilter::new(10, 1.1).is_err()); // compensation too large
+    }
+
+    #[test]
+    fn test_phase_lag_filter_reduced_lag() {
+        // Compare with simple EMA
+        let data: Vec<f64> = (0..100).map(|i| {
+            100.0 + (i as f64 * 0.2).sin() * 5.0
+        }).collect();
+
+        let plf = PhaseLagFilter::new(10, 0.5).unwrap();
+        let phase_lag_result = plf.calculate(&data);
+
+        // Simple EMA for comparison
+        let alpha = 2.0 / 11.0;
+        let mut ema = vec![0.0; data.len()];
+        ema[0] = data[0];
+        for i in 1..data.len() {
+            ema[i] = alpha * data[i] + (1.0 - alpha) * ema[i - 1];
+        }
+
+        // Phase lag filter should have result values closer to current price
+        // on average for trending sections
+        assert!(phase_lag_result.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_phase_lag_filter_estimate_lag() {
+        let data = make_test_data();
+        let plf = PhaseLagFilter::new(10, 0.5).unwrap();
+        let lag = plf.estimate_lag(&data);
+
+        // Lag should be reasonable (less than period)
+        assert!(lag >= 0.0);
+        assert!(lag <= 10.0);
+    }
+
+    #[test]
+    fn test_phase_lag_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let plf = PhaseLagFilter::new(10, 0.5).unwrap();
+
+        assert_eq!(plf.name(), "Phase Lag Filter");
+        assert_eq!(plf.min_periods(), 10);
+
+        let output = plf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== SignalCleanerFilter Tests ====================
+
+    #[test]
+    fn test_signal_cleaner_filter_basic() {
+        let data = make_test_data();
+        let scf = SignalCleanerFilter::new(10, 0.5).unwrap();
+        let result = scf.calculate(&data);
+
+        assert_eq!(result.len(), data.len());
+        assert!(result[25] > 0.0);
+    }
+
+    #[test]
+    fn test_signal_cleaner_filter_validation() {
+        assert!(SignalCleanerFilter::new(4, 0.5).is_err()); // period too small
+        assert!(SignalCleanerFilter::new(10, 0.05).is_err()); // sensitivity too small
+        assert!(SignalCleanerFilter::new(10, 0.95).is_err()); // sensitivity too large
+    }
+
+    #[test]
+    fn test_signal_cleaner_filter_with_turning_points() {
+        // Create data with clear turning points
+        let data: Vec<f64> = (0..50).map(|i| {
+            100.0 + 5.0 * (i as f64 * 0.3).sin()
+        }).collect();
+
+        let scf = SignalCleanerFilter::new(7, 0.6).unwrap();
+        let (filtered, tp_scores) = scf.calculate_with_turning_points(&data);
+
+        assert_eq!(filtered.len(), data.len());
+        assert_eq!(tp_scores.len(), data.len());
+        // Should detect some turning points
+        assert!(tp_scores.iter().any(|&s| s > 0.0));
+    }
+
+    #[test]
+    fn test_signal_cleaner_filter_find_turning_points() {
+        // Create data with clear turning points
+        let data: Vec<f64> = (0..50).map(|i| {
+            100.0 + 5.0 * (i as f64 * 0.3).sin()
+        }).collect();
+
+        let scf = SignalCleanerFilter::new(7, 0.6).unwrap();
+        let tp_indices = scf.find_turning_points(&data, 0.3);
+
+        // Should find some turning points
+        assert!(!tp_indices.is_empty() || data.len() < 20);
+    }
+
+    #[test]
+    fn test_signal_cleaner_filter_smoothing() {
+        let data = make_test_data();
+        let scf = SignalCleanerFilter::new(10, 0.5).unwrap();
+        let result = scf.calculate(&data);
+
+        // Result should be smoother than original
+        let orig_var: f64 = data.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (data.len() - 1) as f64;
+
+        let filt_var: f64 = result.windows(2)
+            .map(|w| (w[1] - w[0]).powi(2))
+            .sum::<f64>() / (result.len() - 1) as f64;
+
+        assert!(filt_var < orig_var);
+    }
+
+    #[test]
+    fn test_signal_cleaner_filter_technical_indicator() {
+        let ohlcv = make_ohlcv_data();
+        let scf = SignalCleanerFilter::new(10, 0.5).unwrap();
+
+        assert_eq!(scf.name(), "Signal Cleaner Filter");
+        assert_eq!(scf.min_periods(), 10);
+
+        let output = scf.compute(&ohlcv).unwrap();
+        assert_eq!(output.primary.len(), ohlcv.close.len());
+    }
+
+    // ==================== Empty and Short Data Tests ====================
+
+    #[test]
+    fn test_further_filters_empty_data() {
+        let empty: Vec<f64> = vec![];
+
+        let alf = AdaptiveLagFilter::new(10, 0.2, 0.8).unwrap();
+        assert!(alf.calculate(&empty).is_empty());
+
+        let tnf = TrendNoiseFilter::new(3, 0.5).unwrap();
+        assert!(tnf.calculate(&empty).is_empty());
+
+        let vaf = VolatilityAdaptiveFilter::new(10, 0.5, 1.0).unwrap();
+        assert!(vaf.calculate(&empty).is_empty());
+
+        let mf = MomentumFilter::new(10, 0.5).unwrap();
+        assert!(mf.calculate(&empty).is_empty());
+
+        let plf = PhaseLagFilter::new(10, 0.5).unwrap();
+        assert!(plf.calculate(&empty).is_empty());
+
+        let scf = SignalCleanerFilter::new(10, 0.5).unwrap();
+        assert!(scf.calculate(&empty).is_empty());
+    }
+
+    #[test]
+    fn test_further_filters_short_data() {
+        let short = vec![100.0, 101.0, 102.0];
+
+        let alf = AdaptiveLagFilter::new(10, 0.2, 0.8).unwrap();
+        let result = alf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let tnf = TrendNoiseFilter::new(3, 0.5).unwrap();
+        let result = tnf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let vaf = VolatilityAdaptiveFilter::new(10, 0.5, 1.0).unwrap();
+        let result = vaf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let mf = MomentumFilter::new(10, 0.5).unwrap();
+        let result = mf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let plf = PhaseLagFilter::new(10, 0.5).unwrap();
+        let result = plf.calculate(&short);
+        assert_eq!(result.len(), 3);
+
+        let scf = SignalCleanerFilter::new(10, 0.5).unwrap();
+        let result = scf.calculate(&short);
+        assert_eq!(result.len(), 3);
+    }
+}

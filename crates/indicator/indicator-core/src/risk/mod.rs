@@ -49,4 +49,7 @@ pub use advanced::{
     // Newest risk indicators
     TailRiskRatio, VaRBreachRate, VolatilityOfVolatility,
     AsymmetricBeta, RiskParityScore, TrackingErrorVariance,
+    // 6 NEW risk indicators
+    RollingVaR, DrawdownVelocity, RiskMomentum,
+    ConditionalBetaRegime, TailDependence, RiskRegimeIndicatorAdvanced,
 };

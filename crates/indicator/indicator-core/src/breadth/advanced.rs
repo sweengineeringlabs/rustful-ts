@@ -3602,6 +3602,679 @@ impl TechnicalIndicator for BreadthSignal {
     }
 }
 
+// ============================================================================
+// 4 NEW Breadth Indicators (SectorBreadthIndex, ParticipationOscillator, etc.)
+// ============================================================================
+
+/// SectorBreadthIndex - Measures breadth across multiple sectors
+///
+/// This indicator simulates sector-level breadth analysis by dividing the price
+/// data into segments (representing sectors) and calculating the percentage of
+/// segments that are advancing. In real-world usage, this would work with actual
+/// sector data, but here we use price data as a proxy by analyzing different
+/// rolling windows as "sector proxies".
+///
+/// # Interpretation
+/// - Values > 70: Strong market breadth (most sectors advancing)
+/// - Values 50-70: Moderate breadth (mixed sector performance)
+/// - Values 30-50: Weak breadth (more sectors declining)
+/// - Values < 30: Very weak breadth (most sectors declining)
+///
+/// # Example
+/// ```ignore
+/// let sbi = SectorBreadthIndex::new(10, 5).unwrap();
+/// let result = sbi.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct SectorBreadthIndex {
+    /// Period for calculating individual sector performance
+    sector_period: usize,
+    /// Number of "sectors" to simulate (rolling window divisions)
+    num_sectors: usize,
+}
+
+impl SectorBreadthIndex {
+    /// Creates a new SectorBreadthIndex indicator.
+    ///
+    /// # Arguments
+    /// * `sector_period` - Period for calculating each sector's performance (minimum 5)
+    /// * `num_sectors` - Number of simulated sectors to analyze (minimum 2, maximum 20)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are outside valid ranges
+    pub fn new(sector_period: usize, num_sectors: usize) -> Result<Self> {
+        if sector_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sector_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if num_sectors < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_sectors".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if num_sectors > 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_sectors".to_string(),
+                reason: "must be at most 20".to_string(),
+            });
+        }
+        Ok(Self { sector_period, num_sectors })
+    }
+
+    /// Calculate sector breadth index values.
+    ///
+    /// Returns percentage (0-100) of sectors that are advancing.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Need enough data for all sector windows
+        let min_data = self.sector_period * self.num_sectors;
+        if n < min_data {
+            return result;
+        }
+
+        for i in min_data..n {
+            let mut advancing_sectors = 0;
+
+            // Simulate sectors using different offset windows
+            for sector in 0..self.num_sectors {
+                let offset = sector * (self.sector_period / 2).max(1);
+                let start_idx = i.saturating_sub(self.sector_period + offset);
+                let end_idx = i.saturating_sub(offset);
+
+                if start_idx < n && end_idx < n && end_idx > start_idx {
+                    // Calculate sector performance
+                    let start_price = close[start_idx];
+                    let end_price = close[end_idx.min(n - 1)];
+
+                    if start_price > 1e-10 && end_price > start_price {
+                        advancing_sectors += 1;
+                    }
+                }
+            }
+
+            result[i] = (advancing_sectors as f64 / self.num_sectors as f64) * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SectorBreadthIndex {
+    fn name(&self) -> &str {
+        "Sector Breadth Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.sector_period * self.num_sectors + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// ParticipationOscillator - Oscillator measuring market participation levels
+///
+/// This oscillator measures the degree of market participation by analyzing
+/// how many periods show significant price movement relative to a threshold.
+/// The oscillator is smoothed using an EMA and normalized to oscillate around zero.
+///
+/// # Formula
+/// Raw = (Participating Periods / Total) * 100 - 50
+/// Oscillator = EMA(Raw, smooth_period)
+///
+/// # Interpretation
+/// - Values > 20: High participation (strong market activity)
+/// - Values -20 to 20: Normal participation
+/// - Values < -20: Low participation (weak market activity)
+/// - Crossovers of zero line can signal changes in market activity
+#[derive(Debug, Clone)]
+pub struct ParticipationOscillator {
+    /// Period for calculating participation rate
+    period: usize,
+    /// Threshold for significant movement (as percentage)
+    threshold: f64,
+    /// Smoothing period for EMA
+    smooth_period: usize,
+}
+
+impl ParticipationOscillator {
+    /// Creates a new ParticipationOscillator indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating participation (minimum 5)
+    /// * `threshold` - Movement threshold as percentage (0.1 to 10.0)
+    /// * `smooth_period` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are outside valid ranges
+    pub fn new(period: usize, threshold: f64, smooth_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if threshold < 0.1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be at least 0.1".to_string(),
+            });
+        }
+        if threshold > 10.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be at most 10.0".to_string(),
+            });
+        }
+        if smooth_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, threshold, smooth_period })
+    }
+
+    /// Calculate participation oscillator values.
+    ///
+    /// Returns smoothed oscillator values centered around zero (-50 to +50 range).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut raw = vec![0.0; n];
+        let mut result = vec![0.0; n];
+
+        // Calculate raw participation for each period
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut participating = 0;
+
+            for j in (start + 1)..=i {
+                let pct_change = if close[j - 1] > 1e-10 {
+                    ((close[j] / close[j - 1]) - 1.0).abs() * 100.0
+                } else {
+                    0.0
+                };
+
+                if pct_change >= self.threshold {
+                    participating += 1;
+                }
+            }
+
+            // Center around zero: 50% participation = 0, 100% = +50, 0% = -50
+            raw[i] = (participating as f64 / self.period as f64) * 100.0 - 50.0;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        let min_idx = self.period;
+        for i in min_idx..n {
+            if i == min_idx {
+                result[i] = raw[i];
+            } else {
+                result[i] = alpha * raw[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for ParticipationOscillator {
+    fn name(&self) -> &str {
+        "Participation Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthRegimeClassifier - Classifies the current market breadth regime
+///
+/// This indicator classifies the market into different breadth regimes based on
+/// multiple breadth metrics. It outputs a regime score that indicates the current
+/// market breadth condition.
+///
+/// # Regime Classifications (Output Values)
+/// - 80-100: Strong Bull Regime (broad participation, strong breadth)
+/// - 60-80: Moderate Bull Regime (healthy breadth)
+/// - 40-60: Neutral Regime (mixed breadth signals)
+/// - 20-40: Moderate Bear Regime (deteriorating breadth)
+/// - 0-20: Strong Bear Regime (poor breadth, narrow participation)
+///
+/// # Calculation
+/// Combines multiple breadth metrics:
+/// 1. Short-term breadth ratio
+/// 2. Long-term breadth trend
+/// 3. Breadth momentum
+/// 4. Breadth consistency
+#[derive(Debug, Clone)]
+pub struct BreadthRegimeClassifier {
+    /// Short-term period for breadth analysis
+    short_period: usize,
+    /// Long-term period for trend analysis
+    long_period: usize,
+    /// Smoothing period for regime classification
+    smooth_period: usize,
+}
+
+impl BreadthRegimeClassifier {
+    /// Creates a new BreadthRegimeClassifier indicator.
+    ///
+    /// # Arguments
+    /// * `short_period` - Short-term analysis period (minimum 5)
+    /// * `long_period` - Long-term analysis period (must be > short_period)
+    /// * `smooth_period` - Smoothing period for regime output (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are outside valid ranges
+    pub fn new(short_period: usize, long_period: usize, smooth_period: usize) -> Result<Self> {
+        if short_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if long_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        if smooth_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { short_period, long_period, smooth_period })
+    }
+
+    /// Calculate breadth regime classification values.
+    ///
+    /// Returns regime score from 0 (strong bear) to 100 (strong bull).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut raw_regime = vec![0.0; n];
+        let mut result = vec![0.0; n];
+
+        let min_idx = self.long_period;
+
+        for i in min_idx..n {
+            // Component 1: Short-term breadth ratio (-1 to +1)
+            let short_start = i.saturating_sub(self.short_period);
+            let mut short_advances = 0;
+            let mut short_declines = 0;
+            for j in (short_start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    short_advances += 1;
+                } else if close[j] < close[j - 1] {
+                    short_declines += 1;
+                }
+            }
+            let short_total = short_advances + short_declines;
+            let short_ratio = if short_total > 0 {
+                (short_advances as f64 - short_declines as f64) / short_total as f64
+            } else {
+                0.0
+            };
+
+            // Component 2: Long-term breadth trend (-1 to +1)
+            let long_start = i.saturating_sub(self.long_period);
+            let mut long_advances = 0;
+            let mut long_declines = 0;
+            for j in (long_start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    long_advances += 1;
+                } else if close[j] < close[j - 1] {
+                    long_declines += 1;
+                }
+            }
+            let long_total = long_advances + long_declines;
+            let long_ratio = if long_total > 0 {
+                (long_advances as f64 - long_declines as f64) / long_total as f64
+            } else {
+                0.0
+            };
+
+            // Component 3: Breadth momentum (short vs long)
+            let momentum = short_ratio - long_ratio;
+
+            // Component 4: Breadth consistency (how consistent is the short-term trend)
+            let consistency = if short_total > 0 {
+                (short_advances.max(short_declines) as f64 / short_total as f64) * 2.0 - 1.0
+            } else {
+                0.0
+            };
+
+            // Combine components with weights
+            // Scale from -1..+1 to 0..100
+            let combined = short_ratio * 0.35 + long_ratio * 0.30 + momentum * 0.20 + consistency * 0.15;
+            raw_regime[i] = ((combined + 1.0) / 2.0 * 100.0).clamp(0.0, 100.0);
+        }
+
+        // Apply EMA smoothing for stable regime classification
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        for i in min_idx..n {
+            if i == min_idx {
+                result[i] = raw_regime[i];
+            } else {
+                result[i] = alpha * raw_regime[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthRegimeClassifier {
+    fn name(&self) -> &str {
+        "Breadth Regime Classifier"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// CumulativeParticipation - Tracks cumulative market participation over time
+///
+/// This indicator maintains a running sum of participation scores, showing how
+/// market participation has accumulated over time. Rising values indicate
+/// sustained market activity, while falling or flat values indicate waning
+/// participation.
+///
+/// # Calculation
+/// For each period, adds +1 for significant moves (above threshold) and
+/// -1 for insignificant moves. The cumulative sum is then normalized.
+///
+/// # Interpretation
+/// - Rising cumulative line: Sustained market participation
+/// - Falling cumulative line: Declining market activity
+/// - Divergence from price: Potential trend change signal
+/// - Acceleration/deceleration: Changes in market dynamics
+#[derive(Debug, Clone)]
+pub struct CumulativeParticipation {
+    /// Threshold for significant movement (as percentage)
+    threshold: f64,
+    /// Period for normalizing the cumulative value
+    normalize_period: usize,
+}
+
+impl CumulativeParticipation {
+    /// Creates a new CumulativeParticipation indicator.
+    ///
+    /// # Arguments
+    /// * `threshold` - Movement threshold as percentage (0.1 to 10.0)
+    /// * `normalize_period` - Period for normalization (minimum 5)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are outside valid ranges
+    pub fn new(threshold: f64, normalize_period: usize) -> Result<Self> {
+        if threshold < 0.1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be at least 0.1".to_string(),
+            });
+        }
+        if threshold > 10.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be at most 10.0".to_string(),
+            });
+        }
+        if normalize_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "normalize_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { threshold, normalize_period })
+    }
+
+    /// Calculate cumulative participation values.
+    ///
+    /// Returns normalized cumulative participation score.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut cumulative = vec![0.0; n];
+        let mut result = vec![0.0; n];
+
+        // Calculate raw cumulative participation
+        let mut cum_sum = 0.0;
+        for i in 1..n {
+            let pct_change = if close[i - 1] > 1e-10 {
+                ((close[i] / close[i - 1]) - 1.0).abs() * 100.0
+            } else {
+                0.0
+            };
+
+            // Add +1 for significant move, -1 for insignificant
+            if pct_change >= self.threshold {
+                cum_sum += 1.0;
+            } else {
+                cum_sum -= 0.5; // Penalize lack of participation less severely
+            }
+
+            cumulative[i] = cum_sum;
+        }
+
+        // Normalize using rolling window for meaningful scale
+        for i in self.normalize_period..n {
+            let start = i.saturating_sub(self.normalize_period);
+            let window_min = cumulative[start..=i].iter().cloned().fold(f64::INFINITY, f64::min);
+            let window_max = cumulative[start..=i].iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let range = window_max - window_min;
+
+            if range > 1e-10 {
+                // Normalize to 0-100 scale within the window
+                result[i] = ((cumulative[i] - window_min) / range) * 100.0;
+            } else {
+                result[i] = 50.0; // Neutral if no variation
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CumulativeParticipation {
+    fn name(&self) -> &str {
+        "Cumulative Participation"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.normalize_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthMomentumOscillator - Momentum oscillator for market breadth
+///
+/// This oscillator combines breadth ratio with momentum analysis to create
+/// a bounded oscillator that measures the momentum of market participation.
+/// It uses RSI-style normalization to create an oscillator bounded between 0 and 100.
+///
+/// # Formula
+/// 1. Calculate breadth ratio (advances - declines) / total for each period
+/// 2. Apply momentum calculation to the breadth ratio
+/// 3. Normalize using RSI-style formula to bound between 0-100
+/// 4. Apply EMA smoothing for stability
+///
+/// # Interpretation
+/// - Values > 70: Strong bullish breadth momentum (potential overbought)
+/// - Values 50-70: Moderate bullish breadth momentum
+/// - Values 30-50: Moderate bearish breadth momentum
+/// - Values < 30: Strong bearish breadth momentum (potential oversold)
+/// - Crossovers of 50 level can signal breadth momentum shifts
+/// - Divergence from price indicates potential reversals
+///
+/// # Example
+/// ```ignore
+/// let bmo = BreadthMomentumOscillator::new(14, 5, 3).unwrap();
+/// let result = bmo.calculate(&close_prices);
+/// // result values are bounded 0-100
+/// ```
+#[derive(Debug, Clone)]
+pub struct BreadthMomentumOscillator {
+    /// Period for calculating base breadth ratio
+    period: usize,
+    /// Period for momentum calculation
+    momentum_period: usize,
+    /// Smoothing period for final oscillator
+    smooth_period: usize,
+}
+
+impl BreadthMomentumOscillator {
+    /// Creates a new BreadthMomentumOscillator indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating breadth ratio (minimum 5)
+    /// * `momentum_period` - Period for momentum calculation (minimum 2)
+    /// * `smooth_period` - Smoothing period for EMA (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if parameters are outside valid ranges
+    ///
+    /// # Example
+    /// ```
+    /// use indicator_core::breadth::advanced::BreadthMomentumOscillator;
+    /// let bmo = BreadthMomentumOscillator::new(14, 5, 3).unwrap();
+    /// ```
+    pub fn new(period: usize, momentum_period: usize, smooth_period: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if smooth_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smooth_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_period, smooth_period })
+    }
+
+    /// Creates a BreadthMomentumOscillator with default parameters.
+    ///
+    /// Default: period=14, momentum_period=5, smooth_period=3
+    pub fn default_params() -> Result<Self> {
+        Self::new(14, 5, 3)
+    }
+
+    /// Calculate breadth momentum oscillator values.
+    ///
+    /// Returns oscillator values bounded between 0 and 100.
+    ///
+    /// # Arguments
+    /// * `close` - Array of closing prices
+    ///
+    /// # Returns
+    /// Vector of oscillator values. Values of 0.0 during warmup period.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Step 1: Calculate breadth ratio for each period
+        let mut breadth_ratio = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut declines = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                } else if close[j] < close[j - 1] {
+                    declines += 1;
+                }
+            }
+
+            let total = advances + declines;
+            if total > 0 {
+                // Ratio from -1 to +1
+                breadth_ratio[i] = (advances as f64 - declines as f64) / total as f64;
+            }
+        }
+
+        // Step 2: Calculate momentum of breadth ratio
+        let mut momentum = vec![0.0; n];
+        let mom_start = self.period + self.momentum_period;
+        for i in mom_start..n {
+            momentum[i] = breadth_ratio[i] - breadth_ratio[i - self.momentum_period];
+        }
+
+        // Step 3: Combine breadth ratio and momentum into oscillator
+        // Using a weighted combination approach that handles persistent trends
+        let mut raw_oscillator = vec![0.0; n];
+
+        let osc_start = mom_start;
+        for i in osc_start..n {
+            // Current breadth ratio component: scale from [-1, 1] to [0, 100]
+            let ratio_component = (breadth_ratio[i] + 1.0) / 2.0 * 100.0;
+
+            // Momentum component: scale momentum (typically small values) to [0, 100]
+            // Momentum ranges roughly from -2 to +2, clamp and scale
+            let clamped_mom = momentum[i].clamp(-2.0, 2.0);
+            let momentum_component = (clamped_mom + 2.0) / 4.0 * 100.0;
+
+            // Combine: 60% ratio (current breadth state), 40% momentum (change rate)
+            raw_oscillator[i] = ratio_component * 0.6 + momentum_component * 0.4;
+        }
+
+        // Step 4: Apply EMA smoothing
+        let alpha = 2.0 / (self.smooth_period as f64 + 1.0);
+        for i in osc_start..n {
+            if i == osc_start {
+                result[i] = raw_oscillator[i];
+            } else {
+                result[i] = alpha * raw_oscillator[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthMomentumOscillator {
+    fn name(&self) -> &str {
+        "Breadth Momentum Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.momentum_period + self.smooth_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5157,5 +5830,358 @@ mod tests {
 
         let bsig = BreadthSignal::new(10, 5, 3).unwrap();
         let _ = bsig.compute(&data).unwrap();
+    }
+
+    // Tests for 4 NEW Breadth Indicators (SectorBreadthIndex, ParticipationOscillator, etc.)
+
+    #[test]
+    fn test_sector_breadth_index() {
+        let data = make_test_data();
+        let sbi = SectorBreadthIndex::new(5, 3).unwrap();
+        let result = sbi.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // Values should be 0-100
+        for i in 20..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "SectorBreadthIndex should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_sector_breadth_index_validation() {
+        assert!(SectorBreadthIndex::new(2, 3).is_err()); // sector_period too small
+        assert!(SectorBreadthIndex::new(5, 1).is_err()); // num_sectors too small
+        assert!(SectorBreadthIndex::new(5, 25).is_err()); // num_sectors too large
+        assert!(SectorBreadthIndex::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_sector_breadth_index_trait() {
+        let data = make_test_data();
+        let sbi = SectorBreadthIndex::new(5, 3).unwrap();
+        assert_eq!(sbi.name(), "Sector Breadth Index");
+        assert_eq!(sbi.min_periods(), 16);
+        let output = sbi.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_sector_breadth_index_bullish() {
+        // Create strong bullish market
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let sbi = SectorBreadthIndex::new(5, 3).unwrap();
+        let result = sbi.calculate(&close);
+
+        // Bullish market should have high sector breadth
+        let avg = result[30..].iter().sum::<f64>() / result[30..].len() as f64;
+        assert!(avg > 50.0, "Bullish market should have high sector breadth, got {}", avg);
+    }
+
+    #[test]
+    fn test_participation_oscillator() {
+        let data = make_test_data();
+        let po = ParticipationOscillator::new(10, 0.5, 3).unwrap();
+        let result = po.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..10 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be bounded (approximately -50 to +50)
+        for i in 15..result.len() {
+            assert!(result[i] >= -60.0 && result[i] <= 60.0,
+                "ParticipationOscillator should be bounded at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_participation_oscillator_validation() {
+        assert!(ParticipationOscillator::new(2, 0.5, 3).is_err()); // period too small
+        assert!(ParticipationOscillator::new(10, 0.05, 3).is_err()); // threshold too small
+        assert!(ParticipationOscillator::new(10, 15.0, 3).is_err()); // threshold too large
+        assert!(ParticipationOscillator::new(10, 0.5, 1).is_err()); // smooth_period too small
+        assert!(ParticipationOscillator::new(10, 0.5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_participation_oscillator_trait() {
+        let data = make_test_data();
+        let po = ParticipationOscillator::new(10, 0.5, 3).unwrap();
+        assert_eq!(po.name(), "Participation Oscillator");
+        assert_eq!(po.min_periods(), 13);
+        let output = po.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_participation_oscillator_high_activity() {
+        // Create high activity market (large moves)
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + (i as f64 * 0.5).sin() * 10.0).collect();
+
+        let po = ParticipationOscillator::new(5, 0.5, 2).unwrap();
+        let result = po.calculate(&close);
+
+        // Should have non-zero participation values
+        let has_nonzero = result[10..].iter().any(|&v| v.abs() > 1.0);
+        assert!(has_nonzero, "Should detect participation in active market");
+    }
+
+    #[test]
+    fn test_breadth_regime_classifier() {
+        let data = make_test_data();
+        let brc = BreadthRegimeClassifier::new(5, 15, 3).unwrap();
+        let result = brc.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..15 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100
+        for i in 20..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "BreadthRegimeClassifier should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_breadth_regime_classifier_validation() {
+        assert!(BreadthRegimeClassifier::new(2, 15, 3).is_err()); // short_period too small
+        assert!(BreadthRegimeClassifier::new(10, 5, 3).is_err()); // long_period <= short_period
+        assert!(BreadthRegimeClassifier::new(5, 15, 1).is_err()); // smooth_period too small
+        assert!(BreadthRegimeClassifier::new(5, 15, 3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_regime_classifier_trait() {
+        let data = make_test_data();
+        let brc = BreadthRegimeClassifier::new(5, 15, 3).unwrap();
+        assert_eq!(brc.name(), "Breadth Regime Classifier");
+        assert_eq!(brc.min_periods(), 18);
+        let output = brc.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_regime_classifier_bull_regime() {
+        // Create strong bull regime
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let brc = BreadthRegimeClassifier::new(5, 15, 2).unwrap();
+        let result = brc.calculate(&close);
+
+        // Strong bull should have regime > 60
+        let avg = result[25..].iter().sum::<f64>() / result[25..].len() as f64;
+        assert!(avg > 60.0, "Bull regime should have high regime score, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_regime_classifier_bear_regime() {
+        // Create strong bear regime
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64 * 2.0).collect();
+
+        let brc = BreadthRegimeClassifier::new(5, 15, 2).unwrap();
+        let result = brc.calculate(&close);
+
+        // Strong bear should have regime < 40
+        let avg = result[25..].iter().sum::<f64>() / result[25..].len() as f64;
+        assert!(avg < 40.0, "Bear regime should have low regime score, got {}", avg);
+    }
+
+    #[test]
+    fn test_cumulative_participation() {
+        let data = make_test_data();
+        let cp = CumulativeParticipation::new(0.5, 10).unwrap();
+        let result = cp.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..10 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be 0-100 (normalized)
+        for i in 15..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "CumulativeParticipation should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_cumulative_participation_validation() {
+        assert!(CumulativeParticipation::new(0.05, 10).is_err()); // threshold too small
+        assert!(CumulativeParticipation::new(15.0, 10).is_err()); // threshold too large
+        assert!(CumulativeParticipation::new(0.5, 2).is_err()); // normalize_period too small
+        assert!(CumulativeParticipation::new(0.5, 10).is_ok());
+    }
+
+    #[test]
+    fn test_cumulative_participation_trait() {
+        let data = make_test_data();
+        let cp = CumulativeParticipation::new(0.5, 10).unwrap();
+        assert_eq!(cp.name(), "Cumulative Participation");
+        assert_eq!(cp.min_periods(), 11);
+        let output = cp.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_cumulative_participation_active_market() {
+        // Create active market with significant moves
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0 + (i as f64 * 0.3).sin() * 3.0).collect();
+
+        let cp = CumulativeParticipation::new(0.3, 10).unwrap();
+        let result = cp.calculate(&close);
+
+        // Active market should have varying participation
+        let has_variation = result[15..].windows(5).any(|w| {
+            let min = w.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = w.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            max - min > 5.0
+        });
+        assert!(has_variation, "Active market should show participation variation");
+    }
+
+    #[test]
+    fn test_all_new_four_indicators_compute() {
+        let data = make_test_data();
+
+        // Verify all 4 NEW indicators can compute successfully
+        let sbi = SectorBreadthIndex::new(5, 3).unwrap();
+        let _ = sbi.compute(&data).unwrap();
+
+        let po = ParticipationOscillator::new(10, 0.5, 3).unwrap();
+        let _ = po.compute(&data).unwrap();
+
+        let brc = BreadthRegimeClassifier::new(5, 15, 3).unwrap();
+        let _ = brc.compute(&data).unwrap();
+
+        let cp = CumulativeParticipation::new(0.5, 10).unwrap();
+        let _ = cp.compute(&data).unwrap();
+    }
+
+    // Tests for BreadthMomentumOscillator
+
+    #[test]
+    fn test_breadth_momentum_oscillator() {
+        let data = make_test_data();
+        let bmo = BreadthMomentumOscillator::new(10, 5, 3).unwrap();
+        let result = bmo.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0 (warmup period = period + momentum_period = 15)
+        for i in 0..15 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Values should be bounded 0-100
+        for i in 20..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "BreadthMomentumOscillator should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_breadth_momentum_oscillator_validation() {
+        assert!(BreadthMomentumOscillator::new(4, 5, 3).is_err()); // period too small
+        assert!(BreadthMomentumOscillator::new(10, 1, 3).is_err()); // momentum_period too small
+        assert!(BreadthMomentumOscillator::new(10, 5, 1).is_err()); // smooth_period too small
+        assert!(BreadthMomentumOscillator::new(10, 5, 3).is_ok());
+        assert!(BreadthMomentumOscillator::new(14, 5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_momentum_oscillator_trait() {
+        let data = make_test_data();
+        let bmo = BreadthMomentumOscillator::new(10, 5, 3).unwrap();
+        assert_eq!(bmo.name(), "Breadth Momentum Oscillator");
+        assert_eq!(bmo.min_periods(), 18); // period + momentum_period + smooth_period
+        let output = bmo.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_momentum_oscillator_default_params() {
+        let bmo = BreadthMomentumOscillator::default_params().unwrap();
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let result = bmo.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Should produce valid bounded values after warmup
+        let valid_values = result[30..].iter().filter(|&&v| v > 0.0 && v < 100.0).count();
+        assert!(valid_values > 0, "Should produce valid oscillator values");
+    }
+
+    #[test]
+    fn test_breadth_momentum_oscillator_bullish() {
+        // Create strong bullish market (all up days)
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let bmo = BreadthMomentumOscillator::new(5, 3, 2).unwrap();
+        let result = bmo.calculate(&close);
+
+        // Bullish market should have oscillator > 50 (above midline)
+        let avg = result[20..].iter().sum::<f64>() / result[20..].len() as f64;
+        assert!(avg > 50.0, "Bullish market should have oscillator > 50, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_momentum_oscillator_bearish() {
+        // Create strong bearish market (all down days)
+        let close: Vec<f64> = (0..60).map(|i| 200.0 - i as f64 * 2.0).collect();
+
+        let bmo = BreadthMomentumOscillator::new(5, 3, 2).unwrap();
+        let result = bmo.calculate(&close);
+
+        // Bearish market should have oscillator < 50 (below midline)
+        let avg = result[20..].iter().sum::<f64>() / result[20..].len() as f64;
+        assert!(avg < 50.0, "Bearish market should have oscillator < 50, got {}", avg);
+    }
+
+    #[test]
+    fn test_breadth_momentum_oscillator_transition() {
+        // Create data that transitions from bearish to bullish
+        let mut close: Vec<f64> = vec![150.0; 80];
+        // First section: bearish
+        for i in 1..40 {
+            close[i] = close[i - 1] - 1.0;
+        }
+        // Second section: bullish
+        for i in 40..80 {
+            close[i] = close[i - 1] + 1.5;
+        }
+
+        let bmo = BreadthMomentumOscillator::new(5, 3, 2).unwrap();
+        let result = bmo.calculate(&close);
+
+        // Should show transition - later values higher than early middle values
+        let early_avg = result[20..35].iter().sum::<f64>() / 15.0;
+        let late_avg = result[60..75].iter().sum::<f64>() / 15.0;
+        assert!(late_avg > early_avg, "Oscillator should rise during bullish transition");
+    }
+
+    #[test]
+    fn test_all_six_requested_indicators_compute() {
+        let data = make_test_data();
+
+        // Verify all 6 requested breadth indicators can compute successfully
+        let ba = BreadthAcceleration::new(5, 3, 3).unwrap();
+        let _ = ba.compute(&data).unwrap();
+
+        let sbi = SectorBreadthIndex::new(5, 3).unwrap();
+        let _ = sbi.compute(&data).unwrap();
+
+        let bmo = BreadthMomentumOscillator::new(10, 5, 3).unwrap();
+        let _ = bmo.compute(&data).unwrap();
+
+        let po = ParticipationOscillator::new(10, 0.5, 3).unwrap();
+        let _ = po.compute(&data).unwrap();
+
+        let brc = BreadthRegimeClassifier::new(5, 15, 3).unwrap();
+        let _ = brc.compute(&data).unwrap();
+
+        let cp = CumulativeParticipation::new(0.5, 10).unwrap();
+        let _ = cp.compute(&data).unwrap();
     }
 }

@@ -80,4 +80,6 @@ pub use advanced::{
     CandleRangeAnalysis, TrendLineBreak, PriceStructure,
     GapFillAnalysis, InsideBarBreakout, OutsideBarReversal,
     PinBarScanner, EngulfingSetup, DojiReversal,
+    PriceActionSignal, VolumeSurgePattern, MomentumContinuationPattern,
+    TrendPausePattern, BreakoutRetest, SwingFailure,
 };

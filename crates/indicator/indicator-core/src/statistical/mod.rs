@@ -78,4 +78,11 @@ pub use advanced::{
     ExcessKurtosis, CoefficientsOfVariation, StatisticalMomentum,
     RollingMedian, CrossCovarianceProxy, LaggedAutocorrelationSum,
     MedianAbsoluteDeviationRobust, RobustZScoreIndicator, QuantileRatio,
+    // New statistical indicators
+    PriceNormality, PriceNormalityOutput,
+    ReturnSkewKurtosis, ReturnSkewKurtosisOutput,
+    DistributionShape, DistributionShapeOutput,
+    ExtremeValueIndicator, ExtremeValueIndicatorOutput,
+    RollingCorrelationTrend, RollingCorrelationTrendOutput,
+    StationarityIndicator, StationarityIndicatorOutput,
 };

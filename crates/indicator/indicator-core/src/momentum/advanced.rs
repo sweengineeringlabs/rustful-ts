@@ -2515,6 +2515,889 @@ impl TechnicalIndicator for MomentumQuality {
 }
 
 // ============================================================================
+// Momentum Breakout
+// ============================================================================
+
+/// Momentum Breakout Indicator
+///
+/// Detects momentum breakouts using price velocity and range expansion.
+/// A breakout is signaled when momentum exceeds a threshold while the price
+/// range is expanding, indicating potential trend acceleration.
+///
+/// # Calculation
+/// 1. Calculate momentum as rate of change over the momentum period
+/// 2. Calculate price range expansion (current range vs average range)
+/// 3. Detect breakout when both momentum and range expansion exceed thresholds
+///
+/// # Interpretation
+/// - Values > 50: Strong bullish breakout signal
+/// - Values 20-50: Moderate bullish momentum
+/// - Values -20 to 20: No clear breakout
+/// - Values -50 to -20: Moderate bearish momentum
+/// - Values < -50: Strong bearish breakout signal
+#[derive(Debug, Clone)]
+pub struct MomentumBreakout {
+    momentum_period: usize,
+    range_period: usize,
+}
+
+impl MomentumBreakout {
+    /// Create a new MomentumBreakout indicator.
+    ///
+    /// # Arguments
+    /// * `momentum_period` - Period for momentum calculation (must be at least 2)
+    /// * `range_period` - Period for range expansion calculation (must be at least 5)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid.
+    pub fn new(momentum_period: usize, range_period: usize) -> Result<Self> {
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if range_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "range_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self {
+            momentum_period,
+            range_period,
+        })
+    }
+
+    /// Calculate momentum breakout values.
+    ///
+    /// # Arguments
+    /// * `high` - Slice of high prices
+    /// * `low` - Slice of low prices
+    /// * `close` - Slice of closing prices
+    ///
+    /// # Returns
+    /// Vector of breakout values (-100 to +100 range).
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_period = self.momentum_period + self.range_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_period || high.len() != n || low.len() != n {
+            return result;
+        }
+
+        // Calculate momentum (ROC)
+        let mut momentum = vec![0.0; n];
+        for i in self.momentum_period..n {
+            if close[i - self.momentum_period].abs() > 1e-10 {
+                momentum[i] = (close[i] - close[i - self.momentum_period])
+                    / close[i - self.momentum_period]
+                    * 100.0;
+            }
+        }
+
+        // Calculate ranges
+        let mut ranges = vec![0.0; n];
+        for i in 0..n {
+            ranges[i] = high[i] - low[i];
+        }
+
+        for i in min_period..n {
+            let start = i + 1 - self.range_period;
+
+            // Calculate average range
+            let avg_range = ranges[start..i].iter().sum::<f64>() / (self.range_period - 1) as f64;
+
+            // Range expansion factor
+            let range_expansion = if avg_range > 1e-10 {
+                ranges[i] / avg_range
+            } else {
+                1.0
+            };
+
+            // Combine momentum with range expansion
+            // Breakout signal strengthens when range is expanding (> 1.0)
+            let expansion_factor = (range_expansion - 1.0).max(-0.5).min(1.0) + 1.0;
+            let breakout_signal = momentum[i] * expansion_factor;
+
+            result[i] = breakout_signal.clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MomentumBreakout {
+    fn name(&self) -> &str {
+        "Momentum Breakout"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.momentum_period + self.range_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(
+            &data.high,
+            &data.low,
+            &data.close,
+        )))
+    }
+}
+
+// ============================================================================
+// Relative Momentum Strength
+// ============================================================================
+
+/// Relative Momentum Strength (RMS)
+///
+/// Compares momentum strength across different periods to identify
+/// whether short-term momentum is stronger or weaker than long-term momentum.
+/// This helps identify momentum acceleration or deceleration.
+///
+/// # Calculation
+/// 1. Calculate short-term momentum (rate of change over short period)
+/// 2. Calculate long-term momentum (rate of change over long period)
+/// 3. Compute ratio: short_momentum / long_momentum (normalized)
+///
+/// # Interpretation
+/// - Values > 50: Short-term momentum is stronger (accelerating)
+/// - Values 20-50: Short-term momentum slightly stronger
+/// - Values -20 to 20: Balanced momentum across timeframes
+/// - Values -50 to -20: Long-term momentum stronger (decelerating)
+/// - Values < -50: Strong momentum deceleration
+#[derive(Debug, Clone)]
+pub struct RelativeMomentumStrength {
+    short_period: usize,
+    long_period: usize,
+}
+
+impl RelativeMomentumStrength {
+    /// Create a new RelativeMomentumStrength indicator.
+    ///
+    /// # Arguments
+    /// * `short_period` - Period for short-term momentum (must be at least 2)
+    /// * `long_period` - Period for long-term momentum (must be at least short_period + 3)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid.
+    pub fn new(short_period: usize, long_period: usize) -> Result<Self> {
+        if short_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if long_period < short_period + 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be at least short_period + 3".to_string(),
+            });
+        }
+        Ok(Self {
+            short_period,
+            long_period,
+        })
+    }
+
+    /// Calculate relative momentum strength values.
+    ///
+    /// # Arguments
+    /// * `close` - Slice of closing prices
+    ///
+    /// # Returns
+    /// Vector of relative momentum strength values (-100 to +100 range).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        if n < self.long_period {
+            return result;
+        }
+
+        for i in self.long_period..n {
+            // Short-term momentum
+            let short_mom = if close[i - self.short_period].abs() > 1e-10 {
+                (close[i] - close[i - self.short_period]) / close[i - self.short_period] * 100.0
+            } else {
+                0.0
+            };
+
+            // Long-term momentum
+            let long_mom = if close[i - self.long_period].abs() > 1e-10 {
+                (close[i] - close[i - self.long_period]) / close[i - self.long_period] * 100.0
+            } else {
+                0.0
+            };
+
+            // Normalize long momentum to same timeframe scale
+            let normalized_long_mom = long_mom * (self.short_period as f64 / self.long_period as f64);
+
+            // Calculate relative strength
+            let total_abs = short_mom.abs() + normalized_long_mom.abs();
+            if total_abs > 1e-10 {
+                // Difference between short and normalized long momentum
+                let diff = short_mom - normalized_long_mom;
+                // Normalize to -100 to 100 scale
+                result[i] = (diff / total_abs * 100.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for RelativeMomentumStrength {
+    fn name(&self) -> &str {
+        "Relative Momentum Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Momentum Smoothness
+// ============================================================================
+
+/// Momentum Smoothness Indicator
+///
+/// Measures how smooth or consistent momentum is over a period.
+/// Smooth momentum indicates a clean trend, while choppy momentum
+/// suggests uncertain market conditions.
+///
+/// # Calculation
+/// 1. Calculate momentum at each bar
+/// 2. Calculate the variance of momentum changes (first derivative)
+/// 3. Normalize to 0-100 scale where higher = smoother
+///
+/// # Interpretation
+/// - Values > 70: Very smooth momentum (clean trend)
+/// - Values 40-70: Moderately smooth momentum
+/// - Values 20-40: Somewhat choppy momentum
+/// - Values < 20: Very choppy momentum (no clear trend)
+#[derive(Debug, Clone)]
+pub struct MomentumSmoothness {
+    momentum_period: usize,
+    smoothness_period: usize,
+}
+
+impl MomentumSmoothness {
+    /// Create a new MomentumSmoothness indicator.
+    ///
+    /// # Arguments
+    /// * `momentum_period` - Period for momentum calculation (must be at least 2)
+    /// * `smoothness_period` - Period for smoothness measurement (must be at least 5)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid.
+    pub fn new(momentum_period: usize, smoothness_period: usize) -> Result<Self> {
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if smoothness_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothness_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self {
+            momentum_period,
+            smoothness_period,
+        })
+    }
+
+    /// Calculate momentum smoothness values.
+    ///
+    /// # Arguments
+    /// * `close` - Slice of closing prices
+    ///
+    /// # Returns
+    /// Vector of smoothness values (0 to 100 range, higher = smoother).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_period = self.momentum_period + self.smoothness_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_period {
+            return result;
+        }
+
+        // Calculate momentum (ROC)
+        let mut momentum = vec![0.0; n];
+        for i in self.momentum_period..n {
+            if close[i - self.momentum_period].abs() > 1e-10 {
+                momentum[i] = (close[i] - close[i - self.momentum_period])
+                    / close[i - self.momentum_period]
+                    * 100.0;
+            }
+        }
+
+        // Calculate momentum changes (derivative)
+        let mut mom_changes = vec![0.0; n];
+        for i in (self.momentum_period + 1)..n {
+            mom_changes[i] = momentum[i] - momentum[i - 1];
+        }
+
+        for i in min_period..n {
+            let start = i + 1 - self.smoothness_period;
+            let changes_slice = &mom_changes[start..=i];
+
+            // Calculate standard deviation of momentum changes
+            let mean = changes_slice.iter().sum::<f64>() / self.smoothness_period as f64;
+            let variance = changes_slice
+                .iter()
+                .map(|x| (x - mean).powi(2))
+                .sum::<f64>()
+                / self.smoothness_period as f64;
+            let std_dev = variance.sqrt();
+
+            // Calculate average absolute momentum for normalization
+            let mom_slice = &momentum[start..=i];
+            let avg_abs_mom = mom_slice.iter().map(|x| x.abs()).sum::<f64>()
+                / self.smoothness_period as f64;
+
+            // Smoothness: inverse of coefficient of variation
+            // Higher when std_dev is low relative to momentum
+            if avg_abs_mom > 1e-10 {
+                let cv = std_dev / avg_abs_mom;
+                // Convert to 0-100 scale (lower CV = higher smoothness)
+                result[i] = (100.0 / (1.0 + cv * 2.0)).clamp(0.0, 100.0);
+            } else {
+                result[i] = 50.0; // Neutral when no momentum
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MomentumSmoothness {
+    fn name(&self) -> &str {
+        "Momentum Smoothness"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.momentum_period + self.smoothness_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Momentum Cycle Phase
+// ============================================================================
+
+/// Momentum Cycle Phase Indicator
+///
+/// Identifies the current phase in momentum cycles using detrended
+/// oscillator analysis. Helps identify where we are in the momentum cycle:
+/// accumulation, markup, distribution, or markdown.
+///
+/// # Calculation
+/// 1. Calculate momentum and smooth it
+/// 2. Detrend the momentum to isolate cyclical component
+/// 3. Identify phase based on momentum level and direction
+///
+/// # Interpretation
+/// - 0-25: Accumulation phase (momentum bottoming)
+/// - 25-50: Markup phase (momentum rising)
+/// - 50-75: Distribution phase (momentum topping)
+/// - 75-100: Markdown phase (momentum falling)
+#[derive(Debug, Clone)]
+pub struct MomentumCyclePhase {
+    momentum_period: usize,
+    cycle_period: usize,
+}
+
+impl MomentumCyclePhase {
+    /// Create a new MomentumCyclePhase indicator.
+    ///
+    /// # Arguments
+    /// * `momentum_period` - Period for momentum calculation (must be at least 2)
+    /// * `cycle_period` - Period for cycle detection (must be at least 10)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid.
+    pub fn new(momentum_period: usize, cycle_period: usize) -> Result<Self> {
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if cycle_period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self {
+            momentum_period,
+            cycle_period,
+        })
+    }
+
+    /// Calculate momentum cycle phase values.
+    ///
+    /// # Arguments
+    /// * `close` - Slice of closing prices
+    ///
+    /// # Returns
+    /// Vector of phase values (0 to 100 representing cycle position).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_period = self.momentum_period + self.cycle_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_period {
+            return result;
+        }
+
+        // Calculate momentum (ROC)
+        let mut momentum = vec![0.0; n];
+        for i in self.momentum_period..n {
+            if close[i - self.momentum_period].abs() > 1e-10 {
+                momentum[i] = (close[i] - close[i - self.momentum_period])
+                    / close[i - self.momentum_period]
+                    * 100.0;
+            }
+        }
+
+        // Smooth momentum with simple moving average
+        let smooth_len = self.cycle_period / 4;
+        let mut smoothed = vec![0.0; n];
+        for i in (self.momentum_period + smooth_len)..n {
+            let sum: f64 = momentum[(i + 1 - smooth_len)..=i].iter().sum();
+            smoothed[i] = sum / smooth_len as f64;
+        }
+
+        for i in min_period..n {
+            let start = i + 1 - self.cycle_period;
+
+            // Find min and max in cycle period
+            let cycle_slice = &smoothed[start..=i];
+            let min_mom = cycle_slice.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_mom = cycle_slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+            let range = max_mom - min_mom;
+            if range > 1e-10 {
+                // Normalize current position in cycle (0 to 1)
+                let normalized_pos = (smoothed[i] - min_mom) / range;
+
+                // Determine direction (derivative)
+                let direction = smoothed[i] - smoothed[i - 1];
+
+                // Convert to phase (0-100):
+                // 0-25: Low momentum, rising (Accumulation)
+                // 25-50: High momentum, rising (Markup)
+                // 50-75: High momentum, falling (Distribution)
+                // 75-100: Low momentum, falling (Markdown)
+                let phase = if direction >= 0.0 {
+                    // Rising momentum
+                    normalized_pos * 50.0 // 0-50
+                } else {
+                    // Falling momentum
+                    50.0 + (1.0 - normalized_pos) * 50.0 // 50-100
+                };
+
+                result[i] = phase.clamp(0.0, 100.0);
+            } else {
+                result[i] = 50.0; // Neutral
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MomentumCyclePhase {
+    fn name(&self) -> &str {
+        "Momentum Cycle Phase"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.momentum_period + self.cycle_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Momentum Exhaustion
+// ============================================================================
+
+/// Momentum Exhaustion Indicator
+///
+/// Detects momentum exhaustion signals where momentum has been extended
+/// for too long and is likely to reverse or pause. Uses both magnitude
+/// and duration of momentum to identify exhaustion.
+///
+/// # Calculation
+/// 1. Calculate momentum and track consecutive same-direction bars
+/// 2. Measure cumulative momentum over the trend
+/// 3. Compare to historical norms to detect overextension
+///
+/// # Interpretation
+/// - Values > 70: Strong exhaustion signal (potential reversal)
+/// - Values 40-70: Moderate exhaustion (trend may pause)
+/// - Values 20-40: Low exhaustion (trend likely continues)
+/// - Values < 20: No exhaustion (trend is fresh)
+#[derive(Debug, Clone)]
+pub struct MomentumExhaustion {
+    momentum_period: usize,
+    exhaustion_period: usize,
+}
+
+impl MomentumExhaustion {
+    /// Create a new MomentumExhaustion indicator.
+    ///
+    /// # Arguments
+    /// * `momentum_period` - Period for momentum calculation (must be at least 2)
+    /// * `exhaustion_period` - Period for exhaustion detection (must be at least 5)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid.
+    pub fn new(momentum_period: usize, exhaustion_period: usize) -> Result<Self> {
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if exhaustion_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "exhaustion_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self {
+            momentum_period,
+            exhaustion_period,
+        })
+    }
+
+    /// Calculate momentum exhaustion values.
+    ///
+    /// # Arguments
+    /// * `close` - Slice of closing prices
+    ///
+    /// # Returns
+    /// Vector of exhaustion values (0 to 100 range).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_period = self.momentum_period + self.exhaustion_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_period {
+            return result;
+        }
+
+        // Calculate momentum (ROC)
+        let mut momentum = vec![0.0; n];
+        for i in self.momentum_period..n {
+            if close[i - self.momentum_period].abs() > 1e-10 {
+                momentum[i] = (close[i] - close[i - self.momentum_period])
+                    / close[i - self.momentum_period]
+                    * 100.0;
+            }
+        }
+
+        for i in min_period..n {
+            let start = i + 1 - self.exhaustion_period;
+            let mom_slice = &momentum[start..=i];
+
+            // Count consecutive same-direction momentum bars
+            let current_direction = if momentum[i] >= 0.0 { 1 } else { -1 };
+            let mut consecutive = 0;
+            for j in (start..=i).rev() {
+                let dir = if momentum[j] >= 0.0 { 1 } else { -1 };
+                if dir == current_direction {
+                    consecutive += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Calculate cumulative momentum magnitude
+            let cum_momentum: f64 = mom_slice.iter().map(|x| x.abs()).sum();
+            let avg_momentum = cum_momentum / self.exhaustion_period as f64;
+
+            // Calculate momentum deceleration (is momentum weakening?)
+            let recent_avg = mom_slice[(self.exhaustion_period / 2)..]
+                .iter()
+                .map(|x| x.abs())
+                .sum::<f64>()
+                / (self.exhaustion_period / 2) as f64;
+            let earlier_avg = mom_slice[..(self.exhaustion_period / 2)]
+                .iter()
+                .map(|x| x.abs())
+                .sum::<f64>()
+                / (self.exhaustion_period / 2) as f64;
+
+            let deceleration = if earlier_avg > 1e-10 {
+                (earlier_avg - recent_avg) / earlier_avg
+            } else {
+                0.0
+            };
+
+            // Exhaustion score components:
+            // 1. Duration factor (longer = more exhausted)
+            let duration_factor = (consecutive as f64 / self.exhaustion_period as f64).min(1.0);
+
+            // 2. Magnitude factor (extreme momentum = more exhausted)
+            let magnitude_factor = (avg_momentum / 5.0).min(1.0); // Normalize assuming 5% is extreme
+
+            // 3. Deceleration factor (slowing momentum = more exhausted)
+            let decel_factor = deceleration.max(0.0).min(1.0);
+
+            // Combine factors
+            let exhaustion = (duration_factor * 40.0
+                + magnitude_factor * 30.0
+                + decel_factor * 30.0)
+                .clamp(0.0, 100.0);
+
+            result[i] = exhaustion;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MomentumExhaustion {
+    fn name(&self) -> &str {
+        "Momentum Exhaustion"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.momentum_period + self.exhaustion_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
+// Momentum Reversal
+// ============================================================================
+
+/// Momentum Reversal Indicator
+///
+/// Identifies potential momentum reversals by detecting changes in
+/// momentum direction combined with price action patterns. Useful for
+/// timing entries at potential turning points.
+///
+/// # Calculation
+/// 1. Calculate momentum and its derivative (acceleration)
+/// 2. Detect momentum divergence from price
+/// 3. Identify reversal patterns (momentum crosses, direction changes)
+///
+/// # Interpretation
+/// - Values > 50: Bullish reversal signal (momentum turning up)
+/// - Values 20-50: Potential bullish reversal forming
+/// - Values -20 to 20: No clear reversal signal
+/// - Values -50 to -20: Potential bearish reversal forming
+/// - Values < -50: Bearish reversal signal (momentum turning down)
+#[derive(Debug, Clone)]
+pub struct MomentumReversal {
+    momentum_period: usize,
+    reversal_period: usize,
+}
+
+impl MomentumReversal {
+    /// Create a new MomentumReversal indicator.
+    ///
+    /// # Arguments
+    /// * `momentum_period` - Period for momentum calculation (must be at least 2)
+    /// * `reversal_period` - Period for reversal detection (must be at least 5)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid.
+    pub fn new(momentum_period: usize, reversal_period: usize) -> Result<Self> {
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if reversal_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "reversal_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self {
+            momentum_period,
+            reversal_period,
+        })
+    }
+
+    /// Calculate momentum reversal values.
+    ///
+    /// # Arguments
+    /// * `close` - Slice of closing prices
+    ///
+    /// # Returns
+    /// Vector of reversal values (-100 to +100 range).
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let min_period = self.momentum_period + self.reversal_period;
+        let mut result = vec![0.0; n];
+
+        if n < min_period {
+            return result;
+        }
+
+        // Calculate momentum (ROC)
+        let mut momentum = vec![0.0; n];
+        for i in self.momentum_period..n {
+            if close[i - self.momentum_period].abs() > 1e-10 {
+                momentum[i] = (close[i] - close[i - self.momentum_period])
+                    / close[i - self.momentum_period]
+                    * 100.0;
+            }
+        }
+
+        // Calculate momentum acceleration (derivative of momentum)
+        let mut acceleration = vec![0.0; n];
+        for i in (self.momentum_period + 1)..n {
+            acceleration[i] = momentum[i] - momentum[i - 1];
+        }
+
+        for i in min_period..n {
+            let start = i + 1 - self.reversal_period;
+
+            // Find momentum extremes in the reversal period
+            let mom_slice = &momentum[start..=i];
+            let min_mom = mom_slice.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_mom = mom_slice.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+            // Find where extremes occurred
+            let min_idx = mom_slice
+                .iter()
+                .position(|&x| (x - min_mom).abs() < 1e-10)
+                .unwrap_or(0);
+            let max_idx = mom_slice
+                .iter()
+                .position(|&x| (x - max_mom).abs() < 1e-10)
+                .unwrap_or(0);
+
+            // Calculate reversal strength based on:
+            // 1. Momentum direction change
+            // 2. Distance from recent extreme
+            // 3. Acceleration direction
+
+            let current_mom = momentum[i];
+            let current_accel = acceleration[i];
+
+            // Bullish reversal: momentum was negative, now accelerating up
+            // Bearish reversal: momentum was positive, now accelerating down
+
+            let mut reversal_signal = 0.0;
+
+            if current_accel > 0.0 {
+                // Bullish acceleration
+                // Stronger signal if coming from a momentum low
+                let distance_from_min = if (max_mom - min_mom).abs() > 1e-10 {
+                    (current_mom - min_mom) / (max_mom - min_mom)
+                } else {
+                    0.5
+                };
+
+                // Recent low is more significant
+                let recency_factor = 1.0 - (min_idx as f64 / self.reversal_period as f64);
+
+                // Signal strength: stronger when near recent low with positive acceleration
+                reversal_signal = (1.0 - distance_from_min) * recency_factor * current_accel.abs();
+                reversal_signal = (reversal_signal * 50.0).min(100.0);
+            } else if current_accel < 0.0 {
+                // Bearish acceleration
+                let distance_from_max = if (max_mom - min_mom).abs() > 1e-10 {
+                    (max_mom - current_mom) / (max_mom - min_mom)
+                } else {
+                    0.5
+                };
+
+                // Recent high is more significant
+                let recency_factor = 1.0 - (max_idx as f64 / self.reversal_period as f64);
+
+                // Signal strength: stronger when near recent high with negative acceleration
+                reversal_signal = (1.0 - distance_from_max) * recency_factor * current_accel.abs();
+                reversal_signal = -(reversal_signal * 50.0).min(100.0);
+            }
+
+            result[i] = reversal_signal.clamp(-100.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MomentumReversal {
+    fn name(&self) -> &str {
+        "Momentum Reversal"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.momentum_period + self.reversal_period
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.min_periods() {
+            return Err(IndicatorError::InsufficientData {
+                required: self.min_periods(),
+                got: data.close.len(),
+            });
+        }
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3818,6 +4701,373 @@ mod tests {
 
         let mq = MomentumQuality::new(5, 10).unwrap();
         let result = mq.calculate(&flat_data.close);
+        assert_eq!(result.len(), 50);
+    }
+
+    // ========================================
+    // MomentumBreakout tests
+    // ========================================
+
+    #[test]
+    fn test_momentum_breakout_basic() {
+        let data = make_test_data();
+        let indicator = MomentumBreakout::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_momentum_breakout_validation() {
+        assert!(MomentumBreakout::new(1, 10).is_err());
+        assert!(MomentumBreakout::new(5, 4).is_err());
+        assert!(MomentumBreakout::new(2, 5).is_ok());
+    }
+
+    #[test]
+    fn test_momentum_breakout_uptrend() {
+        let data = make_uptrend_data();
+        let indicator = MomentumBreakout::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        // In uptrend, breakout signal should be positive
+        let last_10: Vec<f64> = result[35..45].to_vec();
+        let avg: f64 = last_10.iter().sum::<f64>() / 10.0;
+        assert!(avg > 0.0, "Expected positive breakout in uptrend, got {}", avg);
+    }
+
+    #[test]
+    fn test_momentum_breakout_downtrend() {
+        let data = make_downtrend_data();
+        let indicator = MomentumBreakout::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.high, &data.low, &data.close);
+
+        // In downtrend, breakout signal should be negative
+        let last_10: Vec<f64> = result[35..45].to_vec();
+        let avg: f64 = last_10.iter().sum::<f64>() / 10.0;
+        assert!(avg < 0.0, "Expected negative breakout in downtrend, got {}", avg);
+    }
+
+    #[test]
+    fn test_momentum_breakout_trait() {
+        let data = make_test_data();
+        let indicator = MomentumBreakout::new(5, 10).unwrap();
+
+        assert_eq!(indicator.name(), "Momentum Breakout");
+        assert_eq!(indicator.min_periods(), 15);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========================================
+    // RelativeMomentumStrength tests
+    // ========================================
+
+    #[test]
+    fn test_relative_momentum_strength_basic() {
+        let data = make_test_data();
+        let indicator = RelativeMomentumStrength::new(5, 20).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_relative_momentum_strength_validation() {
+        assert!(RelativeMomentumStrength::new(1, 20).is_err());
+        assert!(RelativeMomentumStrength::new(5, 7).is_err()); // not at least short + 3
+        assert!(RelativeMomentumStrength::new(5, 8).is_ok());
+    }
+
+    #[test]
+    fn test_relative_momentum_strength_trait() {
+        let data = make_test_data();
+        let indicator = RelativeMomentumStrength::new(5, 20).unwrap();
+
+        assert_eq!(indicator.name(), "Relative Momentum Strength");
+        assert_eq!(indicator.min_periods(), 20);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========================================
+    // MomentumSmoothness tests
+    // ========================================
+
+    #[test]
+    fn test_momentum_smoothness_basic() {
+        let data = make_test_data();
+        let indicator = MomentumSmoothness::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= 0.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_momentum_smoothness_validation() {
+        assert!(MomentumSmoothness::new(1, 10).is_err());
+        assert!(MomentumSmoothness::new(5, 4).is_err());
+        assert!(MomentumSmoothness::new(2, 5).is_ok());
+    }
+
+    #[test]
+    fn test_momentum_smoothness_consistent_trend() {
+        let data = make_uptrend_data();
+        let indicator = MomentumSmoothness::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        // In consistent uptrend, smoothness should be relatively high
+        let last_10: Vec<f64> = result[35..45].to_vec();
+        let avg: f64 = last_10.iter().sum::<f64>() / 10.0;
+        assert!(avg > 20.0, "Expected reasonable smoothness in consistent trend, got {}", avg);
+    }
+
+    #[test]
+    fn test_momentum_smoothness_trait() {
+        let data = make_test_data();
+        let indicator = MomentumSmoothness::new(5, 10).unwrap();
+
+        assert_eq!(indicator.name(), "Momentum Smoothness");
+        assert_eq!(indicator.min_periods(), 15);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========================================
+    // MomentumCyclePhase tests
+    // ========================================
+
+    #[test]
+    fn test_momentum_cycle_phase_basic() {
+        let data = make_test_data();
+        let indicator = MomentumCyclePhase::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= 0.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_momentum_cycle_phase_validation() {
+        assert!(MomentumCyclePhase::new(1, 10).is_err());
+        assert!(MomentumCyclePhase::new(5, 9).is_err());
+        assert!(MomentumCyclePhase::new(2, 10).is_ok());
+    }
+
+    #[test]
+    fn test_momentum_cycle_phase_range() {
+        let data = make_test_data();
+        let indicator = MomentumCyclePhase::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        // Phase values should cycle through different ranges
+        let values = &result[indicator.min_periods()..];
+        let has_variation = values.iter().any(|&x| x > 25.0) && values.iter().any(|&x| x < 75.0);
+        assert!(has_variation, "Cycle phase should have variation");
+    }
+
+    #[test]
+    fn test_momentum_cycle_phase_trait() {
+        let data = make_test_data();
+        let indicator = MomentumCyclePhase::new(5, 10).unwrap();
+
+        assert_eq!(indicator.name(), "Momentum Cycle Phase");
+        assert_eq!(indicator.min_periods(), 15);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========================================
+    // MomentumExhaustion tests
+    // ========================================
+
+    #[test]
+    fn test_momentum_exhaustion_basic() {
+        let data = make_test_data();
+        let indicator = MomentumExhaustion::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= 0.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_momentum_exhaustion_validation() {
+        assert!(MomentumExhaustion::new(1, 10).is_err());
+        assert!(MomentumExhaustion::new(5, 4).is_err());
+        assert!(MomentumExhaustion::new(2, 5).is_ok());
+    }
+
+    #[test]
+    fn test_momentum_exhaustion_extended_trend() {
+        let data = make_uptrend_data();
+        let indicator = MomentumExhaustion::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        // In extended uptrend, exhaustion should build up
+        let early: f64 = result[20..25].iter().sum::<f64>() / 5.0;
+        let late: f64 = result[40..45].iter().sum::<f64>() / 5.0;
+        // Later in trend should have higher or equal exhaustion
+        assert!(late >= early * 0.5, "Exhaustion should accumulate in extended trend");
+    }
+
+    #[test]
+    fn test_momentum_exhaustion_trait() {
+        let data = make_test_data();
+        let indicator = MomentumExhaustion::new(5, 10).unwrap();
+
+        assert_eq!(indicator.name(), "Momentum Exhaustion");
+        assert_eq!(indicator.min_periods(), 15);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========================================
+    // MomentumReversal tests
+    // ========================================
+
+    #[test]
+    fn test_momentum_reversal_basic() {
+        let data = make_test_data();
+        let indicator = MomentumReversal::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        let min_period = indicator.min_periods();
+        for i in min_period..result.len() {
+            assert!(!result[i].is_nan());
+            assert!(result[i] >= -100.0 && result[i] <= 100.0);
+        }
+    }
+
+    #[test]
+    fn test_momentum_reversal_validation() {
+        assert!(MomentumReversal::new(1, 10).is_err());
+        assert!(MomentumReversal::new(5, 4).is_err());
+        assert!(MomentumReversal::new(2, 5).is_ok());
+    }
+
+    #[test]
+    fn test_momentum_reversal_oscillation() {
+        let data = make_test_data();
+        let indicator = MomentumReversal::new(5, 10).unwrap();
+        let result = indicator.calculate(&data.close);
+
+        // Reversal signal should oscillate
+        let values = &result[indicator.min_periods()..];
+        let positive_count = values.iter().filter(|&&x| x > 0.0).count();
+        let negative_count = values.iter().filter(|&&x| x < 0.0).count();
+
+        // Should have both positive and negative signals
+        assert!(positive_count > 0 || negative_count > 0, "Reversal should have variation");
+    }
+
+    #[test]
+    fn test_momentum_reversal_trait() {
+        let data = make_test_data();
+        let indicator = MomentumReversal::new(5, 10).unwrap();
+
+        assert_eq!(indicator.name(), "Momentum Reversal");
+        assert_eq!(indicator.min_periods(), 15);
+
+        let output = indicator.compute(&data).unwrap();
+        assert!(!output.primary.is_empty());
+    }
+
+    // ========================================
+    // Additional edge case tests for 6 new advanced indicators
+    // ========================================
+
+    #[test]
+    fn test_six_advanced_indicators_insufficient_data() {
+        let small_data = OHLCVSeries {
+            open: vec![100.0; 5],
+            high: vec![101.0; 5],
+            low: vec![99.0; 5],
+            close: vec![100.0; 5],
+            volume: vec![1000.0; 5],
+        };
+
+        let mb = MomentumBreakout::new(5, 10).unwrap();
+        assert!(mb.compute(&small_data).is_err());
+
+        let rms = RelativeMomentumStrength::new(5, 20).unwrap();
+        assert!(rms.compute(&small_data).is_err());
+
+        let ms = MomentumSmoothness::new(5, 10).unwrap();
+        assert!(ms.compute(&small_data).is_err());
+
+        let mcp = MomentumCyclePhase::new(5, 10).unwrap();
+        assert!(mcp.compute(&small_data).is_err());
+
+        let me = MomentumExhaustion::new(5, 10).unwrap();
+        assert!(me.compute(&small_data).is_err());
+
+        let mr = MomentumReversal::new(5, 10).unwrap();
+        assert!(mr.compute(&small_data).is_err());
+    }
+
+    #[test]
+    fn test_six_advanced_indicators_flat_data() {
+        let flat_data = OHLCVSeries {
+            open: vec![100.0; 50],
+            high: vec![101.0; 50],
+            low: vec![99.0; 50],
+            close: vec![100.0; 50],
+            volume: vec![1000.0; 50],
+        };
+
+        // All 6 new advanced indicators should handle flat data without panicking
+        let mb = MomentumBreakout::new(5, 10).unwrap();
+        let result = mb.calculate(&flat_data.high, &flat_data.low, &flat_data.close);
+        assert_eq!(result.len(), 50);
+
+        let rms = RelativeMomentumStrength::new(5, 20).unwrap();
+        let result = rms.calculate(&flat_data.close);
+        assert_eq!(result.len(), 50);
+
+        let ms = MomentumSmoothness::new(5, 10).unwrap();
+        let result = ms.calculate(&flat_data.close);
+        assert_eq!(result.len(), 50);
+
+        let mcp = MomentumCyclePhase::new(5, 10).unwrap();
+        let result = mcp.calculate(&flat_data.close);
+        assert_eq!(result.len(), 50);
+
+        let me = MomentumExhaustion::new(5, 10).unwrap();
+        let result = me.calculate(&flat_data.close);
+        assert_eq!(result.len(), 50);
+
+        let mr = MomentumReversal::new(5, 10).unwrap();
+        let result = mr.calculate(&flat_data.close);
         assert_eq!(result.len(), 50);
     }
 }

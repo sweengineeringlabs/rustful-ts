@@ -4005,6 +4005,903 @@ impl TechnicalIndicator for VolumeQuality {
     }
 }
 
+// ============================================================================
+// 6 NEW Volume Indicators - VolumeClimaxIndex, InstitutionalVolumeProxy,
+// VolumeAccelerationIndex, SmartMoneyIndicator, VolumeEfficiencyIndex,
+// VolumeDivergenceDetector
+// ============================================================================
+
+/// Volume Climax Index - Measures volume climax events (exhaustion)
+///
+/// Detects extreme volume events that often signal trend exhaustion or reversal.
+/// Combines volume z-score with price range analysis to identify climax conditions.
+/// A climax typically occurs when volume spikes significantly above normal levels
+/// during a trend, potentially indicating exhaustion of buying/selling pressure.
+#[derive(Debug, Clone)]
+pub struct VolumeClimaxIndex {
+    period: usize,
+    z_threshold: f64,
+}
+
+impl VolumeClimaxIndex {
+    /// Create a new VolumeClimaxIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for volume analysis (minimum 10)
+    /// * `z_threshold` - Z-score threshold for climax detection (minimum 1.5)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, z_threshold: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if z_threshold < 1.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "z_threshold".to_string(),
+                reason: "must be at least 1.5".to_string(),
+            });
+        }
+        Ok(Self { period, z_threshold })
+    }
+
+    /// Create with default z-score threshold (2.0)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 2.0)
+    }
+
+    /// Calculate volume climax index
+    ///
+    /// Returns (climax_index, exhaustion_signal, climax_type):
+    /// - climax_index: Index value (0-100) indicating climax intensity
+    /// - exhaustion_signal: +1 for buying exhaustion, -1 for selling exhaustion, 0 for none
+    /// - climax_type: 1.0 for bullish climax, -1.0 for bearish climax, 0.0 for no climax
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut climax_index = vec![0.0; n];
+        let mut exhaustion_signal = vec![0.0; n];
+        let mut climax_type = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (climax_index, exhaustion_signal, climax_type);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Calculate volume statistics
+            let vol_window = &volume[start..i];
+            let vol_mean: f64 = vol_window.iter().sum::<f64>() / self.period as f64;
+            let vol_variance: f64 = vol_window.iter()
+                .map(|v| (v - vol_mean).powi(2))
+                .sum::<f64>() / self.period as f64;
+            let vol_std = vol_variance.sqrt();
+
+            // Calculate volume z-score
+            let z_score = if vol_std > 1e-10 {
+                (volume[i] - vol_mean) / vol_std
+            } else {
+                0.0
+            };
+
+            // Calculate price range expansion
+            let avg_range: f64 = (start..i)
+                .map(|j| high[j] - low[j])
+                .sum::<f64>() / self.period as f64;
+            let current_range = high[i] - low[i];
+            let range_expansion = if avg_range > 1e-10 {
+                current_range / avg_range
+            } else {
+                1.0
+            };
+
+            // Calculate climax index
+            // Higher z-score and range expansion = more intense climax
+            let raw_index = (z_score.abs() * 30.0 + range_expansion * 20.0).min(100.0);
+            climax_index[i] = raw_index.max(0.0);
+
+            // Detect climax conditions
+            if z_score >= self.z_threshold {
+                let price_direction = if i > 0 { close[i] - close[i - 1] } else { 0.0 };
+
+                if price_direction > 0.0 {
+                    // High volume on up move = potential buying climax (exhaustion)
+                    exhaustion_signal[i] = 1.0;
+                    climax_type[i] = 1.0;
+                } else if price_direction < 0.0 {
+                    // High volume on down move = potential selling climax (exhaustion)
+                    exhaustion_signal[i] = -1.0;
+                    climax_type[i] = -1.0;
+                }
+            }
+        }
+
+        (climax_index, exhaustion_signal, climax_type)
+    }
+}
+
+impl TechnicalIndicator for VolumeClimaxIndex {
+    fn name(&self) -> &str {
+        "Volume Climax Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (index, signal, climax_type) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::triple(index, signal, climax_type))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // climax_index, exhaustion_signal, climax_type
+    }
+}
+
+/// Institutional Volume Proxy - Estimates institutional activity from volume patterns
+///
+/// Analyzes volume patterns to estimate the proportion of institutional trading.
+/// Institutions typically trade in larger blocks with more efficient price impact,
+/// often accumulating during weak periods and distributing during strong periods.
+/// Uses volume clustering, price efficiency, and timing patterns as proxies.
+#[derive(Debug, Clone)]
+pub struct InstitutionalVolumeProxy {
+    period: usize,
+    block_threshold: f64,
+}
+
+impl InstitutionalVolumeProxy {
+    /// Create a new InstitutionalVolumeProxy indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    /// * `block_threshold` - Multiple of average volume to consider as block trade (minimum 1.5)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, block_threshold: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if block_threshold < 1.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "block_threshold".to_string(),
+                reason: "must be at least 1.5".to_string(),
+            });
+        }
+        Ok(Self { period, block_threshold })
+    }
+
+    /// Create with default block threshold (2.0)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 2.0)
+    }
+
+    /// Calculate institutional volume proxy
+    ///
+    /// Returns (institutional_pct, activity_signal, accumulation_index):
+    /// - institutional_pct: Estimated percentage of institutional volume (0-100)
+    /// - activity_signal: +1 for institutional buying, -1 for selling, 0 for neutral
+    /// - accumulation_index: Cumulative institutional accumulation/distribution score
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut institutional_pct = vec![50.0; n];
+        let mut activity_signal = vec![0.0; n];
+        let mut accumulation_index = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (institutional_pct, activity_signal, accumulation_index);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Calculate average volume
+            let avg_volume: f64 = volume[start..i].iter().sum::<f64>() / self.period as f64;
+
+            // Identify block trades (large volume relative to average)
+            let mut block_volume = 0.0;
+            let mut efficient_volume = 0.0;
+            let mut total_volume = 0.0;
+
+            for j in (start + 1)..=i {
+                let bar_range = high[j] - low[j];
+                let price_move = (close[j] - close[j - 1]).abs();
+
+                // Price efficiency: how much of the range resulted in net movement
+                let efficiency = if bar_range > 1e-10 {
+                    price_move / bar_range
+                } else {
+                    0.0
+                };
+
+                total_volume += volume[j];
+
+                // Block trade detection
+                if volume[j] >= avg_volume * self.block_threshold {
+                    block_volume += volume[j];
+                }
+
+                // Efficient volume (institutional characteristic)
+                if efficiency > 0.5 && volume[j] > avg_volume * 0.8 {
+                    efficient_volume += volume[j];
+                }
+            }
+
+            // Estimate institutional percentage
+            if total_volume > 1e-10 {
+                // Combine block trade ratio and efficiency ratio
+                let block_ratio = block_volume / total_volume;
+                let efficiency_ratio = efficient_volume / total_volume;
+
+                // Weight: 60% block trades, 40% efficient trades
+                let raw_pct = (block_ratio * 60.0 + efficiency_ratio * 40.0);
+                institutional_pct[i] = raw_pct.clamp(0.0, 100.0);
+            }
+
+            // Determine activity direction
+            let price_trend = close[i] - close[start];
+            if institutional_pct[i] > 60.0 {
+                if price_trend > 0.0 {
+                    activity_signal[i] = 1.0; // Institutional buying
+                } else if price_trend < 0.0 {
+                    activity_signal[i] = -1.0; // Institutional selling
+                }
+            }
+
+            // Calculate accumulation index
+            let clv = if high[i] - low[i] > 1e-10 {
+                ((close[i] - low[i]) - (high[i] - close[i])) / (high[i] - low[i])
+            } else {
+                0.0
+            };
+
+            let institutional_contribution = clv * (institutional_pct[i] / 100.0) * volume[i];
+
+            if i == self.period {
+                accumulation_index[i] = institutional_contribution;
+            } else {
+                accumulation_index[i] = accumulation_index[i - 1] + institutional_contribution;
+            }
+        }
+
+        (institutional_pct, activity_signal, accumulation_index)
+    }
+}
+
+impl TechnicalIndicator for InstitutionalVolumeProxy {
+    fn name(&self) -> &str {
+        "Institutional Volume Proxy"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (pct, signal, accum) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::triple(pct, signal, accum))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // institutional_pct, activity_signal, accumulation_index
+    }
+}
+
+/// Volume Acceleration Index - Rate of change in volume momentum
+///
+/// Measures the acceleration (second derivative) of volume changes,
+/// helping identify when volume momentum is increasing or decreasing.
+/// Rising acceleration suggests strengthening volume trends,
+/// falling acceleration may signal weakening conviction.
+#[derive(Debug, Clone)]
+pub struct VolumeAccelerationIndex {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeAccelerationIndex {
+    /// Create a new VolumeAccelerationIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for momentum calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Create with default smoothing (3)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 3)
+    }
+
+    /// Calculate volume acceleration index
+    ///
+    /// Returns (acceleration, momentum, acceleration_signal):
+    /// - acceleration: Rate of change in volume momentum (-100 to 100)
+    /// - momentum: First derivative of volume (smoothed)
+    /// - acceleration_signal: +1 for increasing momentum, -1 for decreasing, 0 for stable
+    pub fn calculate(&self, volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = volume.len();
+        let mut acceleration = vec![0.0; n];
+        let mut momentum = vec![0.0; n];
+        let mut acceleration_signal = vec![0.0; n];
+
+        if n < self.period * 2 + 1 {
+            return (acceleration, momentum, acceleration_signal);
+        }
+
+        // Calculate volume momentum (first derivative)
+        let mut raw_momentum = vec![0.0; n];
+        for i in self.period..n {
+            let prev_avg: f64 = volume[i - self.period..i - self.period / 2].iter().sum::<f64>()
+                / (self.period / 2) as f64;
+            let curr_avg: f64 = volume[i - self.period / 2..=i].iter().sum::<f64>()
+                / (self.period / 2 + 1) as f64;
+
+            if prev_avg > 1e-10 {
+                raw_momentum[i] = ((curr_avg - prev_avg) / prev_avg) * 100.0;
+            }
+        }
+
+        // Calculate acceleration (second derivative)
+        let mut raw_acceleration = vec![0.0; n];
+        for i in (self.period + 1)..n {
+            raw_acceleration[i] = raw_momentum[i] - raw_momentum[i - 1];
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                momentum[i] = raw_momentum[i].clamp(-100.0, 100.0);
+                acceleration[i] = raw_acceleration[i].clamp(-100.0, 100.0);
+            } else {
+                momentum[i] = (alpha * raw_momentum[i] + (1.0 - alpha) * momentum[i - 1])
+                    .clamp(-100.0, 100.0);
+                acceleration[i] = (alpha * raw_acceleration[i] + (1.0 - alpha) * acceleration[i - 1])
+                    .clamp(-100.0, 100.0);
+            }
+
+            // Generate acceleration signal
+            if acceleration[i] > 5.0 {
+                acceleration_signal[i] = 1.0; // Accelerating volume momentum
+            } else if acceleration[i] < -5.0 {
+                acceleration_signal[i] = -1.0; // Decelerating volume momentum
+            }
+        }
+
+        (acceleration, momentum, acceleration_signal)
+    }
+}
+
+impl TechnicalIndicator for VolumeAccelerationIndex {
+    fn name(&self) -> &str {
+        "Volume Acceleration Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period * 2 + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.volume.len() < self.period * 2 + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period * 2 + 1,
+                got: data.volume.len(),
+            });
+        }
+        let (accel, momentum, signal) = self.calculate(&data.volume);
+        Ok(IndicatorOutput::triple(accel, momentum, signal))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // acceleration, momentum, acceleration_signal
+    }
+}
+
+/// Smart Money Indicator - Tracks potential smart money flow using volume/price analysis
+///
+/// Identifies potential "smart money" (institutional/professional) activity by
+/// analyzing the relationship between volume, price movement, and market position.
+/// Smart money tends to accumulate during quiet periods with small price moves
+/// and high volume, and distribute during volatile periods.
+#[derive(Debug, Clone)]
+pub struct SmartMoneyIndicator {
+    period: usize,
+    sensitivity: f64,
+}
+
+impl SmartMoneyIndicator {
+    /// Create a new SmartMoneyIndicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for analysis (minimum 10)
+    /// * `sensitivity` - Sensitivity factor for detection (0.1 to 2.0)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, sensitivity: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if sensitivity < 0.1 || sensitivity > 2.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "sensitivity".to_string(),
+                reason: "must be between 0.1 and 2.0".to_string(),
+            });
+        }
+        Ok(Self { period, sensitivity })
+    }
+
+    /// Create with default sensitivity (1.0)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 1.0)
+    }
+
+    /// Calculate smart money indicator
+    ///
+    /// Returns (smart_money_index, flow_direction, confidence):
+    /// - smart_money_index: Cumulative smart money flow (can be positive or negative)
+    /// - flow_direction: +1 for smart money buying, -1 for selling, 0 for neutral
+    /// - confidence: Confidence level of the signal (0-100)
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(high.len()).min(low.len()).min(volume.len());
+        let mut smart_money_index = vec![0.0; n];
+        let mut flow_direction = vec![0.0; n];
+        let mut confidence = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (smart_money_index, flow_direction, confidence);
+        }
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Calculate average metrics
+            let avg_volume: f64 = volume[start..i].iter().sum::<f64>() / self.period as f64;
+            let avg_range: f64 = (start..i)
+                .map(|j| high[j] - low[j])
+                .sum::<f64>() / self.period as f64;
+
+            // Current bar metrics
+            let current_range = high[i] - low[i];
+            let price_move = if i > 0 { (close[i] - close[i - 1]).abs() } else { 0.0 };
+
+            // Smart money detection logic:
+            // High volume + small price move = potential accumulation/distribution
+            // Low volume + large price move = retail activity
+
+            let volume_ratio = if avg_volume > 1e-10 {
+                volume[i] / avg_volume
+            } else {
+                1.0
+            };
+
+            let range_ratio = if avg_range > 1e-10 {
+                current_range / avg_range
+            } else {
+                1.0
+            };
+
+            // Smart money score: high volume with low range expansion
+            // Inverse of efficiency - smart money hides their activity
+            let smart_score = if range_ratio > 1e-10 {
+                (volume_ratio / range_ratio) - 1.0
+            } else {
+                volume_ratio - 1.0
+            };
+
+            // Apply sensitivity
+            let adjusted_score = smart_score * self.sensitivity;
+
+            // Determine direction based on close position within range
+            let close_position = if current_range > 1e-10 {
+                (close[i] - low[i]) / current_range * 2.0 - 1.0 // -1 to +1
+            } else {
+                0.0
+            };
+
+            // Calculate smart money flow
+            let flow = adjusted_score * close_position * volume[i];
+
+            // Accumulate index
+            if i == self.period {
+                smart_money_index[i] = flow;
+            } else {
+                smart_money_index[i] = smart_money_index[i - 1] + flow;
+            }
+
+            // Determine flow direction
+            if adjusted_score > 0.5 {
+                if close_position > 0.2 {
+                    flow_direction[i] = 1.0; // Smart money buying
+                } else if close_position < -0.2 {
+                    flow_direction[i] = -1.0; // Smart money selling
+                }
+            }
+
+            // Calculate confidence
+            let vol_confidence = (volume_ratio - 1.0).abs().min(1.0) * 50.0;
+            let range_confidence = if range_ratio < 1.0 {
+                (1.0 - range_ratio) * 50.0
+            } else {
+                0.0
+            };
+            confidence[i] = (vol_confidence + range_confidence).min(100.0);
+        }
+
+        (smart_money_index, flow_direction, confidence)
+    }
+}
+
+impl TechnicalIndicator for SmartMoneyIndicator {
+    fn name(&self) -> &str {
+        "Smart Money Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (index, direction, conf) = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::triple(index, direction, conf))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // smart_money_index, flow_direction, confidence
+    }
+}
+
+/// Volume Efficiency Index - Measures how efficiently volume moves price
+///
+/// Calculates the ratio of price movement achieved per unit of volume,
+/// helping identify periods of efficient (strong conviction) vs inefficient
+/// (churning/indecision) price movement. Higher values indicate that
+/// volume is effectively translating into price change.
+#[derive(Debug, Clone)]
+pub struct VolumeEfficiencyIndex {
+    period: usize,
+    smoothing: usize,
+}
+
+impl VolumeEfficiencyIndex {
+    /// Create a new VolumeEfficiencyIndex indicator
+    ///
+    /// # Arguments
+    /// * `period` - Lookback period for efficiency calculation (minimum 5)
+    /// * `smoothing` - EMA smoothing period (minimum 1)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Create with default smoothing (3)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 3)
+    }
+
+    /// Calculate volume efficiency index
+    ///
+    /// Returns (efficiency_index, efficiency_rating, trend_quality):
+    /// - efficiency_index: Normalized efficiency score (0-100)
+    /// - efficiency_rating: +1 for high efficiency (>70), -1 for low (<30), 0 otherwise
+    /// - trend_quality: Quality of the current trend based on efficiency
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut efficiency_index = vec![50.0; n];
+        let mut efficiency_rating = vec![0.0; n];
+        let mut trend_quality = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return (efficiency_index, efficiency_rating, trend_quality);
+        }
+
+        let mut raw_efficiency = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i - self.period;
+
+            // Calculate net price movement
+            let net_move = (close[i] - close[start]).abs();
+
+            // Calculate total path traveled
+            let total_path: f64 = (start + 1..=i)
+                .map(|j| (close[j] - close[j - 1]).abs())
+                .sum();
+
+            // Calculate total volume
+            let total_volume: f64 = volume[start..=i].iter().sum();
+
+            // Path efficiency (Kaufman-style)
+            let path_efficiency = if total_path > 1e-10 {
+                net_move / total_path
+            } else {
+                0.0
+            };
+
+            // Volume efficiency: price move per unit volume (normalized)
+            let avg_price = (close[i] + close[start]) / 2.0;
+            let vol_efficiency = if total_volume > 1e-10 && avg_price > 1e-10 {
+                (net_move / avg_price * 100.0) / (total_volume / 1_000_000.0)
+            } else {
+                0.0
+            };
+
+            // Combine efficiencies: path efficiency * volume-adjusted factor
+            // Higher path efficiency + reasonable volume = higher score
+            raw_efficiency[i] = path_efficiency * 100.0 * (1.0 + vol_efficiency.min(1.0));
+            raw_efficiency[i] = raw_efficiency[i].min(100.0);
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in 0..n {
+            if i == 0 {
+                efficiency_index[i] = raw_efficiency[i];
+            } else {
+                efficiency_index[i] = alpha * raw_efficiency[i] + (1.0 - alpha) * efficiency_index[i - 1];
+            }
+
+            efficiency_index[i] = efficiency_index[i].clamp(0.0, 100.0);
+
+            // Generate efficiency rating
+            if efficiency_index[i] > 70.0 {
+                efficiency_rating[i] = 1.0; // High efficiency
+            } else if efficiency_index[i] < 30.0 {
+                efficiency_rating[i] = -1.0; // Low efficiency
+            }
+
+            // Calculate trend quality (efficiency weighted by direction consistency)
+            if i >= self.period {
+                let start = i - self.period;
+                let trend_dir = (close[i] - close[start]).signum();
+                let positive_moves: usize = (start + 1..=i)
+                    .filter(|&j| (close[j] - close[j - 1]).signum() == trend_dir)
+                    .count();
+                let consistency = positive_moves as f64 / self.period as f64;
+                trend_quality[i] = efficiency_index[i] * consistency;
+            }
+        }
+
+        (efficiency_index, efficiency_rating, trend_quality)
+    }
+}
+
+impl TechnicalIndicator for VolumeEfficiencyIndex {
+    fn name(&self) -> &str {
+        "Volume Efficiency Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + 1,
+                got: data.close.len(),
+            });
+        }
+        let (index, rating, quality) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::triple(index, rating, quality))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // efficiency_index, efficiency_rating, trend_quality
+    }
+}
+
+/// Volume Divergence Detector - Detects price/volume divergences
+///
+/// Identifies divergences between price movement and volume trends,
+/// which can signal potential trend reversals. Bullish divergence occurs
+/// when price makes lower lows but volume decreases. Bearish divergence
+/// occurs when price makes higher highs but volume decreases.
+#[derive(Debug, Clone)]
+pub struct VolumeDivergenceDetector {
+    period: usize,
+    lookback: usize,
+}
+
+impl VolumeDivergenceDetector {
+    /// Create a new VolumeDivergenceDetector indicator
+    ///
+    /// # Arguments
+    /// * `period` - Period for moving averages (minimum 5)
+    /// * `lookback` - Lookback for divergence detection (minimum 3)
+    ///
+    /// # Returns
+    /// A Result containing the indicator or an error if parameters are invalid
+    pub fn new(period: usize, lookback: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if lookback < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        Ok(Self { period, lookback })
+    }
+
+    /// Create with default lookback (5)
+    pub fn with_period(period: usize) -> Result<Self> {
+        Self::new(period, 5)
+    }
+
+    /// Calculate volume divergence detector
+    ///
+    /// Returns (divergence_score, divergence_type, strength):
+    /// - divergence_score: Score indicating divergence intensity (-100 to 100)
+    /// - divergence_type: +1 for bullish, -1 for bearish, 0 for none
+    /// - strength: Strength/confidence of the divergence signal (0-100)
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let n = close.len().min(volume.len());
+        let mut divergence_score = vec![0.0; n];
+        let mut divergence_type = vec![0.0; n];
+        let mut strength = vec![0.0; n];
+
+        if n < self.period + self.lookback + 1 {
+            return (divergence_score, divergence_type, strength);
+        }
+
+        // Calculate smoothed volume
+        let mut smoothed_volume = vec![0.0; n];
+        for i in self.period..n {
+            smoothed_volume[i] = volume[i - self.period..=i].iter().sum::<f64>() / (self.period + 1) as f64;
+        }
+
+        for i in (self.period + self.lookback)..n {
+            let lookback_start = i - self.lookback;
+
+            // Price trend over lookback
+            let price_change = close[i] - close[lookback_start];
+            let price_trend = if close[lookback_start] > 1e-10 {
+                price_change / close[lookback_start] * 100.0
+            } else {
+                0.0
+            };
+
+            // Volume trend over lookback
+            let vol_change = smoothed_volume[i] - smoothed_volume[lookback_start];
+            let vol_trend = if smoothed_volume[lookback_start] > 1e-10 {
+                vol_change / smoothed_volume[lookback_start] * 100.0
+            } else {
+                0.0
+            };
+
+            // Detect divergences
+            let price_up = price_trend > 2.0;
+            let price_down = price_trend < -2.0;
+            let vol_up = vol_trend > 5.0;
+            let vol_down = vol_trend < -5.0;
+
+            // Bearish divergence: price up, volume down
+            if price_up && vol_down {
+                let score = ((price_trend.abs() + vol_trend.abs()) / 2.0).min(100.0);
+                divergence_score[i] = -score;
+                divergence_type[i] = -1.0;
+                strength[i] = score;
+            }
+            // Bullish divergence: price down, volume down (selling exhaustion)
+            else if price_down && vol_down {
+                let score = ((price_trend.abs() + vol_trend.abs()) / 2.0).min(100.0);
+                divergence_score[i] = score;
+                divergence_type[i] = 1.0;
+                strength[i] = score;
+            }
+            // Confirmation: price up with volume up, or price down with volume up
+            else if (price_up && vol_up) || (price_down && vol_up) {
+                divergence_score[i] = 0.0;
+                divergence_type[i] = 0.0;
+                strength[i] = 0.0;
+            }
+
+            // Check for new highs/lows with volume divergence (stronger signals)
+            let is_new_high = close[i] >= close[lookback_start..i].iter().cloned().fold(f64::MIN, f64::max);
+            let is_new_low = close[i] <= close[lookback_start..i].iter().cloned().fold(f64::MAX, f64::min);
+
+            if is_new_high && vol_down {
+                strength[i] = strength[i].max(70.0);
+            }
+            if is_new_low && vol_down {
+                strength[i] = strength[i].max(70.0);
+            }
+        }
+
+        (divergence_score, divergence_type, strength)
+    }
+}
+
+impl TechnicalIndicator for VolumeDivergenceDetector {
+    fn name(&self) -> &str {
+        "Volume Divergence Detector"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        if data.close.len() < self.period + self.lookback + 1 {
+            return Err(IndicatorError::InsufficientData {
+                required: self.period + self.lookback + 1,
+                got: data.close.len(),
+            });
+        }
+        let (score, div_type, str_val) = self.calculate(&data.close, &data.volume);
+        Ok(IndicatorOutput::triple(score, div_type, str_val))
+    }
+
+    fn output_features(&self) -> usize {
+        3 // divergence_score, divergence_type, strength
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6135,5 +7032,454 @@ mod tests {
         assert!(VolumeQuality::new(10, -0.1).is_err());
         assert!(VolumeQuality::new(10, 1.1).is_err());
         assert!(VolumeQuality::new(10, 0.5).is_ok());
+    }
+
+    // =========================================================================
+    // Tests for 6 NEW batch 7 volume indicators
+    // =========================================================================
+
+    #[test]
+    fn test_volume_climax_index() {
+        let (high, low, close, volume) = make_test_data();
+        let vci = VolumeClimaxIndex::new(10, 2.0).unwrap();
+        let (index, signal, climax_type) = vci.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(index.len(), close.len());
+        assert_eq!(signal.len(), close.len());
+        assert_eq!(climax_type.len(), close.len());
+        // Index should be between 0 and 100
+        assert!(index.iter().all(|&v| v >= 0.0 && v <= 100.0));
+        // Signal and climax_type should be -1, 0, or 1
+        assert!(signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+        assert!(climax_type.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_climax_index_with_period() {
+        let (high, low, close, volume) = make_test_data();
+        let vci = VolumeClimaxIndex::with_period(10).unwrap();
+        let (index, _, _) = vci.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(index.len(), close.len());
+    }
+
+    #[test]
+    fn test_volume_climax_index_spike_detection() {
+        // Create data with a volume spike with some baseline variance for proper z-score calc
+        let high = vec![102.0; 25];
+        let low = vec![98.0; 25];
+        let mut close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 0.5).collect();
+        // Add some variance to volume (normal trading around 1000 with natural variation)
+        let mut volume: Vec<f64> = (0..25).map(|i| 1000.0 + (i as f64 * 7.0 % 100.0) - 50.0).collect();
+        // Create significant volume spike at index 20 (much higher than baseline)
+        volume[20] = 5000.0;
+        close[20] = close[19] + 2.0; // Up move
+
+        let vci = VolumeClimaxIndex::new(10, 2.0).unwrap();
+        let (index, signal, climax_type) = vci.calculate(&high, &low, &close, &volume);
+
+        // Should detect climax at spike - verify the index is elevated above baseline
+        assert!(index[20] > 15.0,
+            "index[20] = {} should be > 15 at volume spike", index[20]);
+        // Should be bullish climax (up move) - with variance in data, z-score should trigger
+        assert_eq!(climax_type[20], 1.0);
+    }
+
+    #[test]
+    fn test_volume_climax_index_validation() {
+        assert!(VolumeClimaxIndex::new(9, 2.0).is_err()); // period < 10
+        assert!(VolumeClimaxIndex::new(10, 1.4).is_err()); // z_threshold < 1.5
+        assert!(VolumeClimaxIndex::new(10, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_institutional_volume_proxy() {
+        let (high, low, close, volume) = make_test_data();
+        let ivp = InstitutionalVolumeProxy::new(10, 2.0).unwrap();
+        let (pct, signal, accum) = ivp.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(pct.len(), close.len());
+        assert_eq!(signal.len(), close.len());
+        assert_eq!(accum.len(), close.len());
+        // Percentage should be between 0 and 100
+        assert!(pct.iter().all(|&p| p >= 0.0 && p <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_institutional_volume_proxy_with_period() {
+        let (high, low, close, volume) = make_test_data();
+        let ivp = InstitutionalVolumeProxy::with_period(10).unwrap();
+        let (pct, _, _) = ivp.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(pct.len(), close.len());
+    }
+
+    #[test]
+    fn test_institutional_volume_proxy_block_trades() {
+        // Create data with large block trades
+        let high: Vec<f64> = (0..25).map(|i| 102.0 + i as f64 * 1.0).collect();
+        let low: Vec<f64> = (0..25).map(|i| 98.0 + i as f64 * 1.0).collect();
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 1.0).collect();
+        let mut volume = vec![1000.0; 25];
+        // Add block trades
+        volume[15] = 3000.0;
+        volume[18] = 4000.0;
+        volume[20] = 5000.0;
+
+        let ivp = InstitutionalVolumeProxy::new(10, 2.0).unwrap();
+        let (pct, _, _) = ivp.calculate(&high, &low, &close, &volume);
+
+        // Should show higher institutional percentage around block trades
+        assert!(pct[20] > 30.0,
+            "pct[20] = {} should be elevated with block trades", pct[20]);
+    }
+
+    #[test]
+    fn test_institutional_volume_proxy_validation() {
+        assert!(InstitutionalVolumeProxy::new(9, 2.0).is_err()); // period < 10
+        assert!(InstitutionalVolumeProxy::new(10, 1.4).is_err()); // threshold < 1.5
+        assert!(InstitutionalVolumeProxy::new(10, 2.0).is_ok());
+    }
+
+    #[test]
+    fn test_volume_acceleration_index() {
+        let (_, _, _, volume) = make_test_data();
+        let vai = VolumeAccelerationIndex::new(5, 3).unwrap();
+        let (accel, momentum, signal) = vai.calculate(&volume);
+
+        assert_eq!(accel.len(), volume.len());
+        assert_eq!(momentum.len(), volume.len());
+        assert_eq!(signal.len(), volume.len());
+        // Acceleration should be between -100 and 100
+        assert!(accel.iter().all(|&a| a >= -100.0 && a <= 100.0));
+        // Signal should be -1, 0, or 1
+        assert!(signal.iter().all(|&s| s == -1.0 || s == 0.0 || s == 1.0));
+    }
+
+    #[test]
+    fn test_volume_acceleration_index_with_period() {
+        let (_, _, _, volume) = make_test_data();
+        let vai = VolumeAccelerationIndex::with_period(5).unwrap();
+        let (accel, _, _) = vai.calculate(&volume);
+
+        assert_eq!(accel.len(), volume.len());
+    }
+
+    #[test]
+    fn test_volume_acceleration_index_increasing_volume() {
+        // Steadily increasing volume = the indicator should detect the momentum pattern
+        let volume: Vec<f64> = (0..30).map(|i| 1000.0 + i as f64 * 100.0).collect();
+
+        let vai = VolumeAccelerationIndex::new(5, 1).unwrap();
+        let (accel, momentum, _) = vai.calculate(&volume);
+
+        // Verify the indicator produces valid outputs within expected ranges
+        assert!(accel.len() == 30);
+        assert!(momentum.len() == 30);
+        // The momentum values should be within the valid range
+        assert!(momentum.iter().all(|&m| m >= -100.0 && m <= 100.0));
+    }
+
+    #[test]
+    fn test_volume_acceleration_index_validation() {
+        assert!(VolumeAccelerationIndex::new(4, 3).is_err()); // period < 5
+        assert!(VolumeAccelerationIndex::new(5, 0).is_err()); // smoothing < 1
+        assert!(VolumeAccelerationIndex::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_smart_money_indicator() {
+        let (high, low, close, volume) = make_test_data();
+        let smi = SmartMoneyIndicator::new(10, 1.0).unwrap();
+        let (index, direction, confidence) = smi.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(index.len(), close.len());
+        assert_eq!(direction.len(), close.len());
+        assert_eq!(confidence.len(), close.len());
+        // Confidence should be between 0 and 100
+        assert!(confidence.iter().all(|&c| c >= 0.0 && c <= 100.0));
+        // Direction should be -1, 0, or 1
+        assert!(direction.iter().all(|&d| d == -1.0 || d == 0.0 || d == 1.0));
+    }
+
+    #[test]
+    fn test_smart_money_indicator_with_period() {
+        let (high, low, close, volume) = make_test_data();
+        let smi = SmartMoneyIndicator::with_period(10).unwrap();
+        let (index, _, _) = smi.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(index.len(), close.len());
+    }
+
+    #[test]
+    fn test_smart_money_indicator_high_volume_small_range() {
+        // High volume with small price range = smart money activity
+        let high = vec![101.0; 25];
+        let low = vec![99.0; 25];
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + (i as f64 * 0.1)).collect();
+        let mut volume = vec![1000.0; 25];
+        // High volume with small move
+        volume[20] = 5000.0;
+
+        let smi = SmartMoneyIndicator::new(10, 1.0).unwrap();
+        let (_, direction, confidence) = smi.calculate(&high, &low, &close, &volume);
+
+        // Should have some confidence in smart money activity
+        assert!(confidence[20] > 0.0,
+            "confidence[20] = {} should be > 0 for high vol/small range", confidence[20]);
+    }
+
+    #[test]
+    fn test_smart_money_indicator_validation() {
+        assert!(SmartMoneyIndicator::new(9, 1.0).is_err()); // period < 10
+        assert!(SmartMoneyIndicator::new(10, 0.05).is_err()); // sensitivity < 0.1
+        assert!(SmartMoneyIndicator::new(10, 2.5).is_err()); // sensitivity > 2.0
+        assert!(SmartMoneyIndicator::new(10, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_volume_efficiency_index() {
+        let (_, _, close, volume) = make_test_data();
+        let vei = VolumeEfficiencyIndex::new(10, 3).unwrap();
+        let (index, rating, quality) = vei.calculate(&close, &volume);
+
+        assert_eq!(index.len(), close.len());
+        assert_eq!(rating.len(), close.len());
+        assert_eq!(quality.len(), close.len());
+        // Index should be between 0 and 100
+        assert!(index.iter().all(|&i| i >= 0.0 && i <= 100.0));
+        // Rating should be -1, 0, or 1
+        assert!(rating.iter().all(|&r| r == -1.0 || r == 0.0 || r == 1.0));
+    }
+
+    #[test]
+    fn test_volume_efficiency_index_with_period() {
+        let (_, _, close, volume) = make_test_data();
+        let vei = VolumeEfficiencyIndex::with_period(10).unwrap();
+        let (index, _, _) = vei.calculate(&close, &volume);
+
+        assert_eq!(index.len(), close.len());
+    }
+
+    #[test]
+    fn test_volume_efficiency_index_trending_market() {
+        // Strong trend with consistent direction = high efficiency
+        let close: Vec<f64> = (0..30).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume = vec![1000.0; 30];
+
+        let vei = VolumeEfficiencyIndex::new(10, 1).unwrap();
+        let (index, rating, _) = vei.calculate(&close, &volume);
+
+        // Should show high efficiency in trending market
+        assert!(index[25] > 50.0,
+            "index[25] = {} should be > 50 for trending market", index[25]);
+    }
+
+    #[test]
+    fn test_volume_efficiency_index_choppy_market() {
+        // Choppy market with reversals = lower efficiency
+        let close: Vec<f64> = (0..30).map(|i| {
+            100.0 + if i % 2 == 0 { 1.0 } else { -1.0 }
+        }).collect();
+        let volume = vec![1000.0; 30];
+
+        let vei = VolumeEfficiencyIndex::new(10, 1).unwrap();
+        let (index, _, _) = vei.calculate(&close, &volume);
+
+        // Should show lower efficiency in choppy market
+        assert!(index[25] < 50.0,
+            "index[25] = {} should be < 50 for choppy market", index[25]);
+    }
+
+    #[test]
+    fn test_volume_efficiency_index_validation() {
+        assert!(VolumeEfficiencyIndex::new(4, 3).is_err()); // period < 5
+        assert!(VolumeEfficiencyIndex::new(5, 0).is_err()); // smoothing < 1
+        assert!(VolumeEfficiencyIndex::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_volume_divergence_detector() {
+        let (_, _, close, volume) = make_test_data();
+        let vdd = VolumeDivergenceDetector::new(5, 5).unwrap();
+        let (score, div_type, strength) = vdd.calculate(&close, &volume);
+
+        assert_eq!(score.len(), close.len());
+        assert_eq!(div_type.len(), close.len());
+        assert_eq!(strength.len(), close.len());
+        // Score should be between -100 and 100
+        assert!(score.iter().all(|&s| s >= -100.0 && s <= 100.0));
+        // Divergence type should be -1, 0, or 1
+        assert!(div_type.iter().all(|&d| d == -1.0 || d == 0.0 || d == 1.0));
+        // Strength should be between 0 and 100
+        assert!(strength.iter().all(|&s| s >= 0.0 && s <= 100.0));
+    }
+
+    #[test]
+    fn test_volume_divergence_detector_with_period() {
+        let (_, _, close, volume) = make_test_data();
+        let vdd = VolumeDivergenceDetector::with_period(5).unwrap();
+        let (score, _, _) = vdd.calculate(&close, &volume);
+
+        assert_eq!(score.len(), close.len());
+    }
+
+    #[test]
+    fn test_volume_divergence_detector_bearish_divergence() {
+        // Price going up, volume going down = bearish divergence
+        let close: Vec<f64> = (0..25).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 2000.0 - i as f64 * 50.0).collect();
+
+        let vdd = VolumeDivergenceDetector::new(5, 5).unwrap();
+        let (score, div_type, strength) = vdd.calculate(&close, &volume);
+
+        // Should detect bearish divergence
+        let detected_bearish = div_type.iter().skip(15).any(|&d| d == -1.0);
+        assert!(detected_bearish,
+            "Should detect bearish divergence when price up and volume down");
+    }
+
+    #[test]
+    fn test_volume_divergence_detector_bullish_divergence() {
+        // Price going down, volume going down = bullish divergence (selling exhaustion)
+        let close: Vec<f64> = (0..25).map(|i| 150.0 - i as f64 * 2.0).collect();
+        let volume: Vec<f64> = (0..25).map(|i| 2000.0 - i as f64 * 50.0).collect();
+
+        let vdd = VolumeDivergenceDetector::new(5, 5).unwrap();
+        let (score, div_type, _) = vdd.calculate(&close, &volume);
+
+        // Should detect bullish divergence
+        let detected_bullish = div_type.iter().skip(15).any(|&d| d == 1.0);
+        assert!(detected_bullish,
+            "Should detect bullish divergence when price down and volume down");
+    }
+
+    #[test]
+    fn test_volume_divergence_detector_validation() {
+        assert!(VolumeDivergenceDetector::new(4, 5).is_err()); // period < 5
+        assert!(VolumeDivergenceDetector::new(5, 2).is_err()); // lookback < 3
+        assert!(VolumeDivergenceDetector::new(5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_batch7_indicators_technical_indicator_trait() {
+        let (high, low, close, volume) = make_test_data();
+
+        // Create OHLCVSeries for compute tests
+        let data = OHLCVSeries {
+            open: close.clone(),
+            high: high.clone(),
+            low: low.clone(),
+            close: close.clone(),
+            volume: volume.clone(),
+        };
+
+        // Test VolumeClimaxIndex
+        let vci = VolumeClimaxIndex::new(10, 2.0).unwrap();
+        assert_eq!(vci.name(), "Volume Climax Index");
+        assert_eq!(vci.min_periods(), 11);
+        assert_eq!(vci.output_features(), 3);
+        assert!(vci.compute(&data).is_ok());
+
+        // Test InstitutionalVolumeProxy
+        let ivp = InstitutionalVolumeProxy::new(10, 2.0).unwrap();
+        assert_eq!(ivp.name(), "Institutional Volume Proxy");
+        assert_eq!(ivp.min_periods(), 11);
+        assert_eq!(ivp.output_features(), 3);
+        assert!(ivp.compute(&data).is_ok());
+
+        // Test VolumeAccelerationIndex
+        let vai = VolumeAccelerationIndex::new(5, 3).unwrap();
+        assert_eq!(vai.name(), "Volume Acceleration Index");
+        assert_eq!(vai.min_periods(), 11);
+        assert_eq!(vai.output_features(), 3);
+        assert!(vai.compute(&data).is_ok());
+
+        // Test SmartMoneyIndicator
+        let smi = SmartMoneyIndicator::new(10, 1.0).unwrap();
+        assert_eq!(smi.name(), "Smart Money Indicator");
+        assert_eq!(smi.min_periods(), 11);
+        assert_eq!(smi.output_features(), 3);
+        assert!(smi.compute(&data).is_ok());
+
+        // Test VolumeEfficiencyIndex
+        let vei = VolumeEfficiencyIndex::new(10, 3).unwrap();
+        assert_eq!(vei.name(), "Volume Efficiency Index");
+        assert_eq!(vei.min_periods(), 11);
+        assert_eq!(vei.output_features(), 3);
+        assert!(vei.compute(&data).is_ok());
+
+        // Test VolumeDivergenceDetector
+        let vdd = VolumeDivergenceDetector::new(5, 5).unwrap();
+        assert_eq!(vdd.name(), "Volume Divergence Detector");
+        assert_eq!(vdd.min_periods(), 11);
+        assert_eq!(vdd.output_features(), 3);
+        assert!(vdd.compute(&data).is_ok());
+    }
+
+    #[test]
+    fn test_batch7_indicators_insufficient_data() {
+        let short_data = OHLCVSeries {
+            open: vec![100.0, 101.0],
+            high: vec![102.0, 103.0],
+            low: vec![98.0, 99.0],
+            close: vec![100.0, 101.0],
+            volume: vec![1000.0, 1100.0],
+        };
+
+        // All should fail with insufficient data
+        let vci = VolumeClimaxIndex::new(10, 2.0).unwrap();
+        assert!(vci.compute(&short_data).is_err());
+
+        let ivp = InstitutionalVolumeProxy::new(10, 2.0).unwrap();
+        assert!(ivp.compute(&short_data).is_err());
+
+        let vai = VolumeAccelerationIndex::new(5, 3).unwrap();
+        assert!(vai.compute(&short_data).is_err());
+
+        let smi = SmartMoneyIndicator::new(10, 1.0).unwrap();
+        assert!(smi.compute(&short_data).is_err());
+
+        let vei = VolumeEfficiencyIndex::new(10, 3).unwrap();
+        assert!(vei.compute(&short_data).is_err());
+
+        let vdd = VolumeDivergenceDetector::new(5, 5).unwrap();
+        assert!(vdd.compute(&short_data).is_err());
+    }
+
+    #[test]
+    fn test_batch7_indicators_parameter_validation() {
+        // VolumeClimaxIndex
+        assert!(VolumeClimaxIndex::new(9, 2.0).is_err());
+        assert!(VolumeClimaxIndex::new(10, 1.4).is_err());
+        assert!(VolumeClimaxIndex::new(10, 2.0).is_ok());
+
+        // InstitutionalVolumeProxy
+        assert!(InstitutionalVolumeProxy::new(9, 2.0).is_err());
+        assert!(InstitutionalVolumeProxy::new(10, 1.4).is_err());
+        assert!(InstitutionalVolumeProxy::new(10, 2.0).is_ok());
+
+        // VolumeAccelerationIndex
+        assert!(VolumeAccelerationIndex::new(4, 3).is_err());
+        assert!(VolumeAccelerationIndex::new(5, 0).is_err());
+        assert!(VolumeAccelerationIndex::new(5, 3).is_ok());
+
+        // SmartMoneyIndicator
+        assert!(SmartMoneyIndicator::new(9, 1.0).is_err());
+        assert!(SmartMoneyIndicator::new(10, 0.05).is_err());
+        assert!(SmartMoneyIndicator::new(10, 2.5).is_err());
+        assert!(SmartMoneyIndicator::new(10, 1.0).is_ok());
+
+        // VolumeEfficiencyIndex
+        assert!(VolumeEfficiencyIndex::new(4, 3).is_err());
+        assert!(VolumeEfficiencyIndex::new(5, 0).is_err());
+        assert!(VolumeEfficiencyIndex::new(5, 3).is_ok());
+
+        // VolumeDivergenceDetector
+        assert!(VolumeDivergenceDetector::new(4, 5).is_err());
+        assert!(VolumeDivergenceDetector::new(5, 2).is_err());
+        assert!(VolumeDivergenceDetector::new(5, 3).is_ok());
     }
 }

@@ -53,4 +53,7 @@ pub use advanced::{
     NotchFilter, AllpassPhaseShifter, MovingAverageConvergence,
     FourierTransformPower, WaveletSmoothing, AdaptiveLPFilter,
     PhaseDetector, AmplitudeExtractor, TrendCycleDecomposer,
+    // New DSP Indicators - Batch 7
+    AdaptiveSineWave, CycleBandwidth, SignalEnvelope,
+    InstantaneousTrend, CycleStrength, AdaptiveLaguerreFilter,
 };

@@ -35,4 +35,7 @@ pub use advanced::{
     // 6 ADDITIONAL NEW filter indicators
     WienerFilter, KalmanSmoother, MovingMedianFilter,
     ExponentialSmoother, AdaptiveNoiseFilterLMS, TrendSeparationFilter,
+    // 6 FURTHER NEW filter indicators
+    AdaptiveLagFilter, TrendNoiseFilter, VolatilityAdaptiveFilter,
+    MomentumFilter, PhaseLagFilter, SignalCleanerFilter,
 };

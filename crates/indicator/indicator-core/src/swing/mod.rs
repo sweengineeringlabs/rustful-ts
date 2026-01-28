@@ -39,6 +39,8 @@ pub use extended::{
 pub use advanced::{
     SwingTrendStrength, SwingReversal, SwingVolatility,
     SwingMomentumAdvanced, SwingTargetLevels, SwingDuration,
+    SwingEfficiency, SwingContinuation, SwingMagnitude,
+    SwingRetracementLevel, SwingExtensionTarget, SwingPersistence,
 };
 pub use r#final::{
     SwingProjection, SwingConfirmation, SwingRangeAnalysis,

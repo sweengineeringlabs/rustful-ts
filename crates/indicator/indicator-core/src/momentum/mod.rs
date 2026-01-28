@@ -24,4 +24,11 @@ pub use advanced::{
     MomentumBias,
     MomentumCycle,
     MomentumQuality,
+    // New advanced momentum indicators
+    MomentumBreakout,
+    RelativeMomentumStrength,
+    MomentumSmoothness,
+    MomentumCyclePhase,
+    MomentumExhaustion,
+    MomentumReversal,
 };

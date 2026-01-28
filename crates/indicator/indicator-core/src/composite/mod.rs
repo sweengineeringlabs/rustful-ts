@@ -108,4 +108,11 @@ pub use advanced::{
     MultiFactorMomentumV2, MultiFactorMomentumV2Config, MultiFactorMomentumV2Output,
     TechnicalRating, TechnicalRatingConfig, TechnicalRatingOutput,
     MarketPhaseDetector, MarketPhaseDetectorConfig, MarketPhaseDetectorOutput, DetectedPhase,
+    // New composite indicators batch
+    VolatilityMomentumScore, VolatilityMomentumScoreConfig, VolatilityMomentumScoreOutput,
+    MultiFactorRanking, MultiFactorRankingConfig, MultiFactorRankingOutput,
+    MarketStateClassifier, MarketStateClassifierConfig, MarketStateClassifierOutput, MarketState,
+    SignalConfluence, SignalConfluenceConfig, SignalConfluenceOutput,
+    DynamicWeightComposite, DynamicWeightCompositeConfig, DynamicWeightCompositeOutput,
+    TrendMomentumSync, TrendMomentumSyncConfig, TrendMomentumSyncOutput,
 };

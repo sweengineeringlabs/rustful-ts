@@ -50,6 +50,9 @@ pub use advanced::{
     // 6 ADDITIONAL intermarket indicators
     RelativeValueScore, SpreadMomentum, ConvergenceDivergence,
     PairStrength, CrossAssetMomentum, IntermarketSignal,
+    // 6 Advanced Intermarket indicators (batch 7)
+    RelativeRotationGraph, CrossMarketBeta, CorrelationBreakdownDetector,
+    LeadLagAnalysis, SpreadMomentumIndicator, RelativeValueMomentum,
 };
 
 // ============================================================================

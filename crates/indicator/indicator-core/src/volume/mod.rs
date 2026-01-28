@@ -95,4 +95,7 @@ pub use advanced::{
     // 6 NEW volume indicators
     VolumeRank, VolumePercentile, VolumeRatio,
     VolumeConcentration, VolumeBias, VolumeQuality,
+    // 6 NEW volume indicators (batch 7)
+    VolumeClimaxIndex, InstitutionalVolumeProxy, VolumeAccelerationIndex,
+    SmartMoneyIndicator, VolumeEfficiencyIndex, VolumeDivergenceDetector,
 };

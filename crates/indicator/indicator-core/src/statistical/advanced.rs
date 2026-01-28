@@ -3530,6 +3530,981 @@ impl TechnicalIndicator for QuantileRatio {
     }
 }
 
+// ==================== NEW STATISTICAL INDICATORS ====================
+
+/// Price Normality Output - Contains normality test results
+#[derive(Debug, Clone)]
+pub struct PriceNormalityOutput {
+    /// Jarque-Bera test statistic
+    pub jb_statistic: Vec<f64>,
+    /// P-value approximation (higher = more normal)
+    pub p_value: Vec<f64>,
+    /// Normality score (0-1, higher = more normal)
+    pub normality_score: Vec<f64>,
+}
+
+/// Price Normality - Tests if price returns follow normal distribution (Jarque-Bera style)
+///
+/// Uses the Jarque-Bera test to assess whether return distributions deviate from
+/// normality. The test is based on skewness and excess kurtosis of the returns.
+///
+/// # Interpretation
+/// - High JB statistic: Returns deviate from normal (fat tails or skewness)
+/// - Low JB statistic: Returns are approximately normal
+/// - P-value > 0.05: Cannot reject normality
+/// - Normality score closer to 1: More normal-like distribution
+///
+/// # Example
+/// ```ignore
+/// let normality = PriceNormality::new(30).unwrap();
+/// let result = normality.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct PriceNormality {
+    period: usize,
+}
+
+impl PriceNormality {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for meaningful normality test".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate Jarque-Bera normality test statistics
+    pub fn calculate(&self, close: &[f64]) -> PriceNormalityOutput {
+        let n = close.len();
+        let mut jb_statistic = vec![0.0; n];
+        let mut p_value = vec![0.0; n];
+        let mut normality_score = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return PriceNormalityOutput {
+                jb_statistic,
+                p_value,
+                normality_score,
+            };
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window = &returns[start..=return_idx];
+            let n_w = window.len() as f64;
+
+            // Calculate mean
+            let mean: f64 = window.iter().sum::<f64>() / n_w;
+
+            // Calculate central moments
+            let m2: f64 = window.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n_w;
+            let m3: f64 = window.iter().map(|r| (r - mean).powi(3)).sum::<f64>() / n_w;
+            let m4: f64 = window.iter().map(|r| (r - mean).powi(4)).sum::<f64>() / n_w;
+
+            if m2 < 1e-10 {
+                normality_score[i] = 1.0; // Constant returns are trivially normal
+                continue;
+            }
+
+            let std_dev = m2.sqrt();
+
+            // Skewness: E[(X-mu)^3] / sigma^3
+            let skewness = m3 / std_dev.powi(3);
+
+            // Excess kurtosis: E[(X-mu)^4] / sigma^4 - 3
+            let excess_kurtosis = m4 / m2.powi(2) - 3.0;
+
+            // Jarque-Bera statistic: (n/6) * (S^2 + (K^2)/4)
+            // where S is skewness and K is excess kurtosis
+            let jb = (n_w / 6.0) * (skewness.powi(2) + excess_kurtosis.powi(2) / 4.0);
+            jb_statistic[i] = jb;
+
+            // Approximate p-value using chi-squared(2) distribution
+            // P(chi2 > x) ~ exp(-x/2) for small x, more accurate formula:
+            // Using complementary CDF approximation for chi-squared(2)
+            let p = (-jb / 2.0).exp();
+            p_value[i] = p.clamp(0.0, 1.0);
+
+            // Normality score: transform JB to 0-1 scale
+            // Lower JB = more normal, use exponential decay
+            normality_score[i] = (-jb / 10.0).exp().clamp(0.0, 1.0);
+        }
+
+        PriceNormalityOutput {
+            jb_statistic,
+            p_value,
+            normality_score,
+        }
+    }
+}
+
+impl TechnicalIndicator for PriceNormality {
+    fn name(&self) -> &str {
+        "Price Normality"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(
+            result.jb_statistic,
+            result.p_value,
+            result.normality_score,
+        ))
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+/// Return Skew Kurtosis Output - Contains rolling skewness and kurtosis
+#[derive(Debug, Clone)]
+pub struct ReturnSkewKurtosisOutput {
+    /// Rolling skewness of returns
+    pub skewness: Vec<f64>,
+    /// Rolling excess kurtosis of returns
+    pub kurtosis: Vec<f64>,
+    /// Combined skew-kurtosis score
+    pub combined_score: Vec<f64>,
+}
+
+/// Return Skew Kurtosis - Rolling skewness and kurtosis of returns
+///
+/// Calculates rolling higher moments of the return distribution:
+/// - Skewness measures asymmetry (negative = left tail, positive = right tail)
+/// - Kurtosis measures tail thickness (excess kurtosis > 0 = fat tails)
+///
+/// # Interpretation
+/// - Skewness > 0: More extreme positive returns (right skew)
+/// - Skewness < 0: More extreme negative returns (left skew)
+/// - Kurtosis > 0: Fat tails (more extreme events than normal)
+/// - Kurtosis < 0: Thin tails (fewer extreme events than normal)
+///
+/// # Example
+/// ```ignore
+/// let rsk = ReturnSkewKurtosis::new(30).unwrap();
+/// let output = rsk.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ReturnSkewKurtosis {
+    period: usize,
+}
+
+impl ReturnSkewKurtosis {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for reliable skewness/kurtosis".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate rolling skewness and kurtosis
+    pub fn calculate(&self, close: &[f64]) -> ReturnSkewKurtosisOutput {
+        let n = close.len();
+        let mut skewness = vec![0.0; n];
+        let mut kurtosis = vec![0.0; n];
+        let mut combined_score = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return ReturnSkewKurtosisOutput {
+                skewness,
+                kurtosis,
+                combined_score,
+            };
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window = &returns[start..=return_idx];
+            let n_w = window.len() as f64;
+
+            // Calculate mean
+            let mean: f64 = window.iter().sum::<f64>() / n_w;
+
+            // Calculate variance
+            let m2: f64 = window.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n_w;
+
+            if m2 < 1e-10 {
+                continue;
+            }
+
+            let std_dev = m2.sqrt();
+
+            // Calculate skewness
+            let m3: f64 = window.iter().map(|r| (r - mean).powi(3)).sum::<f64>() / n_w;
+            let skew = m3 / std_dev.powi(3);
+            skewness[i] = skew;
+
+            // Calculate excess kurtosis
+            let m4: f64 = window.iter().map(|r| (r - mean).powi(4)).sum::<f64>() / n_w;
+            let kurt = m4 / m2.powi(2) - 3.0;
+            kurtosis[i] = kurt;
+
+            // Combined score: measures overall departure from normality
+            // Higher values indicate more non-normal distribution
+            combined_score[i] = (skew.powi(2) + kurt.powi(2) / 4.0).sqrt();
+        }
+
+        ReturnSkewKurtosisOutput {
+            skewness,
+            kurtosis,
+            combined_score,
+        }
+    }
+}
+
+impl TechnicalIndicator for ReturnSkewKurtosis {
+    fn name(&self) -> &str {
+        "Return Skew Kurtosis"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(
+            result.skewness,
+            result.kurtosis,
+            result.combined_score,
+        ))
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+/// Distribution Shape Output - Characterization of return distribution shape
+#[derive(Debug, Clone)]
+pub struct DistributionShapeOutput {
+    /// Shape classification: -1 = left-skewed/fat-tail, 0 = normal-ish, 1 = right-skewed/fat-tail
+    pub shape_class: Vec<f64>,
+    /// Tail heaviness measure (0 = normal tails, positive = heavier tails)
+    pub tail_heaviness: Vec<f64>,
+    /// Asymmetry measure (negative = left-skewed, positive = right-skewed)
+    pub asymmetry: Vec<f64>,
+    /// Peakedness measure (negative = flat, positive = peaked)
+    pub peakedness: Vec<f64>,
+}
+
+/// Distribution Shape - Characterizes shape of return distribution
+///
+/// Provides multiple measures to characterize the overall shape of the
+/// return distribution, useful for risk management and strategy selection.
+///
+/// # Interpretation
+/// - Shape class helps categorize the distribution type
+/// - Tail heaviness indicates propensity for extreme moves
+/// - Asymmetry shows directional bias in returns
+/// - Peakedness indicates concentration around the mean
+///
+/// # Example
+/// ```ignore
+/// let shape = DistributionShape::new(30).unwrap();
+/// let output = shape.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct DistributionShape {
+    period: usize,
+}
+
+impl DistributionShape {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for distribution characterization".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate distribution shape characteristics
+    pub fn calculate(&self, close: &[f64]) -> DistributionShapeOutput {
+        let n = close.len();
+        let mut shape_class = vec![0.0; n];
+        let mut tail_heaviness = vec![0.0; n];
+        let mut asymmetry = vec![0.0; n];
+        let mut peakedness = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return DistributionShapeOutput {
+                shape_class,
+                tail_heaviness,
+                asymmetry,
+                peakedness,
+            };
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window: Vec<f64> = returns[start..=return_idx].to_vec();
+            let n_w = window.len() as f64;
+
+            // Calculate mean
+            let mean: f64 = window.iter().sum::<f64>() / n_w;
+
+            // Calculate variance
+            let m2: f64 = window.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / n_w;
+
+            if m2 < 1e-10 {
+                continue;
+            }
+
+            let std_dev = m2.sqrt();
+
+            // Calculate skewness
+            let m3: f64 = window.iter().map(|r| (r - mean).powi(3)).sum::<f64>() / n_w;
+            let skew = m3 / std_dev.powi(3);
+
+            // Calculate excess kurtosis
+            let m4: f64 = window.iter().map(|r| (r - mean).powi(4)).sum::<f64>() / n_w;
+            let excess_kurt = m4 / m2.powi(2) - 3.0;
+
+            // Asymmetry measure (standardized skewness)
+            asymmetry[i] = skew;
+
+            // Tail heaviness (excess kurtosis, bounded)
+            tail_heaviness[i] = excess_kurt.clamp(-5.0, 20.0);
+
+            // Peakedness: compare to normal (kurtosis of 3)
+            // Positive = more peaked than normal, negative = flatter
+            peakedness[i] = (m4 / m2.powi(2)) - 3.0;
+
+            // Shape classification
+            // Uses thresholds to classify distribution shape
+            let skew_thresh = 0.5;
+            let kurt_thresh = 1.0;
+
+            if skew.abs() > skew_thresh || excess_kurt > kurt_thresh {
+                // Non-normal distribution
+                if skew < -skew_thresh {
+                    shape_class[i] = -1.0; // Left-skewed/negative tail risk
+                } else if skew > skew_thresh {
+                    shape_class[i] = 1.0; // Right-skewed/positive tail
+                } else if excess_kurt > kurt_thresh {
+                    shape_class[i] = 2.0; // Fat-tailed but symmetric
+                }
+            }
+            // Default 0.0 = approximately normal
+        }
+
+        DistributionShapeOutput {
+            shape_class,
+            tail_heaviness,
+            asymmetry,
+            peakedness,
+        }
+    }
+}
+
+impl TechnicalIndicator for DistributionShape {
+    fn name(&self) -> &str {
+        "Distribution Shape"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        // Returns shape_class (primary), tail_heaviness (secondary), asymmetry (tertiary)
+        // peakedness available via calculate() method directly
+        Ok(IndicatorOutput::triple(
+            result.shape_class,
+            result.tail_heaviness,
+            result.asymmetry,
+        ))
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+/// Extreme Value Indicator Output - Contains EVT-based metrics
+#[derive(Debug, Clone)]
+pub struct ExtremeValueIndicatorOutput {
+    /// Upper extreme value (positive tail)
+    pub upper_extreme: Vec<f64>,
+    /// Lower extreme value (negative tail)
+    pub lower_extreme: Vec<f64>,
+    /// Extreme event frequency (count of extremes in window)
+    pub extreme_frequency: Vec<f64>,
+    /// Expected shortfall estimate (average of extremes beyond threshold)
+    pub expected_shortfall: Vec<f64>,
+}
+
+/// Extreme Value Indicator - Tracks extreme values using EVT concepts
+///
+/// Uses concepts from Extreme Value Theory (EVT) to identify and track
+/// extreme price movements. EVT focuses on the statistical behavior
+/// of extreme deviations from the mean.
+///
+/// # Interpretation
+/// - Upper/lower extreme: Current extreme values beyond threshold
+/// - Extreme frequency: How often extremes occur
+/// - Expected shortfall: Average loss given an extreme event
+///
+/// # Example
+/// ```ignore
+/// let evi = ExtremeValueIndicator::new(30, 0.05).unwrap();
+/// let output = evi.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ExtremeValueIndicator {
+    period: usize,
+    /// Tail quantile (e.g., 0.05 for 5% tail)
+    tail_quantile: f64,
+}
+
+impl ExtremeValueIndicator {
+    pub fn new(period: usize, tail_quantile: f64) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for extreme value analysis".to_string(),
+            });
+        }
+        if tail_quantile <= 0.0 || tail_quantile >= 0.5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "tail_quantile".to_string(),
+                reason: "must be between 0 and 0.5 (exclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, tail_quantile })
+    }
+
+    /// Calculate extreme value metrics
+    pub fn calculate(&self, close: &[f64]) -> ExtremeValueIndicatorOutput {
+        let n = close.len();
+        let mut upper_extreme = vec![0.0; n];
+        let mut lower_extreme = vec![0.0; n];
+        let mut extreme_frequency = vec![0.0; n];
+        let mut expected_shortfall = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return ExtremeValueIndicatorOutput {
+                upper_extreme,
+                lower_extreme,
+                extreme_frequency,
+                expected_shortfall,
+            };
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        for i in self.period..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+            let window: Vec<f64> = returns[start..=return_idx].to_vec();
+
+            // Sort returns to find quantile thresholds
+            let mut sorted = window.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+            let lower_idx = (self.period as f64 * self.tail_quantile) as usize;
+            let upper_idx = (self.period as f64 * (1.0 - self.tail_quantile)) as usize;
+
+            let lower_thresh = sorted[lower_idx.min(sorted.len() - 1)];
+            let upper_thresh = sorted[upper_idx.min(sorted.len() - 1)];
+
+            // Current return
+            let current = returns[return_idx];
+
+            // Track if current is extreme
+            if current > upper_thresh {
+                upper_extreme[i] = current;
+            }
+            if current < lower_thresh {
+                lower_extreme[i] = current;
+            }
+
+            // Count extreme events in window
+            let n_upper = window.iter().filter(|&&r| r > upper_thresh).count();
+            let n_lower = window.iter().filter(|&&r| r < lower_thresh).count();
+            extreme_frequency[i] = (n_upper + n_lower) as f64 / self.period as f64;
+
+            // Expected shortfall (CVaR) - average of returns beyond lower threshold
+            let extreme_losses: Vec<f64> = window.iter()
+                .filter(|&&r| r < lower_thresh)
+                .copied()
+                .collect();
+            if !extreme_losses.is_empty() {
+                expected_shortfall[i] = extreme_losses.iter().sum::<f64>() / extreme_losses.len() as f64;
+            }
+        }
+
+        ExtremeValueIndicatorOutput {
+            upper_extreme,
+            lower_extreme,
+            extreme_frequency,
+            expected_shortfall,
+        }
+    }
+}
+
+impl TechnicalIndicator for ExtremeValueIndicator {
+    fn name(&self) -> &str {
+        "Extreme Value Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        // Returns extreme_frequency (primary), expected_shortfall (secondary), upper_extreme (tertiary)
+        // lower_extreme available via calculate() method directly
+        Ok(IndicatorOutput::triple(
+            result.extreme_frequency,
+            result.expected_shortfall,
+            result.upper_extreme,
+        ))
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+/// Rolling Correlation Trend Output - Contains correlation trend metrics
+#[derive(Debug, Clone)]
+pub struct RollingCorrelationTrendOutput {
+    /// Rolling correlation with lagged returns
+    pub correlation: Vec<f64>,
+    /// Trend in correlation (slope of correlation over time)
+    pub correlation_trend: Vec<f64>,
+    /// Correlation stability (inverse of correlation volatility)
+    pub correlation_stability: Vec<f64>,
+}
+
+/// Rolling Correlation Trend - Trend in rolling correlations
+///
+/// Tracks how correlations change over time, useful for detecting
+/// regime changes and shifts in market dynamics.
+///
+/// # Interpretation
+/// - Correlation: Current autocorrelation level
+/// - Correlation trend: Increasing = strengthening patterns, decreasing = weakening
+/// - Stability: High = consistent correlation, low = unstable/changing
+///
+/// # Example
+/// ```ignore
+/// let rct = RollingCorrelationTrend::new(30, 5, 1).unwrap();
+/// let output = rct.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct RollingCorrelationTrend {
+    period: usize,
+    trend_period: usize,
+    lag: usize,
+}
+
+impl RollingCorrelationTrend {
+    pub fn new(period: usize, trend_period: usize, lag: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if trend_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if lag < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lag".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        if lag >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lag".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, trend_period, lag })
+    }
+
+    /// Calculate rolling correlation and its trend
+    pub fn calculate(&self, close: &[f64]) -> RollingCorrelationTrendOutput {
+        let n = close.len();
+        let mut correlation = vec![0.0; n];
+        let mut correlation_trend = vec![0.0; n];
+        let mut correlation_stability = vec![0.0; n];
+
+        let required = self.period + self.lag + 1;
+        if n < required {
+            return RollingCorrelationTrendOutput {
+                correlation,
+                correlation_trend,
+                correlation_stability,
+            };
+        }
+
+        // Calculate returns
+        let returns: Vec<f64> = (1..n)
+            .map(|i| {
+                if close[i - 1] > 0.0 && close[i] > 0.0 {
+                    close[i] / close[i - 1] - 1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
+        // First pass: calculate rolling correlations
+        for i in required..n {
+            let return_idx = i - 1;
+            let start = return_idx + 1 - self.period;
+
+            if start < self.lag {
+                continue;
+            }
+
+            let current_window = &returns[start..=return_idx];
+            let lagged_window = &returns[(start - self.lag)..=(return_idx - self.lag)];
+
+            // Calculate means
+            let mean_current: f64 = current_window.iter().sum::<f64>() / self.period as f64;
+            let mean_lagged: f64 = lagged_window.iter().sum::<f64>() / self.period as f64;
+
+            // Calculate correlation
+            let mut numerator = 0.0;
+            let mut var_current = 0.0;
+            let mut var_lagged = 0.0;
+
+            for (c, l) in current_window.iter().zip(lagged_window.iter()) {
+                let dc = c - mean_current;
+                let dl = l - mean_lagged;
+                numerator += dc * dl;
+                var_current += dc * dc;
+                var_lagged += dl * dl;
+            }
+
+            let denominator = (var_current * var_lagged).sqrt();
+            if denominator > 1e-10 {
+                correlation[i] = numerator / denominator;
+            }
+        }
+
+        // Second pass: calculate trend and stability of correlation
+        let trend_required = required + self.trend_period;
+        for i in trend_required..n {
+            let corr_window: Vec<f64> = correlation[(i - self.trend_period + 1)..=i].to_vec();
+            let n_trend = corr_window.len() as f64;
+
+            // Calculate trend using linear regression slope
+            let x_mean = (n_trend - 1.0) / 2.0;
+            let y_mean: f64 = corr_window.iter().sum::<f64>() / n_trend;
+
+            let mut numerator = 0.0;
+            let mut denominator = 0.0;
+            for (j, &y) in corr_window.iter().enumerate() {
+                let x = j as f64;
+                numerator += (x - x_mean) * (y - y_mean);
+                denominator += (x - x_mean).powi(2);
+            }
+
+            if denominator > 1e-10 {
+                correlation_trend[i] = numerator / denominator;
+            }
+
+            // Calculate stability (inverse of variance)
+            let variance: f64 = corr_window.iter()
+                .map(|c| (c - y_mean).powi(2))
+                .sum::<f64>() / n_trend;
+
+            if variance > 1e-10 {
+                // Stability: 1 / (1 + variance) to bound between 0 and 1
+                correlation_stability[i] = 1.0 / (1.0 + variance * 10.0);
+            } else {
+                correlation_stability[i] = 1.0; // Very stable (low variance)
+            }
+        }
+
+        RollingCorrelationTrendOutput {
+            correlation,
+            correlation_trend,
+            correlation_stability,
+        }
+    }
+}
+
+impl TechnicalIndicator for RollingCorrelationTrend {
+    fn name(&self) -> &str {
+        "Rolling Correlation Trend"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.lag + self.trend_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(
+            result.correlation,
+            result.correlation_trend,
+            result.correlation_stability,
+        ))
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+/// Stationarity Indicator Output - Contains stationarity test metrics
+#[derive(Debug, Clone)]
+pub struct StationarityIndicatorOutput {
+    /// ADF-inspired test statistic (more negative = more stationary)
+    pub adf_statistic: Vec<f64>,
+    /// Stationarity score (0-1, higher = more stationary)
+    pub stationarity_score: Vec<f64>,
+    /// Mean reversion half-life estimate
+    pub half_life: Vec<f64>,
+}
+
+/// Stationarity Indicator - Tests for price stationarity (ADF-inspired)
+///
+/// Uses concepts from the Augmented Dickey-Fuller test to assess whether
+/// the price series is stationary (mean-reverting) or non-stationary
+/// (trending/random walk).
+///
+/// # Interpretation
+/// - ADF statistic: More negative = stronger evidence of stationarity
+/// - Stationarity score: Higher = more stationary behavior
+/// - Half-life: Expected time for price to revert halfway to mean
+///
+/// # Example
+/// ```ignore
+/// let si = StationarityIndicator::new(30).unwrap();
+/// let output = si.calculate(&close_prices);
+/// ```
+#[derive(Debug, Clone)]
+pub struct StationarityIndicator {
+    period: usize,
+}
+
+impl StationarityIndicator {
+    pub fn new(period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20 for stationarity test".to_string(),
+            });
+        }
+        Ok(Self { period })
+    }
+
+    /// Calculate stationarity metrics
+    ///
+    /// Uses an ADF-inspired approach:
+    /// Regress delta(price) on price_lag to test for unit root
+    pub fn calculate(&self, close: &[f64]) -> StationarityIndicatorOutput {
+        let n = close.len();
+        let mut adf_statistic = vec![0.0; n];
+        let mut stationarity_score = vec![0.0; n];
+        let mut half_life = vec![0.0; n];
+
+        if n < self.period + 1 {
+            return StationarityIndicatorOutput {
+                adf_statistic,
+                stationarity_score,
+                half_life,
+            };
+        }
+
+        for i in self.period..n {
+            let start = i + 1 - self.period;
+            let window = &close[start..=i];
+
+            // Calculate price changes and lagged prices
+            let mut delta_p = Vec::with_capacity(self.period - 1);
+            let mut p_lag = Vec::with_capacity(self.period - 1);
+
+            for j in 1..window.len() {
+                delta_p.push(window[j] - window[j - 1]);
+                p_lag.push(window[j - 1]);
+            }
+
+            if delta_p.is_empty() {
+                continue;
+            }
+
+            let n_obs = delta_p.len() as f64;
+
+            // Mean of lagged prices for centering
+            let mean_p_lag: f64 = p_lag.iter().sum::<f64>() / n_obs;
+
+            // Center the lagged prices
+            let p_lag_centered: Vec<f64> = p_lag.iter()
+                .map(|p| p - mean_p_lag)
+                .collect();
+
+            // Regress delta_p on p_lag_centered: delta_p = phi * p_lag + error
+            // phi = Cov(delta_p, p_lag) / Var(p_lag)
+            let mean_delta: f64 = delta_p.iter().sum::<f64>() / n_obs;
+
+            let mut cov = 0.0;
+            let mut var_p_lag = 0.0;
+            let mut var_delta = 0.0;
+
+            for j in 0..delta_p.len() {
+                let d = delta_p[j] - mean_delta;
+                let p = p_lag_centered[j];
+                cov += d * p;
+                var_p_lag += p * p;
+                var_delta += d * d;
+            }
+
+            if var_p_lag < 1e-10 {
+                continue;
+            }
+
+            // OLS coefficient (phi)
+            let phi = cov / var_p_lag;
+
+            // Calculate residual standard error
+            let residuals: Vec<f64> = delta_p.iter()
+                .zip(p_lag_centered.iter())
+                .map(|(d, p)| d - mean_delta - phi * p)
+                .collect();
+            let sse: f64 = residuals.iter().map(|r| r * r).sum();
+            let residual_se = (sse / (n_obs - 2.0).max(1.0)).sqrt();
+
+            // Standard error of phi
+            let se_phi = if var_p_lag > 1e-10 {
+                residual_se / var_p_lag.sqrt()
+            } else {
+                1.0
+            };
+
+            // ADF test statistic: t = phi / SE(phi)
+            // For unit root (non-stationary): phi should be close to 0
+            // For stationary: phi should be negative (mean-reverting)
+            let t_stat = if se_phi > 1e-10 { phi / se_phi } else { 0.0 };
+            adf_statistic[i] = t_stat;
+
+            // Stationarity score: transform t-stat to 0-1
+            // More negative t-stat = more stationary
+            // Critical value for ADF at 5% is approximately -2.86 for n=50
+            let score = if t_stat < -2.86 {
+                1.0 // Strongly stationary
+            } else if t_stat < -1.95 {
+                0.7 // Moderately stationary
+            } else if t_stat < 0.0 {
+                0.3 + 0.4 * (-t_stat / 1.95).min(1.0) // Weak evidence
+            } else {
+                0.2 * (-t_stat).exp().min(1.0) // Non-stationary
+            };
+            stationarity_score[i] = score.clamp(0.0, 1.0);
+
+            // Half-life calculation: HL = -ln(2) / ln(1 + phi)
+            // Only meaningful if phi < 0 (mean-reverting)
+            if phi < -0.001 && phi > -1.0 {
+                let hl = -0.693147 / (1.0 + phi).ln();
+                half_life[i] = hl.clamp(1.0, 1000.0);
+            } else if phi >= -0.001 {
+                half_life[i] = 1000.0; // Very slow or no mean reversion
+            } else {
+                half_life[i] = 1.0; // Very fast mean reversion
+            }
+        }
+
+        StationarityIndicatorOutput {
+            adf_statistic,
+            stationarity_score,
+            half_life,
+        }
+    }
+}
+
+impl TechnicalIndicator for StationarityIndicator {
+    fn name(&self) -> &str {
+        "Stationarity Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let result = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(
+            result.adf_statistic,
+            result.stationarity_score,
+            result.half_life,
+        ))
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4880,6 +5855,367 @@ mod tests {
         for (v10, v25) in result_10.iter().skip(21).zip(result_25.iter().skip(21)) {
             assert!(v10.is_finite(), "Quantile ratio (10%) should be finite");
             assert!(v25.is_finite(), "Quantile ratio (25%) should be finite");
+        }
+    }
+
+    // ==================== PriceNormality Tests ====================
+
+    #[test]
+    fn test_price_normality() {
+        let close = make_test_data();
+        let pn = PriceNormality::new(20).unwrap();
+        let result = pn.calculate(&close);
+
+        assert_eq!(result.jb_statistic.len(), close.len());
+        assert_eq!(result.p_value.len(), close.len());
+        assert_eq!(result.normality_score.len(), close.len());
+
+        // JB statistic should be non-negative
+        for &val in result.jb_statistic.iter().skip(21) {
+            assert!(val >= 0.0, "JB statistic should be non-negative, got {}", val);
+        }
+
+        // P-value should be between 0 and 1
+        for &val in result.p_value.iter().skip(21) {
+            assert!(val >= 0.0 && val <= 1.0, "P-value should be in [0, 1], got {}", val);
+        }
+
+        // Normality score should be between 0 and 1
+        for &val in result.normality_score.iter().skip(21) {
+            assert!(val >= 0.0 && val <= 1.0, "Normality score should be in [0, 1], got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_price_normality_validation() {
+        assert!(PriceNormality::new(10).is_err()); // period too small
+        assert!(PriceNormality::new(5).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_price_normality_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let pn = PriceNormality::new(20).unwrap();
+        let output = pn.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have 3 output features
+        assert!(output.tertiary.is_some());
+    }
+
+    #[test]
+    fn test_price_normality_trending_data() {
+        // Trending data should still produce valid results
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let pn = PriceNormality::new(20).unwrap();
+        let result = pn.calculate(&close);
+
+        // Should have finite values
+        for &val in result.jb_statistic.iter().skip(21) {
+            assert!(val.is_finite(), "JB statistic should be finite");
+        }
+    }
+
+    // ==================== ReturnSkewKurtosis Tests ====================
+
+    #[test]
+    fn test_return_skew_kurtosis() {
+        let close = make_test_data();
+        let rsk = ReturnSkewKurtosis::new(20).unwrap();
+        let result = rsk.calculate(&close);
+
+        assert_eq!(result.skewness.len(), close.len());
+        assert_eq!(result.kurtosis.len(), close.len());
+        assert_eq!(result.combined_score.len(), close.len());
+
+        // Combined score should be non-negative
+        for &val in result.combined_score.iter().skip(21) {
+            assert!(val >= 0.0, "Combined score should be non-negative, got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_return_skew_kurtosis_validation() {
+        assert!(ReturnSkewKurtosis::new(10).is_err()); // period too small
+        assert!(ReturnSkewKurtosis::new(5).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_return_skew_kurtosis_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let rsk = ReturnSkewKurtosis::new(20).unwrap();
+        let output = rsk.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have 3 output features
+        assert!(output.tertiary.is_some());
+    }
+
+    #[test]
+    fn test_return_skew_kurtosis_extreme_returns() {
+        // Data with extreme returns should show high kurtosis
+        let mut close = make_test_data();
+        close.push(close.last().unwrap() * 1.15); // Large positive return
+        close.push(close.last().unwrap() * 0.90); // Large negative return
+
+        let rsk = ReturnSkewKurtosis::new(20).unwrap();
+        let result = rsk.calculate(&close);
+
+        // Values should be finite
+        let last_idx = close.len() - 1;
+        assert!(result.skewness[last_idx].is_finite());
+        assert!(result.kurtosis[last_idx].is_finite());
+    }
+
+    // ==================== DistributionShape Tests ====================
+
+    #[test]
+    fn test_distribution_shape() {
+        let close = make_test_data();
+        let ds = DistributionShape::new(20).unwrap();
+        let result = ds.calculate(&close);
+
+        assert_eq!(result.shape_class.len(), close.len());
+        assert_eq!(result.tail_heaviness.len(), close.len());
+        assert_eq!(result.asymmetry.len(), close.len());
+        assert_eq!(result.peakedness.len(), close.len());
+    }
+
+    #[test]
+    fn test_distribution_shape_validation() {
+        assert!(DistributionShape::new(10).is_err()); // period too small
+        assert!(DistributionShape::new(5).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_distribution_shape_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let ds = DistributionShape::new(20).unwrap();
+        let output = ds.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have 3 output features (shape_class, tail_heaviness, asymmetry)
+        assert!(output.tertiary.is_some());
+    }
+
+    #[test]
+    fn test_distribution_shape_classes() {
+        let close = make_test_data();
+        let ds = DistributionShape::new(20).unwrap();
+        let result = ds.calculate(&close);
+
+        // Shape class should be -1, 0, 1, or 2
+        for &val in result.shape_class.iter() {
+            assert!(val >= -1.0 && val <= 2.0, "Shape class should be -1, 0, 1, or 2, got {}", val);
+        }
+    }
+
+    // ==================== ExtremeValueIndicator Tests ====================
+
+    #[test]
+    fn test_extreme_value_indicator() {
+        let close = make_test_data();
+        let evi = ExtremeValueIndicator::new(20, 0.1).unwrap();
+        let result = evi.calculate(&close);
+
+        assert_eq!(result.upper_extreme.len(), close.len());
+        assert_eq!(result.lower_extreme.len(), close.len());
+        assert_eq!(result.extreme_frequency.len(), close.len());
+        assert_eq!(result.expected_shortfall.len(), close.len());
+
+        // Extreme frequency should be between 0 and 1
+        for &val in result.extreme_frequency.iter().skip(21) {
+            assert!(val >= 0.0 && val <= 1.0, "Extreme frequency should be in [0, 1], got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_extreme_value_indicator_validation() {
+        assert!(ExtremeValueIndicator::new(10, 0.1).is_err()); // period too small
+        assert!(ExtremeValueIndicator::new(20, 0.0).is_err()); // quantile too small
+        assert!(ExtremeValueIndicator::new(20, 0.5).is_err()); // quantile too large
+        assert!(ExtremeValueIndicator::new(20, 0.6).is_err()); // quantile way too large
+    }
+
+    #[test]
+    fn test_extreme_value_indicator_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let evi = ExtremeValueIndicator::new(20, 0.1).unwrap();
+        let output = evi.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have 3 output features (extreme_frequency, expected_shortfall, upper_extreme)
+        assert!(output.tertiary.is_some());
+    }
+
+    #[test]
+    fn test_extreme_value_indicator_with_extremes() {
+        let mut close = make_test_data();
+        // Add extreme values
+        close.push(close.last().unwrap() * 1.20); // Extreme positive
+        close.push(close.last().unwrap() * 0.85); // Extreme negative
+
+        let evi = ExtremeValueIndicator::new(20, 0.1).unwrap();
+        let result = evi.calculate(&close);
+
+        // Should detect extremes
+        let last_idx = close.len() - 1;
+        assert!(result.upper_extreme[last_idx - 1] != 0.0 || result.lower_extreme[last_idx] != 0.0,
+            "Should detect extreme values");
+    }
+
+    // ==================== RollingCorrelationTrend Tests ====================
+
+    #[test]
+    fn test_rolling_correlation_trend() {
+        // Need more data for this indicator
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 + (i as f64 * 0.5).sin() * 2.0).collect();
+        let rct = RollingCorrelationTrend::new(15, 5, 1).unwrap();
+        let result = rct.calculate(&close);
+
+        assert_eq!(result.correlation.len(), close.len());
+        assert_eq!(result.correlation_trend.len(), close.len());
+        assert_eq!(result.correlation_stability.len(), close.len());
+
+        // Correlation should be between -1 and 1
+        for &val in result.correlation.iter().skip(22) {
+            if val != 0.0 {
+                assert!(val >= -1.0 && val <= 1.0, "Correlation should be in [-1, 1], got {}", val);
+            }
+        }
+
+        // Stability should be between 0 and 1
+        for &val in result.correlation_stability.iter().skip(22) {
+            assert!(val >= 0.0 && val <= 1.0, "Stability should be in [0, 1], got {}", val);
+        }
+    }
+
+    #[test]
+    fn test_rolling_correlation_trend_validation() {
+        assert!(RollingCorrelationTrend::new(5, 5, 1).is_err()); // period too small
+        assert!(RollingCorrelationTrend::new(15, 1, 1).is_err()); // trend_period too small
+        assert!(RollingCorrelationTrend::new(15, 5, 0).is_err()); // lag too small
+        assert!(RollingCorrelationTrend::new(15, 5, 15).is_err()); // lag >= period
+    }
+
+    #[test]
+    fn test_rolling_correlation_trend_compute() {
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let data = make_ohlcv_series(close);
+        let rct = RollingCorrelationTrend::new(15, 5, 1).unwrap();
+        let output = rct.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have 3 output features
+        assert!(output.tertiary.is_some());
+    }
+
+    #[test]
+    fn test_rolling_correlation_trend_trending_data() {
+        // Strongly trending data should show positive autocorrelation
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 2.0).collect();
+        let rct = RollingCorrelationTrend::new(15, 5, 1).unwrap();
+        let result = rct.calculate(&close);
+
+        // Trending data should have positive correlation
+        let valid_corrs: Vec<f64> = result.correlation.iter()
+            .skip(25)
+            .copied()
+            .filter(|&v| v != 0.0)
+            .collect();
+
+        if !valid_corrs.is_empty() {
+            let avg_corr: f64 = valid_corrs.iter().sum::<f64>() / valid_corrs.len() as f64;
+            assert!(avg_corr > -0.5, "Trending data should not have strong negative correlation, got {}", avg_corr);
+        }
+    }
+
+    // ==================== StationarityIndicator Tests ====================
+
+    #[test]
+    fn test_stationarity_indicator() {
+        let close = make_test_data();
+        let si = StationarityIndicator::new(20).unwrap();
+        let result = si.calculate(&close);
+
+        assert_eq!(result.adf_statistic.len(), close.len());
+        assert_eq!(result.stationarity_score.len(), close.len());
+        assert_eq!(result.half_life.len(), close.len());
+
+        // Stationarity score should be between 0 and 1
+        for &val in result.stationarity_score.iter().skip(21) {
+            assert!(val >= 0.0 && val <= 1.0, "Stationarity score should be in [0, 1], got {}", val);
+        }
+
+        // Half-life should be positive
+        for &val in result.half_life.iter().skip(21) {
+            if val != 0.0 {
+                assert!(val > 0.0, "Half-life should be positive, got {}", val);
+            }
+        }
+    }
+
+    #[test]
+    fn test_stationarity_indicator_validation() {
+        assert!(StationarityIndicator::new(10).is_err()); // period too small
+        assert!(StationarityIndicator::new(5).is_err()); // period way too small
+    }
+
+    #[test]
+    fn test_stationarity_indicator_compute() {
+        let close = make_test_data();
+        let data = make_ohlcv_series(close);
+        let si = StationarityIndicator::new(20).unwrap();
+        let output = si.compute(&data).unwrap();
+
+        assert!(!output.primary.is_empty());
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have 3 output features
+        assert!(output.tertiary.is_some());
+    }
+
+    #[test]
+    fn test_stationarity_indicator_trending() {
+        // Strongly trending data should be non-stationary
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 3.0).collect();
+        let si = StationarityIndicator::new(20).unwrap();
+        let result = si.calculate(&close);
+
+        // Trending data should have lower stationarity score
+        let valid_scores: Vec<f64> = result.stationarity_score.iter()
+            .skip(21)
+            .copied()
+            .filter(|&v| v != 0.0)
+            .collect();
+
+        if !valid_scores.is_empty() {
+            for &score in &valid_scores {
+                assert!(score.is_finite(), "Stationarity score should be finite");
+            }
+        }
+    }
+
+    #[test]
+    fn test_stationarity_indicator_mean_reverting() {
+        // Mean-reverting data (oscillating around a mean)
+        let close: Vec<f64> = (0..50)
+            .map(|i| 100.0 + (i as f64 * 0.5).sin() * 10.0)
+            .collect();
+        let si = StationarityIndicator::new(20).unwrap();
+        let result = si.calculate(&close);
+
+        // Should produce finite values
+        for &val in result.adf_statistic.iter().skip(21) {
+            assert!(val.is_finite(), "ADF statistic should be finite");
         }
     }
 }

@@ -3312,6 +3312,845 @@ impl TechnicalIndicator for MovingAverageConvergence {
     }
 }
 
+// =============================================================================
+// NEW DSP INDICATORS - Batch 7
+// =============================================================================
+
+/// Adaptive Sine Wave - Adaptive sine wave that follows market cycles
+///
+/// This indicator generates a sine wave that adapts to the dominant market cycle.
+/// It uses Hilbert transform concepts to detect the dominant period and generates
+/// a sine wave synchronized with price action. The output oscillates between -1 and 1.
+#[derive(Debug, Clone)]
+pub struct AdaptiveSineWave {
+    min_period: usize,
+    max_period: usize,
+    smoothing: f64,
+}
+
+impl AdaptiveSineWave {
+    /// Creates a new AdaptiveSineWave indicator
+    ///
+    /// # Parameters
+    /// - `min_period`: Minimum cycle period to detect (minimum 5)
+    /// - `max_period`: Maximum cycle period to detect (must be > min_period)
+    /// - `smoothing`: Smoothing factor for period transitions (0.0 to 1.0)
+    pub fn new(min_period: usize, max_period: usize, smoothing: f64) -> Result<Self> {
+        if min_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if max_period <= min_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_period".to_string(),
+                reason: "must be greater than min_period".to_string(),
+            });
+        }
+        if smoothing < 0.0 || smoothing > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { min_period, max_period, smoothing })
+    }
+
+    /// Detect dominant period using autocorrelation
+    fn detect_period(&self, slice: &[f64]) -> f64 {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let mut best_period = self.min_period;
+        let mut best_corr = f64::NEG_INFINITY;
+
+        for period in self.min_period..=self.max_period.min(len / 2) {
+            let mut num = 0.0;
+            let mut denom1 = 0.0;
+            let mut denom2 = 0.0;
+
+            for j in 0..(len - period) {
+                let x = slice[j] - mean;
+                let y = slice[j + period] - mean;
+                num += x * y;
+                denom1 += x * x;
+                denom2 += y * y;
+            }
+
+            let denom = (denom1 * denom2).sqrt();
+            let corr = if denom > 1e-10 { num / denom } else { 0.0 };
+
+            if corr > best_corr {
+                best_corr = corr;
+                best_period = period;
+            }
+        }
+
+        best_period as f64
+    }
+
+    /// Calculate adaptive sine wave
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut phase = 0.0;
+        let mut prev_period = self.min_period as f64;
+
+        for i in self.max_period..n {
+            let start = i.saturating_sub(self.max_period);
+            let slice = &close[start..=i];
+
+            // Detect current dominant period
+            let detected = self.detect_period(slice);
+
+            // Smooth period transition
+            let smooth_period = self.smoothing * prev_period + (1.0 - self.smoothing) * detected;
+            prev_period = smooth_period;
+
+            // Calculate phase increment based on period
+            let phase_inc = 2.0 * std::f64::consts::PI / smooth_period;
+            phase += phase_inc;
+
+            // Keep phase in range 0 to 2*PI
+            while phase > 2.0 * std::f64::consts::PI {
+                phase -= 2.0 * std::f64::consts::PI;
+            }
+
+            // Generate sine wave
+            result[i] = phase.sin();
+        }
+
+        result
+    }
+
+    /// Calculate both sine and lead sine (45 degrees ahead)
+    pub fn calculate_with_lead(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut sine = vec![0.0; n];
+        let mut lead_sine = vec![0.0; n];
+        let mut phase = 0.0;
+        let mut prev_period = self.min_period as f64;
+
+        for i in self.max_period..n {
+            let start = i.saturating_sub(self.max_period);
+            let slice = &close[start..=i];
+
+            let detected = self.detect_period(slice);
+            let smooth_period = self.smoothing * prev_period + (1.0 - self.smoothing) * detected;
+            prev_period = smooth_period;
+
+            let phase_inc = 2.0 * std::f64::consts::PI / smooth_period;
+            phase += phase_inc;
+
+            while phase > 2.0 * std::f64::consts::PI {
+                phase -= 2.0 * std::f64::consts::PI;
+            }
+
+            sine[i] = phase.sin();
+            lead_sine[i] = (phase + std::f64::consts::PI / 4.0).sin(); // 45 degrees ahead
+        }
+
+        (sine, lead_sine)
+    }
+}
+
+impl TechnicalIndicator for AdaptiveSineWave {
+    fn name(&self) -> &str {
+        "Adaptive Sine Wave"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.max_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (sine, lead_sine) = self.calculate_with_lead(&data.close);
+        Ok(IndicatorOutput::dual(sine, lead_sine))
+    }
+}
+
+/// Cycle Bandwidth - Measures bandwidth of dominant market cycle
+///
+/// This indicator measures the "bandwidth" or spread of cycle periods present
+/// in price data. A narrow bandwidth indicates a strong, consistent cycle,
+/// while a wide bandwidth suggests multiple cycles or noise. Output is
+/// normalized from 0 (narrow/pure cycle) to 100 (wide/noisy).
+#[derive(Debug, Clone)]
+pub struct CycleBandwidth {
+    period: usize,
+    num_bands: usize,
+}
+
+impl CycleBandwidth {
+    /// Creates a new CycleBandwidth indicator
+    ///
+    /// # Parameters
+    /// - `period`: Lookback period for analysis (minimum 20)
+    /// - `num_bands`: Number of frequency bands to analyze (2 to 8)
+    pub fn new(period: usize, num_bands: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if num_bands < 2 || num_bands > 8 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_bands".to_string(),
+                reason: "must be between 2 and 8".to_string(),
+            });
+        }
+        Ok(Self { period, num_bands })
+    }
+
+    /// Calculate power at a specific cycle period
+    fn band_power(&self, slice: &[f64], band_period: usize) -> f64 {
+        let len = slice.len();
+        if band_period >= len / 2 || band_period == 0 {
+            return 0.0;
+        }
+
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        // Goertzel-like calculation for specific frequency
+        let mut cos_sum = 0.0;
+        let mut sin_sum = 0.0;
+        let omega = 2.0 * std::f64::consts::PI / band_period as f64;
+
+        for (j, &val) in slice.iter().enumerate() {
+            let centered = val - mean;
+            cos_sum += centered * (omega * j as f64).cos();
+            sin_sum += centered * (omega * j as f64).sin();
+        }
+
+        // Power is magnitude squared
+        (cos_sum * cos_sum + sin_sum * sin_sum) / (len as f64 * len as f64)
+    }
+
+    /// Calculate cycle bandwidth
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Define band periods (logarithmically spaced)
+        let min_band = 5;
+        let max_band = self.period / 2;
+        let band_periods: Vec<usize> = (0..self.num_bands)
+            .map(|i| {
+                let t = i as f64 / (self.num_bands - 1).max(1) as f64;
+                let log_period = (min_band as f64).ln() + t * ((max_band as f64).ln() - (min_band as f64).ln());
+                log_period.exp().round() as usize
+            })
+            .collect();
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+
+            // Calculate power at each band
+            let powers: Vec<f64> = band_periods.iter()
+                .map(|&p| self.band_power(slice, p))
+                .collect();
+
+            let total_power: f64 = powers.iter().sum();
+            if total_power < 1e-10 {
+                result[i] = 50.0; // Neutral when no power
+                continue;
+            }
+
+            // Calculate entropy-based bandwidth measure
+            // Higher entropy = more spread out power = wider bandwidth
+            let mut entropy = 0.0;
+            for &power in &powers {
+                let p = power / total_power;
+                if p > 1e-10 {
+                    entropy -= p * p.ln();
+                }
+            }
+
+            // Normalize to 0-100 scale
+            // Max entropy is ln(num_bands)
+            let max_entropy = (self.num_bands as f64).ln();
+            let bandwidth = if max_entropy > 0.0 {
+                (entropy / max_entropy * 100.0).min(100.0).max(0.0)
+            } else {
+                0.0
+            };
+
+            result[i] = bandwidth;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CycleBandwidth {
+    fn name(&self) -> &str {
+        "Cycle Bandwidth"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Signal Envelope - Extracts envelope of cyclical price action
+///
+/// This indicator extracts the upper and lower envelope of cyclical price
+/// movements using the Hilbert transform approach. The envelope captures
+/// the amplitude modulation of price cycles. Output is the envelope amplitude.
+#[derive(Debug, Clone)]
+pub struct SignalEnvelope {
+    period: usize,
+    smoothing: f64,
+}
+
+impl SignalEnvelope {
+    /// Creates a new SignalEnvelope indicator
+    ///
+    /// # Parameters
+    /// - `period`: Analysis period (minimum 10)
+    /// - `smoothing`: Envelope smoothing factor (0.0 to 1.0)
+    pub fn new(period: usize, smoothing: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smoothing < 0.0 || smoothing > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate signal envelope using Hilbert transform approximation
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut envelope = vec![0.0; n];
+
+        // First, detrend the data
+        let mut detrended = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let mean: f64 = slice.iter().sum::<f64>() / slice.len() as f64;
+            detrended[i] = close[i] - mean;
+        }
+
+        // Calculate in-phase and quadrature components using weighted average
+        // This is a simplified Hilbert transform approximation
+        let half_period = self.period / 2;
+        let mut prev_envelope = 0.0;
+
+        for i in self.period..n {
+            let mut in_phase = 0.0;
+            let mut quadrature = 0.0;
+
+            // Compute I and Q using sine/cosine weighting
+            for j in 0..self.period.min(i + 1) {
+                let idx = i - j;
+                if idx >= self.period {
+                    let angle = 2.0 * std::f64::consts::PI * j as f64 / self.period as f64;
+                    in_phase += detrended[idx] * angle.cos();
+                    quadrature += detrended[idx] * angle.sin();
+                }
+            }
+
+            in_phase /= half_period as f64;
+            quadrature /= half_period as f64;
+
+            // Envelope is the magnitude of the analytic signal
+            let raw_envelope = (in_phase * in_phase + quadrature * quadrature).sqrt();
+
+            // Apply smoothing
+            let smooth_envelope = self.smoothing * prev_envelope + (1.0 - self.smoothing) * raw_envelope;
+            prev_envelope = smooth_envelope;
+
+            envelope[i] = smooth_envelope;
+        }
+
+        envelope
+    }
+
+    /// Calculate upper and lower envelope bands
+    pub fn calculate_bands(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let envelope = self.calculate(close);
+
+        // Calculate trend (simple moving average)
+        let mut trend = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            trend[i] = close[start..=i].iter().sum::<f64>() / (i - start + 1) as f64;
+        }
+
+        // Upper and lower bands
+        let upper: Vec<f64> = (0..n).map(|i| trend[i] + envelope[i]).collect();
+        let lower: Vec<f64> = (0..n).map(|i| trend[i] - envelope[i]).collect();
+
+        (upper, lower)
+    }
+}
+
+impl TechnicalIndicator for SignalEnvelope {
+    fn name(&self) -> &str {
+        "Signal Envelope"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (upper, lower) = self.calculate_bands(&data.close);
+        Ok(IndicatorOutput::dual(upper, lower))
+    }
+}
+
+/// Instantaneous Trend - Instantaneous trendline using Hilbert transform concepts
+///
+/// This indicator calculates an instantaneous trendline that adapts to market
+/// conditions using concepts from the Hilbert transform. It provides a smooth
+/// trend estimate with minimal lag compared to traditional moving averages.
+#[derive(Debug, Clone)]
+pub struct InstantaneousTrend {
+    period: usize,
+    alpha: f64,
+}
+
+impl InstantaneousTrend {
+    /// Creates a new InstantaneousTrend indicator
+    ///
+    /// # Parameters
+    /// - `period`: Base period for trend calculation (minimum 8)
+    /// - `alpha`: Smoothing coefficient (0.0 to 1.0, default around 0.07)
+    pub fn new(period: usize, alpha: f64) -> Result<Self> {
+        if period < 8 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 8".to_string(),
+            });
+        }
+        if alpha <= 0.0 || alpha > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "alpha".to_string(),
+                reason: "must be between 0.0 (exclusive) and 1.0 (inclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, alpha })
+    }
+
+    /// Calculate instantaneous trend using Hilbert-based approach
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut trend = vec![0.0; n];
+
+        // Use smoothed price as base
+        let mut smooth = vec![0.0; n];
+        for i in 3..n {
+            smooth[i] = (4.0 * close[i] + 3.0 * close[i - 1] + 2.0 * close[i - 2] + close[i - 3]) / 10.0;
+        }
+
+        // Hilbert transform coefficients (Ehlers' standard values)
+        let c1 = 0.0962;
+        let c2 = 0.5769;
+
+        let mut detrender = vec![0.0; n];
+        let mut i1 = vec![0.0; n];
+        let mut q1 = vec![0.0; n];
+        let mut i2 = vec![0.0; n];
+        let mut q2 = vec![0.0; n];
+        let mut period_arr = vec![self.period as f64; n];
+
+        for i in 7..n {
+            // Detrend using Hilbert coefficients
+            detrender[i] = c1 * smooth[i] + c2 * c1 * smooth[i - 2]
+                - c2 * c1 * smooth[i - 4] - c1 * smooth[i - 6];
+            detrender[i] += c2 * detrender[i - 1];
+
+            // In-phase component
+            i1[i] = detrender[i - 3];
+
+            // Quadrature component
+            q1[i] = c1 * detrender[i] + c2 * c1 * detrender[i - 2]
+                - c2 * c1 * detrender[i - 4] - c1 * detrender[i - 6];
+            q1[i] += c2 * q1[i - 1];
+
+            // Phase advance for phasor addition
+            let ji = c1 * i1[i] + c2 * c1 * i1[i - 2] - c2 * c1 * i1[i - 4] - c1 * i1[i - 6];
+            let jq = c1 * q1[i] + c2 * c1 * q1[i - 2] - c2 * c1 * q1[i - 4] - c1 * q1[i - 6];
+
+            // Phasor addition
+            i2[i] = i1[i] - jq;
+            q2[i] = q1[i] + ji;
+
+            // Smooth I and Q
+            i2[i] = 0.2 * i2[i] + 0.8 * i2[i - 1];
+            q2[i] = 0.2 * q2[i] + 0.8 * q2[i - 1];
+
+            // Calculate instantaneous period from homodyne discriminator
+            let re = i2[i] * i2[i - 1] + q2[i] * q2[i - 1];
+            let im = i2[i] * q2[i - 1] - q2[i] * i2[i - 1];
+
+            if im.abs() > 1e-10 && re.abs() > 1e-10 {
+                let inst_period = 2.0 * std::f64::consts::PI / im.atan2(re);
+                // Constrain period
+                let clamped = inst_period.max(self.period as f64 * 0.5).min(self.period as f64 * 2.0);
+                period_arr[i] = 0.2 * clamped + 0.8 * period_arr[i - 1];
+            } else {
+                period_arr[i] = period_arr[i - 1];
+            }
+
+            // Calculate adaptive alpha based on period
+            let adaptive_alpha = 2.0 / (period_arr[i] + 1.0) * self.alpha / 0.07;
+            let alpha_clamped = adaptive_alpha.max(0.01).min(1.0);
+
+            // Instantaneous trend calculation
+            // Uses both current price and smoothed value
+            if i == 7 {
+                trend[i] = smooth[i];
+            } else {
+                trend[i] = alpha_clamped * (smooth[i] + smooth[i - 1]) / 2.0
+                    + (1.0 - alpha_clamped) * trend[i - 1];
+            }
+        }
+
+        trend
+    }
+
+    /// Calculate trend and its trigger line (delayed trend)
+    pub fn calculate_with_trigger(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let trend = self.calculate(close);
+        let n = trend.len();
+
+        // Trigger is a 2-bar delay of trend
+        let mut trigger = vec![0.0; n];
+        for i in 2..n {
+            trigger[i] = trend[i - 2];
+        }
+
+        (trend, trigger)
+    }
+}
+
+impl TechnicalIndicator for InstantaneousTrend {
+    fn name(&self) -> &str {
+        "Instantaneous Trend"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (trend, trigger) = self.calculate_with_trigger(&data.close);
+        Ok(IndicatorOutput::dual(trend, trigger))
+    }
+}
+
+/// Cycle Strength - Measures strength of current market cycle
+///
+/// This indicator measures how strong or dominant the current market cycle is.
+/// A high value indicates a clear, consistent cycle; a low value indicates
+/// weak or absent cyclical behavior. Output ranges from 0 to 100.
+#[derive(Debug, Clone)]
+pub struct CycleStrength {
+    period: usize,
+    cycle_period: usize,
+}
+
+impl CycleStrength {
+    /// Creates a new CycleStrength indicator
+    ///
+    /// # Parameters
+    /// - `period`: Lookback period for analysis (minimum 20)
+    /// - `cycle_period`: Expected cycle period to measure strength (minimum 5)
+    pub fn new(period: usize, cycle_period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if cycle_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if cycle_period >= period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cycle_period".to_string(),
+                reason: "must be less than period".to_string(),
+            });
+        }
+        Ok(Self { period, cycle_period })
+    }
+
+    /// Calculate cycle strength using autocorrelation and spectral analysis
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // 1. Calculate autocorrelation at cycle period
+            let mut auto_corr = 0.0;
+            let mut norm1 = 0.0;
+            let mut norm2 = 0.0;
+
+            for j in 0..(len - self.cycle_period) {
+                let x = slice[j] - mean;
+                let y = slice[j + self.cycle_period] - mean;
+                auto_corr += x * y;
+                norm1 += x * x;
+                norm2 += y * y;
+            }
+
+            let norm = (norm1 * norm2).sqrt();
+            let corr = if norm > 1e-10 { auto_corr / norm } else { 0.0 };
+
+            // 2. Calculate power at cycle frequency using Goertzel
+            let omega = 2.0 * std::f64::consts::PI / self.cycle_period as f64;
+            let mut cos_sum = 0.0;
+            let mut sin_sum = 0.0;
+
+            for (j, &val) in slice.iter().enumerate() {
+                let centered = val - mean;
+                cos_sum += centered * (omega * j as f64).cos();
+                sin_sum += centered * (omega * j as f64).sin();
+            }
+
+            let cycle_power = (cos_sum * cos_sum + sin_sum * sin_sum) / (len as f64);
+
+            // 3. Calculate total variance
+            let variance: f64 = slice.iter()
+                .map(|x| (x - mean).powi(2))
+                .sum::<f64>() / len as f64;
+
+            // 4. Calculate spectral concentration ratio
+            let spectral_ratio = if variance > 1e-10 {
+                (cycle_power / variance).min(1.0)
+            } else {
+                0.0
+            };
+
+            // 5. Combine autocorrelation and spectral ratio
+            // Positive autocorrelation at cycle period suggests cycle presence
+            // High spectral ratio suggests dominant cycle
+            let corr_component = ((corr + 1.0) / 2.0 * 50.0).max(0.0); // Convert -1..1 to 0..50
+            let spectral_component = spectral_ratio * 50.0;
+
+            result[i] = (corr_component + spectral_component).min(100.0).max(0.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CycleStrength {
+    fn name(&self) -> &str {
+        "Cycle Strength"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Adaptive Laguerre Filter - Laguerre filter with adaptive gamma
+///
+/// This indicator applies a Laguerre filter with a gamma parameter that adapts
+/// to market conditions. It provides smooth filtering with the gamma adjusting
+/// based on detected volatility or cycle characteristics.
+#[derive(Debug, Clone)]
+pub struct AdaptiveLaguerreFilter {
+    min_gamma: f64,
+    max_gamma: f64,
+    lookback: usize,
+}
+
+impl AdaptiveLaguerreFilter {
+    /// Creates a new AdaptiveLaguerreFilter indicator
+    ///
+    /// # Parameters
+    /// - `min_gamma`: Minimum gamma value (0.0 to max_gamma)
+    /// - `max_gamma`: Maximum gamma value (min_gamma to 1.0)
+    /// - `lookback`: Lookback period for adaptation (minimum 10)
+    pub fn new(min_gamma: f64, max_gamma: f64, lookback: usize) -> Result<Self> {
+        if min_gamma < 0.0 || min_gamma >= 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_gamma".to_string(),
+                reason: "must be between 0.0 and 1.0 (exclusive)".to_string(),
+            });
+        }
+        if max_gamma <= min_gamma || max_gamma > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_gamma".to_string(),
+                reason: "must be greater than min_gamma and at most 1.0".to_string(),
+            });
+        }
+        if lookback < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        Ok(Self { min_gamma, max_gamma, lookback })
+    }
+
+    /// Calculate adaptive gamma based on recent price action
+    fn calculate_adaptive_gamma(&self, slice: &[f64]) -> f64 {
+        let len = slice.len();
+        if len < 2 {
+            return (self.min_gamma + self.max_gamma) / 2.0;
+        }
+
+        // Calculate normalized volatility (coefficient of variation)
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+        let variance: f64 = slice.iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>() / len as f64;
+        let std_dev = variance.sqrt();
+        let cv = if mean.abs() > 1e-10 { std_dev / mean.abs() } else { 0.0 };
+
+        // Also measure directional movement
+        let mut up_moves = 0.0;
+        let mut down_moves = 0.0;
+        for i in 1..len {
+            let diff = slice[i] - slice[i - 1];
+            if diff > 0.0 {
+                up_moves += diff;
+            } else {
+                down_moves += -diff;
+            }
+        }
+        let total_moves = up_moves + down_moves;
+        let directional_ratio = if total_moves > 1e-10 {
+            (up_moves - down_moves).abs() / total_moves
+        } else {
+            0.0
+        };
+
+        // High volatility or low directional movement -> higher gamma (smoother)
+        // Low volatility and high directional movement -> lower gamma (faster)
+        let vol_factor = (cv * 10.0).min(1.0); // Normalize CV
+        let dir_factor = 1.0 - directional_ratio;
+
+        let combined = (vol_factor + dir_factor) / 2.0;
+        self.min_gamma + combined * (self.max_gamma - self.min_gamma)
+    }
+
+    /// Calculate adaptive Laguerre filter output
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // 4-element Laguerre filter state
+        let mut l0 = 0.0;
+        let mut l1 = 0.0;
+        let mut l2 = 0.0;
+        let mut l3 = 0.0;
+
+        for i in 0..n {
+            // Calculate adaptive gamma
+            let gamma = if i >= self.lookback {
+                let start = i.saturating_sub(self.lookback);
+                self.calculate_adaptive_gamma(&close[start..=i])
+            } else {
+                (self.min_gamma + self.max_gamma) / 2.0
+            };
+
+            let one_minus_g = 1.0 - gamma;
+
+            // Save previous values
+            let l0_prev = l0;
+            let l1_prev = l1;
+            let l2_prev = l2;
+
+            // Update Laguerre filter
+            l0 = one_minus_g * close[i] + gamma * l0_prev;
+            l1 = -gamma * l0 + l0_prev + gamma * l1_prev;
+            l2 = -gamma * l1 + l1_prev + gamma * l2_prev;
+            l3 = -gamma * l2 + l2_prev + gamma * l3;
+
+            // Output is average of filter elements
+            result[i] = (l0 + 2.0 * l1 + 2.0 * l2 + l3) / 6.0;
+        }
+
+        result
+    }
+
+    /// Calculate filter output with adaptive gamma values
+    pub fn calculate_with_gamma(&self, close: &[f64]) -> (Vec<f64>, Vec<f64>) {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut gamma_values = vec![0.0; n];
+
+        let mut l0 = 0.0;
+        let mut l1 = 0.0;
+        let mut l2 = 0.0;
+        let mut l3 = 0.0;
+
+        for i in 0..n {
+            let gamma = if i >= self.lookback {
+                let start = i.saturating_sub(self.lookback);
+                self.calculate_adaptive_gamma(&close[start..=i])
+            } else {
+                (self.min_gamma + self.max_gamma) / 2.0
+            };
+
+            gamma_values[i] = gamma;
+            let one_minus_g = 1.0 - gamma;
+
+            let l0_prev = l0;
+            let l1_prev = l1;
+            let l2_prev = l2;
+
+            l0 = one_minus_g * close[i] + gamma * l0_prev;
+            l1 = -gamma * l0 + l0_prev + gamma * l1_prev;
+            l2 = -gamma * l1 + l1_prev + gamma * l2_prev;
+            l3 = -gamma * l2 + l2_prev + gamma * l3;
+
+            result[i] = (l0 + 2.0 * l1 + 2.0 * l2 + l3) / 6.0;
+        }
+
+        (result, gamma_values)
+    }
+}
+
+impl TechnicalIndicator for AdaptiveLaguerreFilter {
+    fn name(&self) -> &str {
+        "Adaptive Laguerre Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let (filter, gamma) = self.calculate_with_gamma(&data.close);
+        Ok(IndicatorOutput::dual(filter, gamma))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5253,5 +6092,489 @@ mod tests {
 
         // Verify trend-cycle decomposer has dual output
         assert!(tcd_result.secondary.is_some());
+    }
+
+    // =====================================================================
+    // AdaptiveSineWave Tests
+    // =====================================================================
+
+    #[test]
+    fn test_adaptive_sine_wave_basic() {
+        let close = make_test_data();
+        let asw = AdaptiveSineWave::new(5, 25, 0.5).unwrap();
+        let result = asw.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Sine wave should be bounded between -1 and 1
+        for i in 30..result.len() {
+            assert!(result[i] >= -1.0 && result[i] <= 1.0,
+                    "Sine value {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_sine_wave_with_lead() {
+        let close: Vec<f64> = (0..80)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 5.0)
+            .collect();
+        let asw = AdaptiveSineWave::new(5, 20, 0.3).unwrap();
+        let (sine, lead_sine) = asw.calculate_with_lead(&close);
+
+        assert_eq!(sine.len(), close.len());
+        assert_eq!(lead_sine.len(), close.len());
+
+        // Both should be bounded
+        for i in 25..sine.len() {
+            assert!(sine[i] >= -1.0 && sine[i] <= 1.0);
+            assert!(lead_sine[i] >= -1.0 && lead_sine[i] <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_sine_wave_validation() {
+        // min_period too small
+        assert!(AdaptiveSineWave::new(3, 20, 0.5).is_err());
+        // max_period <= min_period
+        assert!(AdaptiveSineWave::new(10, 10, 0.5).is_err());
+        assert!(AdaptiveSineWave::new(10, 5, 0.5).is_err());
+        // invalid smoothing
+        assert!(AdaptiveSineWave::new(5, 20, -0.1).is_err());
+        assert!(AdaptiveSineWave::new(5, 20, 1.5).is_err());
+        // valid
+        assert!(AdaptiveSineWave::new(5, 20, 0.0).is_ok());
+        assert!(AdaptiveSineWave::new(5, 20, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_sine_wave_trait() {
+        let data = make_ohlcv_series();
+        let asw = AdaptiveSineWave::new(5, 20, 0.5).unwrap();
+
+        assert_eq!(asw.name(), "Adaptive Sine Wave");
+        assert_eq!(asw.min_periods(), 21);
+
+        let output = asw.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have dual output (sine and lead_sine)
+        assert!(output.secondary.is_some());
+    }
+
+    // =====================================================================
+    // CycleBandwidth Tests
+    // =====================================================================
+
+    #[test]
+    fn test_cycle_bandwidth_basic() {
+        let close = make_test_data();
+        let cb = CycleBandwidth::new(25, 4).unwrap();
+        let result = cb.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Bandwidth should be between 0 and 100
+        for i in 30..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Bandwidth {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_cycle_bandwidth_pure_sine() {
+        // Pure sine wave should have narrow bandwidth
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 2.0 * std::f64::consts::PI / 20.0).sin() * 5.0)
+            .collect();
+        let cb = CycleBandwidth::new(30, 4).unwrap();
+        let result = cb.calculate(&close);
+
+        // Pure cycle should have relatively low bandwidth (concentrated power)
+        let avg_bandwidth: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_bandwidth < 80.0, "Pure sine should have moderate-low bandwidth, got {}", avg_bandwidth);
+    }
+
+    #[test]
+    fn test_cycle_bandwidth_validation() {
+        // period too small
+        assert!(CycleBandwidth::new(15, 4).is_err());
+        // num_bands out of range
+        assert!(CycleBandwidth::new(25, 1).is_err());
+        assert!(CycleBandwidth::new(25, 10).is_err());
+        // valid
+        assert!(CycleBandwidth::new(20, 2).is_ok());
+        assert!(CycleBandwidth::new(30, 8).is_ok());
+    }
+
+    #[test]
+    fn test_cycle_bandwidth_trait() {
+        let data = make_ohlcv_series();
+        let cb = CycleBandwidth::new(25, 4).unwrap();
+
+        assert_eq!(cb.name(), "Cycle Bandwidth");
+        assert_eq!(cb.min_periods(), 26);
+
+        let output = cb.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // SignalEnvelope Tests
+    // =====================================================================
+
+    #[test]
+    fn test_signal_envelope_basic() {
+        let close = make_test_data();
+        let se = SignalEnvelope::new(15, 0.5).unwrap();
+        let result = se.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Envelope should be non-negative
+        for i in 20..result.len() {
+            assert!(result[i] >= 0.0, "Envelope {} at index {} should be non-negative", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_signal_envelope_bands() {
+        let close: Vec<f64> = (0..80)
+            .map(|i| 100.0 + (i as f64 * 0.3).sin() * 8.0)
+            .collect();
+        let se = SignalEnvelope::new(15, 0.3).unwrap();
+        let (upper, lower) = se.calculate_bands(&close);
+
+        assert_eq!(upper.len(), close.len());
+        assert_eq!(lower.len(), close.len());
+
+        // Upper should be >= lower
+        for i in 20..upper.len() {
+            assert!(upper[i] >= lower[i], "Upper {} should be >= lower {} at index {}", upper[i], lower[i], i);
+        }
+    }
+
+    #[test]
+    fn test_signal_envelope_validation() {
+        // period too small
+        assert!(SignalEnvelope::new(5, 0.5).is_err());
+        // invalid smoothing
+        assert!(SignalEnvelope::new(15, -0.1).is_err());
+        assert!(SignalEnvelope::new(15, 1.5).is_err());
+        // valid
+        assert!(SignalEnvelope::new(10, 0.0).is_ok());
+        assert!(SignalEnvelope::new(20, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_signal_envelope_trait() {
+        let data = make_ohlcv_series();
+        let se = SignalEnvelope::new(15, 0.5).unwrap();
+
+        assert_eq!(se.name(), "Signal Envelope");
+        assert_eq!(se.min_periods(), 16);
+
+        let output = se.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have dual output (upper and lower bands)
+        assert!(output.secondary.is_some());
+    }
+
+    // =====================================================================
+    // InstantaneousTrend Tests
+    // =====================================================================
+
+    #[test]
+    fn test_instantaneous_trend_basic() {
+        let close = make_test_data();
+        let it = InstantaneousTrend::new(12, 0.07).unwrap();
+        let result = it.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Trend should be positive for our uptrending test data
+        for i in 15..result.len() {
+            assert!(result[i] > 0.0, "Trend {} at index {} should be positive", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_instantaneous_trend_with_trigger() {
+        let close: Vec<f64> = (0..80)
+            .map(|i| 100.0 + i as f64 * 0.5 + (i as f64 * 0.2).sin() * 2.0)
+            .collect();
+        let it = InstantaneousTrend::new(10, 0.1).unwrap();
+        let (trend, trigger) = it.calculate_with_trigger(&close);
+
+        assert_eq!(trend.len(), close.len());
+        assert_eq!(trigger.len(), close.len());
+
+        // Trigger should be lagged version of trend
+        for i in 12..trend.len() {
+            // Both should be in reasonable range
+            assert!(trend[i] > 50.0 && trend[i] < 200.0);
+        }
+    }
+
+    #[test]
+    fn test_instantaneous_trend_tracks_price() {
+        // Strong uptrend
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 1.0).collect();
+        let it = InstantaneousTrend::new(10, 0.07).unwrap();
+        let trend = it.calculate(&close);
+
+        // Trend should increase with price
+        for i in 15..trend.len() - 1 {
+            assert!(trend[i + 1] >= trend[i] - 1.0,
+                    "Trend should follow upward price movement");
+        }
+    }
+
+    #[test]
+    fn test_instantaneous_trend_validation() {
+        // period too small
+        assert!(InstantaneousTrend::new(5, 0.07).is_err());
+        // invalid alpha
+        assert!(InstantaneousTrend::new(10, 0.0).is_err());
+        assert!(InstantaneousTrend::new(10, 1.5).is_err());
+        // valid
+        assert!(InstantaneousTrend::new(8, 0.01).is_ok());
+        assert!(InstantaneousTrend::new(20, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_instantaneous_trend_trait() {
+        let data = make_ohlcv_series();
+        let it = InstantaneousTrend::new(12, 0.07).unwrap();
+
+        assert_eq!(it.name(), "Instantaneous Trend");
+        assert_eq!(it.min_periods(), 13);
+
+        let output = it.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have dual output (trend and trigger)
+        assert!(output.secondary.is_some());
+    }
+
+    // =====================================================================
+    // CycleStrength Tests
+    // =====================================================================
+
+    #[test]
+    fn test_cycle_strength_basic() {
+        let close = make_test_data();
+        let cs = CycleStrength::new(25, 10).unwrap();
+        let result = cs.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Strength should be between 0 and 100
+        for i in 30..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Strength {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_cycle_strength_pure_cycle() {
+        // Pure sine wave should have high cycle strength
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 2.0 * std::f64::consts::PI / 15.0).sin() * 10.0)
+            .collect();
+        let cs = CycleStrength::new(30, 15).unwrap();
+        let result = cs.calculate(&close);
+
+        // Pure cycle at the measured period should have decent strength
+        let avg_strength: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_strength > 20.0, "Pure cycle should have measurable strength, got {}", avg_strength);
+    }
+
+    #[test]
+    fn test_cycle_strength_validation() {
+        // period too small
+        assert!(CycleStrength::new(15, 10).is_err());
+        // cycle_period too small
+        assert!(CycleStrength::new(25, 3).is_err());
+        // cycle_period >= period
+        assert!(CycleStrength::new(25, 25).is_err());
+        assert!(CycleStrength::new(25, 30).is_err());
+        // valid
+        assert!(CycleStrength::new(20, 5).is_ok());
+        assert!(CycleStrength::new(30, 15).is_ok());
+    }
+
+    #[test]
+    fn test_cycle_strength_trait() {
+        let data = make_ohlcv_series();
+        let cs = CycleStrength::new(25, 10).unwrap();
+
+        assert_eq!(cs.name(), "Cycle Strength");
+        assert_eq!(cs.min_periods(), 26);
+
+        let output = cs.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // AdaptiveLaguerreFilter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_adaptive_laguerre_filter_basic() {
+        let close = make_test_data();
+        let alf = AdaptiveLaguerreFilter::new(0.2, 0.8, 15).unwrap();
+        let result = alf.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Filter should produce positive values for our positive price data
+        for i in 20..result.len() {
+            assert!(result[i] > 0.0, "Filter value {} at index {} should be positive", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_laguerre_filter_with_gamma() {
+        let close: Vec<f64> = (0..80)
+            .map(|i| 100.0 + (i as f64 * 0.25).sin() * 5.0)
+            .collect();
+        let alf = AdaptiveLaguerreFilter::new(0.3, 0.7, 12).unwrap();
+        let (filter, gamma) = alf.calculate_with_gamma(&close);
+
+        assert_eq!(filter.len(), close.len());
+        assert_eq!(gamma.len(), close.len());
+
+        // Gamma should be within bounds
+        for i in 15..gamma.len() {
+            assert!(gamma[i] >= 0.3 && gamma[i] <= 0.7,
+                    "Gamma {} at index {} out of range", gamma[i], i);
+        }
+    }
+
+    #[test]
+    fn test_adaptive_laguerre_filter_smoothing() {
+        // Filter should smooth the price data
+        let close: Vec<f64> = (0..60)
+            .map(|i| 100.0 + (i as f64 * 0.5).sin() * 10.0 + ((i * 7) % 3) as f64)
+            .collect();
+        let alf = AdaptiveLaguerreFilter::new(0.4, 0.9, 10).unwrap();
+        let result = alf.calculate(&close);
+
+        // Calculate variance of original and filtered
+        let close_mean: f64 = close[20..].iter().sum::<f64>() / (close.len() - 20) as f64;
+        let result_mean: f64 = result[20..].iter().sum::<f64>() / (result.len() - 20) as f64;
+
+        let close_var: f64 = close[20..].iter()
+            .map(|x| (x - close_mean).powi(2))
+            .sum::<f64>() / (close.len() - 20) as f64;
+        let result_var: f64 = result[20..].iter()
+            .map(|x| (x - result_mean).powi(2))
+            .sum::<f64>() / (result.len() - 20) as f64;
+
+        // Filtered data should have lower or similar variance
+        assert!(result_var <= close_var * 1.5,
+                "Filter should smooth data: close_var={}, result_var={}", close_var, result_var);
+    }
+
+    #[test]
+    fn test_adaptive_laguerre_filter_validation() {
+        // invalid min_gamma
+        assert!(AdaptiveLaguerreFilter::new(-0.1, 0.8, 15).is_err());
+        assert!(AdaptiveLaguerreFilter::new(1.0, 0.8, 15).is_err());
+        // max_gamma <= min_gamma
+        assert!(AdaptiveLaguerreFilter::new(0.5, 0.5, 15).is_err());
+        assert!(AdaptiveLaguerreFilter::new(0.5, 0.3, 15).is_err());
+        // max_gamma > 1.0
+        assert!(AdaptiveLaguerreFilter::new(0.2, 1.1, 15).is_err());
+        // lookback too small
+        assert!(AdaptiveLaguerreFilter::new(0.2, 0.8, 5).is_err());
+        // valid
+        assert!(AdaptiveLaguerreFilter::new(0.0, 0.5, 10).is_ok());
+        assert!(AdaptiveLaguerreFilter::new(0.5, 1.0, 20).is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_laguerre_filter_trait() {
+        let data = make_ohlcv_series();
+        let alf = AdaptiveLaguerreFilter::new(0.2, 0.8, 15).unwrap();
+
+        assert_eq!(alf.name(), "Adaptive Laguerre Filter");
+        assert_eq!(alf.min_periods(), 16);
+
+        let output = alf.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+        // Should have dual output (filter and gamma values)
+        assert!(output.secondary.is_some());
+    }
+
+    // =====================================================================
+    // New 6 DSP Indicators Batch 7 Integration Test
+    // =====================================================================
+
+    #[test]
+    fn test_batch7_dsp_indicators_integration() {
+        // Test all 6 new DSP indicators (Batch 7) together
+        let close: Vec<f64> = (0..120)
+            .map(|i| {
+                let trend = 100.0 + i as f64 * 0.25;
+                let cycle = (i as f64 * 2.0 * std::f64::consts::PI / 15.0).sin() * 4.0;
+                let noise = ((i * 13) % 5) as f64 * 0.2 - 0.4;
+                trend + cycle + noise
+            })
+            .collect();
+        let data = OHLCVSeries::from_close(close);
+
+        // Create all 6 new indicators
+        let asw = AdaptiveSineWave::new(5, 25, 0.5).unwrap();
+        let cb = CycleBandwidth::new(25, 4).unwrap();
+        let se = SignalEnvelope::new(15, 0.5).unwrap();
+        let it = InstantaneousTrend::new(12, 0.07).unwrap();
+        let cs = CycleStrength::new(25, 10).unwrap();
+        let alf = AdaptiveLaguerreFilter::new(0.2, 0.8, 15).unwrap();
+
+        // All should compute without errors
+        let asw_result = asw.compute(&data).unwrap();
+        let cb_result = cb.compute(&data).unwrap();
+        let se_result = se.compute(&data).unwrap();
+        let it_result = it.compute(&data).unwrap();
+        let cs_result = cs.compute(&data).unwrap();
+        let alf_result = alf.compute(&data).unwrap();
+
+        // All should have correct length
+        assert_eq!(asw_result.primary.len(), 120);
+        assert_eq!(cb_result.primary.len(), 120);
+        assert_eq!(se_result.primary.len(), 120);
+        assert_eq!(it_result.primary.len(), 120);
+        assert_eq!(cs_result.primary.len(), 120);
+        assert_eq!(alf_result.primary.len(), 120);
+
+        // Verify adaptive sine wave is bounded
+        for i in 30..asw_result.primary.len() {
+            assert!(asw_result.primary[i] >= -1.0 && asw_result.primary[i] <= 1.0,
+                    "Adaptive sine wave should be bounded");
+        }
+
+        // Verify cycle bandwidth is in range
+        for i in 30..cb_result.primary.len() {
+            assert!(cb_result.primary[i] >= 0.0 && cb_result.primary[i] <= 100.0,
+                    "Cycle bandwidth should be 0-100");
+        }
+
+        // Verify signal envelope is non-negative (upper band > lower band)
+        assert!(se_result.secondary.is_some());
+
+        // Verify instantaneous trend is positive
+        for i in 20..it_result.primary.len() {
+            assert!(it_result.primary[i] > 0.0, "Trend should be positive for uptrending data");
+        }
+
+        // Verify cycle strength is in range
+        for i in 30..cs_result.primary.len() {
+            assert!(cs_result.primary[i] >= 0.0 && cs_result.primary[i] <= 100.0,
+                    "Cycle strength should be 0-100");
+        }
+
+        // Verify adaptive Laguerre filter produces positive values
+        for i in 20..alf_result.primary.len() {
+            assert!(alf_result.primary[i] > 0.0, "Laguerre filter should be positive");
+        }
+
+        // Verify gamma is within bounds
+        let gamma = alf_result.secondary.as_ref().unwrap();
+        for i in 20..gamma.len() {
+            assert!(gamma[i] >= 0.2 && gamma[i] <= 0.8, "Gamma should be within bounds");
+        }
     }
 }
