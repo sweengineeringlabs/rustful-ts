@@ -47,4 +47,6 @@ pub use advanced::{
     SignalStrengthMeter, FrequencyResponseIndicator, PhaseSynchronization,
     AdaptivePhaseMeasure, FrequencyDomainMomentum, SpectralEntropy,
     CycleDominance, HarmonicAnalyzer, PhaseCoherence,
+    FrequencyDomainMA, PhaseShiftIndicator, SpectralPowerIndex,
+    NoiseFilter, CyclePeriodEstimator, SignalToNoiseRatioAdvanced,
 };

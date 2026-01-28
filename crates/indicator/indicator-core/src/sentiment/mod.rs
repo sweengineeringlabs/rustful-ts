@@ -25,4 +25,8 @@ pub use advanced::{
     // Extended advanced sentiment indicators
     SentimentStrength, SentimentAcceleration, SentimentMeanReversion,
     CrowdBehaviorIndex, SentimentRegimeDetector, ContraSentimentSignal,
+    // New sentiment indicators (6 new)
+    PriceBasedSentiment, VolumeSentimentPattern, MomentumSentimentIndex,
+    ExtremeSentimentDetector, SentimentOscillator as AdvancedSentimentOscillator,
+    CompositeSentimentIndex,
 };

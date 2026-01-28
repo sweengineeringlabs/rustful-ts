@@ -88,4 +88,10 @@ pub use advanced::{
     RiskOnRiskOff, RiskOnRiskOffConfig, RiskOnRiskOffOutput,
     MarketBreadthComposite, MarketBreadthCompositeConfig, MarketBreadthCompositeOutput,
     SentimentTrendComposite, SentimentTrendCompositeConfig, SentimentTrendCompositeOutput,
+    MarketStrengthIndex, MarketStrengthIndexConfig, MarketStrengthIndexOutput,
+    TrendMomentumComposite, TrendMomentumCompositeConfig, TrendMomentumCompositeOutput,
+    VolatilityTrendIndex, VolatilityTrendIndexConfig, VolatilityTrendIndexOutput,
+    MultiFactorSignal, MultiFactorSignalConfig, MultiFactorSignalOutput,
+    AdaptiveMarketScore, AdaptiveMarketScoreConfig, AdaptiveMarketScoreOutput,
+    CompositeLeadingIndicator, CompositeLeadingIndicatorConfig, CompositeLeadingIndicatorOutput,
 };

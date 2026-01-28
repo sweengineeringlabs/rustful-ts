@@ -41,6 +41,9 @@ pub use advanced::{
     CorrelationBreakdown, SpreadAnalysis, FlowIndicator,
     CrossMarketCorrelation, RelativeStrengthMomentum, IntermarketDivergence,
     SectorMomentumRank, CrossAssetVolatility, MarketLeadLag,
+    // New intermarket indicators
+    RelativePerformanceIndex, SpreadOscillator, BetaEstimator,
+    CointegrationScore, CorrelationTrendAnalyzer, EnhancedPairsTradingSignal,
 };
 
 // ============================================================================

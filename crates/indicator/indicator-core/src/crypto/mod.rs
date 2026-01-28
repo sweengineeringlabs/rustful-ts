@@ -21,6 +21,8 @@ pub use advanced::{
     RetailSentimentProxy, InstitutionalFlowProxy, NetworkActivityProxy,
     OnChainMomentum, NetworkHealthIndex, HodlerBehaviorIndex,
     ExchangeFlowMomentum, MinerBehaviorIndex, InstitutionalFlowIndex,
+    CryptoTrendStrength, VolatilityRegimeIndex, CryptoMomentumRank,
+    MarketSentimentProxy, CryptoCyclePhase, AdaptiveCryptoMA,
 };
 pub use extended::{
     ActiveAddressesProxy, ExchangeFlowProxy, HODLBehaviorProxy,

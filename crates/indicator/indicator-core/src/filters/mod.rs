@@ -27,4 +27,6 @@ pub use final_pair::{RecursiveFilter, NormalizedPriceFilter};
 pub use advanced::{
     AdaptiveLowPassFilter, NoiseReductionFilter, TrendExtractionFilter,
     CycleExtractionFilter, AdaptiveHighPassFilter, BandwidthAdaptiveFilter,
+    ButterworthBandpassFilter, ChebyshevFilter, WeightedMedianFilter,
+    DoubleExponentialFilter, AdaptiveBandpassFilter, HodrickPrescottFilter,
 };

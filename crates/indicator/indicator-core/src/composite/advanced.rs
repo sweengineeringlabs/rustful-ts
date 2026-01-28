@@ -2880,6 +2880,1934 @@ impl TechnicalIndicator for SentimentTrendComposite {
 }
 
 // ============================================================================
+// 13. MarketStrengthIndex
+// ============================================================================
+
+/// Market Strength Index output.
+#[derive(Debug, Clone)]
+pub struct MarketStrengthIndexOutput {
+    /// Overall market strength index (0-100).
+    pub strength: Vec<f64>,
+    /// Price strength component (0-100).
+    pub price_strength: Vec<f64>,
+    /// Volume strength component (0-100).
+    pub volume_strength: Vec<f64>,
+}
+
+/// Market Strength Index configuration.
+#[derive(Debug, Clone)]
+pub struct MarketStrengthIndexConfig {
+    /// Period for price strength calculation (default: 14).
+    pub price_period: usize,
+    /// Period for volume strength calculation (default: 14).
+    pub volume_period: usize,
+    /// Period for smoothing (default: 3).
+    pub smoothing_period: usize,
+    /// Weight for price component (default: 0.6).
+    pub price_weight: f64,
+    /// Weight for volume component (default: 0.4).
+    pub volume_weight: f64,
+}
+
+impl Default for MarketStrengthIndexConfig {
+    fn default() -> Self {
+        Self {
+            price_period: 14,
+            volume_period: 14,
+            smoothing_period: 3,
+            price_weight: 0.6,
+            volume_weight: 0.4,
+        }
+    }
+}
+
+/// Market Strength Index.
+///
+/// A composite indicator that measures overall market strength by combining:
+/// - Price strength: Based on RSI-like momentum and trend direction
+/// - Volume strength: Based on volume patterns and confirmation
+///
+/// Higher values indicate strong market conditions with good volume support.
+/// Values above 70 suggest strong bullish conditions, below 30 suggest weakness.
+///
+/// # Formula
+///
+/// - Price Strength = Normalized RSI + Trend Efficiency
+/// - Volume Strength = Volume ratio relative to moving average
+/// - Strength = price_weight * price_strength + volume_weight * volume_strength
+///
+/// # Example
+///
+/// ```ignore
+/// use indicator_core::composite::advanced::{MarketStrengthIndex, MarketStrengthIndexConfig};
+///
+/// let config = MarketStrengthIndexConfig::default();
+/// let indicator = MarketStrengthIndex::new(config).unwrap();
+/// let result = indicator.calculate(&high, &low, &close, &volume);
+/// ```
+#[derive(Debug, Clone)]
+pub struct MarketStrengthIndex {
+    price_period: usize,
+    volume_period: usize,
+    smoothing_period: usize,
+    price_weight: f64,
+    volume_weight: f64,
+}
+
+impl MarketStrengthIndex {
+    /// Create a new MarketStrengthIndex with the given configuration.
+    pub fn new(config: MarketStrengthIndexConfig) -> Result<Self> {
+        if config.price_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "price_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.volume_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.smoothing_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.price_weight < 0.0 || config.price_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "price_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        if config.volume_weight < 0.0 || config.volume_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+
+        Ok(Self {
+            price_period: config.price_period,
+            volume_period: config.volume_period,
+            smoothing_period: config.smoothing_period,
+            price_weight: config.price_weight,
+            volume_weight: config.volume_weight,
+        })
+    }
+
+    /// Calculate the Market Strength Index values.
+    pub fn calculate(
+        &self,
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        volume: &[f64],
+    ) -> MarketStrengthIndexOutput {
+        let n = close.len();
+        let mut strength = vec![f64::NAN; n];
+        let mut price_strength = vec![f64::NAN; n];
+        let mut volume_strength = vec![f64::NAN; n];
+
+        let min_required = self.price_period.max(self.volume_period);
+        if n <= min_required {
+            return MarketStrengthIndexOutput {
+                strength,
+                price_strength,
+                volume_strength,
+            };
+        }
+
+        // Calculate price strength (RSI-based)
+        for i in self.price_period..n {
+            let mut gains = 0.0;
+            let mut losses = 0.0;
+
+            for j in (i - self.price_period + 1)..=i {
+                let change = close[j] - close[j - 1];
+                if change > 0.0 {
+                    gains += change;
+                } else {
+                    losses += -change;
+                }
+            }
+
+            let avg_gain = gains / self.price_period as f64;
+            let avg_loss = losses / self.price_period as f64;
+
+            let rsi = if avg_loss > 1e-10 {
+                100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+            } else if avg_gain > 0.0 {
+                100.0
+            } else {
+                50.0
+            };
+
+            // Add trend efficiency component
+            let net_change = (close[i] - close[i - self.price_period]).abs();
+            let mut sum_changes = 0.0;
+            for j in (i - self.price_period + 1)..=i {
+                sum_changes += (close[j] - close[j - 1]).abs();
+            }
+
+            let efficiency = if sum_changes > 1e-10 {
+                net_change / sum_changes
+            } else {
+                0.0
+            };
+
+            // Combine RSI and efficiency (both contribute to price strength)
+            price_strength[i] = (rsi * 0.7 + efficiency * 100.0 * 0.3).clamp(0.0, 100.0);
+        }
+
+        // Calculate volume strength
+        for i in self.volume_period..n {
+            let avg_volume: f64 = volume[(i - self.volume_period + 1)..=i]
+                .iter()
+                .sum::<f64>()
+                / self.volume_period as f64;
+
+            if avg_volume > 1e-10 {
+                let vol_ratio = volume[i] / avg_volume;
+
+                // Count up-volume vs down-volume bars
+                let mut up_vol = 0.0;
+                let mut down_vol = 0.0;
+                for j in (i - self.volume_period + 1)..=i {
+                    if close[j] > close[j - 1] {
+                        up_vol += volume[j];
+                    } else if close[j] < close[j - 1] {
+                        down_vol += volume[j];
+                    }
+                }
+
+                let total_vol = up_vol + down_vol;
+                let vol_direction = if total_vol > 1e-10 {
+                    (up_vol - down_vol) / total_vol
+                } else {
+                    0.0
+                };
+
+                // Volume strength = base 50 + direction bias + current volume factor
+                volume_strength[i] =
+                    (50.0 + vol_direction * 30.0 + (vol_ratio - 1.0) * 20.0).clamp(0.0, 100.0);
+            } else {
+                volume_strength[i] = 50.0;
+            }
+        }
+
+        // Combine components
+        for i in min_required..n {
+            if !price_strength[i].is_nan() && !volume_strength[i].is_nan() {
+                strength[i] = (self.price_weight * price_strength[i]
+                    + self.volume_weight * volume_strength[i])
+                    .clamp(0.0, 100.0);
+            }
+        }
+
+        // Apply smoothing
+        if self.smoothing_period > 1 {
+            let smoothed = self.ema_smooth(&strength, self.smoothing_period);
+            for i in 0..n {
+                if !smoothed[i].is_nan() {
+                    strength[i] = smoothed[i];
+                }
+            }
+        }
+
+        MarketStrengthIndexOutput {
+            strength,
+            price_strength,
+            volume_strength,
+        }
+    }
+
+    /// Simple EMA smoothing.
+    fn ema_smooth(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        let mut first_valid = None;
+        for i in 0..n {
+            if !data[i].is_nan() {
+                first_valid = Some(i);
+                result[i] = data[i];
+                break;
+            }
+        }
+
+        if let Some(start) = first_valid {
+            for i in (start + 1)..n {
+                if !data[i].is_nan() {
+                    if !result[i - 1].is_nan() {
+                        result[i] = (data[i] - result[i - 1]) * multiplier + result[i - 1];
+                    } else {
+                        result[i] = data[i];
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MarketStrengthIndex {
+    fn name(&self) -> &str {
+        "MarketStrengthIndex"
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+
+        let result = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::triple(
+            result.strength,
+            result.price_strength,
+            result.volume_strength,
+        ))
+    }
+
+    fn min_periods(&self) -> usize {
+        self.price_period.max(self.volume_period) + 1
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+// ============================================================================
+// 14. TrendMomentumComposite
+// ============================================================================
+
+/// Trend Momentum Composite output.
+#[derive(Debug, Clone)]
+pub struct TrendMomentumCompositeOutput {
+    /// Combined trend-momentum signal (-100 to 100).
+    pub signal: Vec<f64>,
+    /// Trend component (-100 to 100).
+    pub trend_component: Vec<f64>,
+    /// Momentum component (-100 to 100).
+    pub momentum_component: Vec<f64>,
+}
+
+/// Trend Momentum Composite configuration.
+#[derive(Debug, Clone)]
+pub struct TrendMomentumCompositeConfig {
+    /// Short EMA period for trend (default: 12).
+    pub short_ema_period: usize,
+    /// Long EMA period for trend (default: 26).
+    pub long_ema_period: usize,
+    /// Momentum period (default: 14).
+    pub momentum_period: usize,
+    /// Signal smoothing period (default: 9).
+    pub signal_period: usize,
+    /// Weight for trend (default: 0.5).
+    pub trend_weight: f64,
+    /// Weight for momentum (default: 0.5).
+    pub momentum_weight: f64,
+}
+
+impl Default for TrendMomentumCompositeConfig {
+    fn default() -> Self {
+        Self {
+            short_ema_period: 12,
+            long_ema_period: 26,
+            momentum_period: 14,
+            signal_period: 9,
+            trend_weight: 0.5,
+            momentum_weight: 0.5,
+        }
+    }
+}
+
+/// Trend Momentum Composite.
+///
+/// Combines trend-following and momentum indicators into a single composite signal:
+/// - Trend Component: Based on MACD-like EMA crossover
+/// - Momentum Component: Based on RSI-style momentum measurement
+///
+/// The indicator produces stronger signals when both trend and momentum align.
+/// Positive values indicate bullish conditions, negative values bearish.
+///
+/// # Formula
+///
+/// - Trend = (Short EMA - Long EMA) / Price * 100, normalized
+/// - Momentum = (RSI - 50) * 2 (centered and scaled)
+/// - Signal = trend_weight * trend + momentum_weight * momentum
+///
+/// # Example
+///
+/// ```ignore
+/// use indicator_core::composite::advanced::{TrendMomentumComposite, TrendMomentumCompositeConfig};
+///
+/// let config = TrendMomentumCompositeConfig::default();
+/// let indicator = TrendMomentumComposite::new(config).unwrap();
+/// let result = indicator.calculate(&close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TrendMomentumComposite {
+    short_ema_period: usize,
+    long_ema_period: usize,
+    momentum_period: usize,
+    signal_period: usize,
+    trend_weight: f64,
+    momentum_weight: f64,
+}
+
+impl TrendMomentumComposite {
+    /// Create a new TrendMomentumComposite with the given configuration.
+    pub fn new(config: TrendMomentumCompositeConfig) -> Result<Self> {
+        if config.short_ema_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_ema_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.long_ema_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_ema_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.momentum_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.signal_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.short_ema_period >= config.long_ema_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_ema_period".to_string(),
+                reason: "must be less than long_ema_period".to_string(),
+            });
+        }
+        if config.trend_weight < 0.0 || config.trend_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        if config.momentum_weight < 0.0 || config.momentum_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+
+        Ok(Self {
+            short_ema_period: config.short_ema_period,
+            long_ema_period: config.long_ema_period,
+            momentum_period: config.momentum_period,
+            signal_period: config.signal_period,
+            trend_weight: config.trend_weight,
+            momentum_weight: config.momentum_weight,
+        })
+    }
+
+    /// Calculate the Trend Momentum Composite values.
+    pub fn calculate(&self, close: &[f64]) -> TrendMomentumCompositeOutput {
+        let n = close.len();
+        let mut signal = vec![f64::NAN; n];
+        let mut trend_component = vec![f64::NAN; n];
+        let mut momentum_component = vec![f64::NAN; n];
+
+        let min_required = self.long_ema_period.max(self.momentum_period);
+        if n <= min_required {
+            return TrendMomentumCompositeOutput {
+                signal,
+                trend_component,
+                momentum_component,
+            };
+        }
+
+        // Calculate EMAs for trend
+        let short_ema = self.calculate_ema(close, self.short_ema_period);
+        let long_ema = self.calculate_ema(close, self.long_ema_period);
+
+        // Calculate trend component (MACD-like)
+        for i in self.long_ema_period..n {
+            if !short_ema[i].is_nan() && !long_ema[i].is_nan() && close[i].abs() > 1e-10 {
+                // Normalize MACD as percentage of price, then scale
+                let macd = (short_ema[i] - long_ema[i]) / close[i] * 100.0;
+                trend_component[i] = (macd * 20.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Calculate momentum component (RSI-based)
+        for i in self.momentum_period..n {
+            let mut gains = 0.0;
+            let mut losses = 0.0;
+
+            for j in (i - self.momentum_period + 1)..=i {
+                let change = close[j] - close[j - 1];
+                if change > 0.0 {
+                    gains += change;
+                } else {
+                    losses += -change;
+                }
+            }
+
+            let avg_gain = gains / self.momentum_period as f64;
+            let avg_loss = losses / self.momentum_period as f64;
+
+            let rsi = if avg_loss > 1e-10 {
+                100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+            } else if avg_gain > 0.0 {
+                100.0
+            } else {
+                50.0
+            };
+
+            // Convert RSI (0-100) to centered momentum (-100 to 100)
+            momentum_component[i] = (rsi - 50.0) * 2.0;
+        }
+
+        // Combine components
+        for i in min_required..n {
+            if !trend_component[i].is_nan() && !momentum_component[i].is_nan() {
+                // Apply alignment bonus when trend and momentum agree
+                let alignment = if trend_component[i].signum() == momentum_component[i].signum() {
+                    1.1
+                } else {
+                    0.9
+                };
+
+                let raw_signal = self.trend_weight * trend_component[i]
+                    + self.momentum_weight * momentum_component[i];
+                signal[i] = (raw_signal * alignment).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Apply signal line smoothing
+        if self.signal_period > 1 {
+            let smoothed = self.ema_smooth(&signal, self.signal_period);
+            for i in 0..n {
+                if !smoothed[i].is_nan() {
+                    signal[i] = smoothed[i];
+                }
+            }
+        }
+
+        TrendMomentumCompositeOutput {
+            signal,
+            trend_component,
+            momentum_component,
+        }
+    }
+
+    /// Calculate EMA for given period.
+    fn calculate_ema(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut ema = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        if n >= period {
+            let sum: f64 = data[0..period].iter().sum();
+            ema[period - 1] = sum / period as f64;
+
+            for i in period..n {
+                ema[i] = (data[i] - ema[i - 1]) * multiplier + ema[i - 1];
+            }
+        }
+
+        ema
+    }
+
+    /// Simple EMA smoothing.
+    fn ema_smooth(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        let mut first_valid = None;
+        for i in 0..n {
+            if !data[i].is_nan() {
+                first_valid = Some(i);
+                result[i] = data[i];
+                break;
+            }
+        }
+
+        if let Some(start) = first_valid {
+            for i in (start + 1)..n {
+                if !data[i].is_nan() {
+                    if !result[i - 1].is_nan() {
+                        result[i] = (data[i] - result[i - 1]) * multiplier + result[i - 1];
+                    } else {
+                        result[i] = data[i];
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for TrendMomentumComposite {
+    fn name(&self) -> &str {
+        "TrendMomentumComposite"
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+
+        let result = self.calculate(&data.close);
+        Ok(IndicatorOutput::triple(
+            result.signal,
+            result.trend_component,
+            result.momentum_component,
+        ))
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_ema_period.max(self.momentum_period) + 1
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+// ============================================================================
+// 15. VolatilityTrendIndex
+// ============================================================================
+
+/// Volatility Trend Index output.
+#[derive(Debug, Clone)]
+pub struct VolatilityTrendIndexOutput {
+    /// Combined index value (-100 to 100).
+    pub index: Vec<f64>,
+    /// Volatility regime indicator (0-100).
+    pub volatility_regime: Vec<f64>,
+    /// Trend direction indicator (-100 to 100).
+    pub trend_direction: Vec<f64>,
+}
+
+/// Volatility Trend Index configuration.
+#[derive(Debug, Clone)]
+pub struct VolatilityTrendIndexConfig {
+    /// ATR period for volatility (default: 14).
+    pub atr_period: usize,
+    /// Trend period (default: 20).
+    pub trend_period: usize,
+    /// Volatility lookback for percentile (default: 50).
+    pub volatility_lookback: usize,
+    /// Smoothing period (default: 3).
+    pub smoothing_period: usize,
+}
+
+impl Default for VolatilityTrendIndexConfig {
+    fn default() -> Self {
+        Self {
+            atr_period: 14,
+            trend_period: 20,
+            volatility_lookback: 50,
+            smoothing_period: 3,
+        }
+    }
+}
+
+/// Volatility Trend Index.
+///
+/// Combines volatility analysis with trend direction to identify:
+/// - High volatility trending markets (breakouts)
+/// - Low volatility trending markets (steady trends)
+/// - High volatility ranging markets (choppy)
+/// - Low volatility ranging markets (consolidation)
+///
+/// Positive values indicate uptrend, negative downtrend.
+/// Magnitude indicates the combination of trend strength and volatility regime.
+///
+/// # Components
+///
+/// - Volatility Regime: ATR percentile rank (0 = low vol, 100 = high vol)
+/// - Trend Direction: Normalized price position relative to trend
+/// - Index: Combined signal that amplifies in trending + volatile conditions
+///
+/// # Example
+///
+/// ```ignore
+/// use indicator_core::composite::advanced::{VolatilityTrendIndex, VolatilityTrendIndexConfig};
+///
+/// let config = VolatilityTrendIndexConfig::default();
+/// let indicator = VolatilityTrendIndex::new(config).unwrap();
+/// let result = indicator.calculate(&high, &low, &close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct VolatilityTrendIndex {
+    atr_period: usize,
+    trend_period: usize,
+    volatility_lookback: usize,
+    smoothing_period: usize,
+}
+
+impl VolatilityTrendIndex {
+    /// Create a new VolatilityTrendIndex with the given configuration.
+    pub fn new(config: VolatilityTrendIndexConfig) -> Result<Self> {
+        if config.atr_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "atr_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.trend_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.volatility_lookback == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_lookback".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.smoothing_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+
+        Ok(Self {
+            atr_period: config.atr_period,
+            trend_period: config.trend_period,
+            volatility_lookback: config.volatility_lookback,
+            smoothing_period: config.smoothing_period,
+        })
+    }
+
+    /// Calculate the Volatility Trend Index values.
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> VolatilityTrendIndexOutput {
+        let n = close.len();
+        let mut index = vec![f64::NAN; n];
+        let mut volatility_regime = vec![f64::NAN; n];
+        let mut trend_direction = vec![f64::NAN; n];
+
+        let min_required = self.atr_period.max(self.trend_period).max(self.volatility_lookback);
+        if n <= min_required {
+            return VolatilityTrendIndexOutput {
+                index,
+                volatility_regime,
+                trend_direction,
+            };
+        }
+
+        // Calculate ATR
+        let mut atr = vec![f64::NAN; n];
+        for i in 1..n {
+            if i >= self.atr_period {
+                let mut sum = 0.0;
+                for j in (i - self.atr_period + 1)..=i {
+                    let tr = if j == 0 {
+                        high[j] - low[j]
+                    } else {
+                        (high[j] - low[j])
+                            .max((high[j] - close[j - 1]).abs())
+                            .max((low[j] - close[j - 1]).abs())
+                    };
+                    sum += tr;
+                }
+                atr[i] = sum / self.atr_period as f64;
+            }
+        }
+
+        // Calculate volatility percentile
+        for i in self.volatility_lookback..n {
+            if !atr[i].is_nan() {
+                let window = &atr[(i - self.volatility_lookback + 1)..=i];
+                let current = atr[i];
+                let count_below = window.iter().filter(|&&x| !x.is_nan() && x < current).count();
+                let total = window.iter().filter(|x| !x.is_nan()).count();
+                volatility_regime[i] = if total > 0 {
+                    (count_below as f64 / total as f64 * 100.0).clamp(0.0, 100.0)
+                } else {
+                    50.0
+                };
+            }
+        }
+
+        // Calculate trend direction using EMA and price position
+        let ema = self.calculate_ema(close, self.trend_period);
+        for i in self.trend_period..n {
+            if !ema[i].is_nan() && ema[i].abs() > 1e-10 {
+                // Price deviation from EMA as percentage
+                let deviation = (close[i] - ema[i]) / ema[i] * 100.0;
+
+                // Add efficiency ratio for trend quality
+                let net_change = close[i] - close[i - self.trend_period];
+                let mut sum_changes = 0.0;
+                for j in (i - self.trend_period + 1)..=i {
+                    sum_changes += (close[j] - close[j - 1]).abs();
+                }
+
+                let efficiency = if sum_changes > 1e-10 {
+                    net_change.abs() / sum_changes
+                } else {
+                    0.0
+                };
+
+                let direction = if net_change >= 0.0 { 1.0 } else { -1.0 };
+                trend_direction[i] = (direction * (deviation.abs() * 5.0 + efficiency * 50.0))
+                    .clamp(-100.0, 100.0);
+            }
+        }
+
+        // Combine volatility and trend
+        for i in min_required..n {
+            if !volatility_regime[i].is_nan() && !trend_direction[i].is_nan() {
+                // High volatility amplifies trend signal
+                let vol_factor = 0.5 + volatility_regime[i] / 100.0; // 0.5 to 1.5
+
+                index[i] = (trend_direction[i] * vol_factor).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Apply smoothing
+        if self.smoothing_period > 1 {
+            let smoothed = self.ema_smooth(&index, self.smoothing_period);
+            for i in 0..n {
+                if !smoothed[i].is_nan() {
+                    index[i] = smoothed[i];
+                }
+            }
+        }
+
+        VolatilityTrendIndexOutput {
+            index,
+            volatility_regime,
+            trend_direction,
+        }
+    }
+
+    /// Calculate EMA for given period.
+    fn calculate_ema(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut ema = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        if n >= period {
+            let sum: f64 = data[0..period].iter().sum();
+            ema[period - 1] = sum / period as f64;
+
+            for i in period..n {
+                ema[i] = (data[i] - ema[i - 1]) * multiplier + ema[i - 1];
+            }
+        }
+
+        ema
+    }
+
+    /// Simple EMA smoothing.
+    fn ema_smooth(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        let mut first_valid = None;
+        for i in 0..n {
+            if !data[i].is_nan() {
+                first_valid = Some(i);
+                result[i] = data[i];
+                break;
+            }
+        }
+
+        if let Some(start) = first_valid {
+            for i in (start + 1)..n {
+                if !data[i].is_nan() {
+                    if !result[i - 1].is_nan() {
+                        result[i] = (data[i] - result[i - 1]) * multiplier + result[i - 1];
+                    } else {
+                        result[i] = data[i];
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for VolatilityTrendIndex {
+    fn name(&self) -> &str {
+        "VolatilityTrendIndex"
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+
+        let result = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(
+            result.index,
+            result.volatility_regime,
+            result.trend_direction,
+        ))
+    }
+
+    fn min_periods(&self) -> usize {
+        self.atr_period.max(self.trend_period).max(self.volatility_lookback) + 1
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+// ============================================================================
+// 16. MultiFactorSignal
+// ============================================================================
+
+/// Multi-Factor Signal output.
+#[derive(Debug, Clone)]
+pub struct MultiFactorSignalOutput {
+    /// Combined multi-factor signal (-100 to 100).
+    pub signal: Vec<f64>,
+    /// Trend factor component (-100 to 100).
+    pub trend_factor: Vec<f64>,
+    /// Momentum factor component (-100 to 100).
+    pub momentum_factor: Vec<f64>,
+    /// Volatility factor component (-100 to 100).
+    pub volatility_factor: Vec<f64>,
+}
+
+/// Multi-Factor Signal configuration.
+#[derive(Debug, Clone)]
+pub struct MultiFactorSignalConfig {
+    /// Trend period (default: 20).
+    pub trend_period: usize,
+    /// Momentum period (default: 14).
+    pub momentum_period: usize,
+    /// Volatility period (default: 14).
+    pub volatility_period: usize,
+    /// Weight for trend factor (default: 0.4).
+    pub trend_weight: f64,
+    /// Weight for momentum factor (default: 0.35).
+    pub momentum_weight: f64,
+    /// Weight for volatility factor (default: 0.25).
+    pub volatility_weight: f64,
+    /// Smoothing period (default: 5).
+    pub smoothing_period: usize,
+}
+
+impl Default for MultiFactorSignalConfig {
+    fn default() -> Self {
+        Self {
+            trend_period: 20,
+            momentum_period: 14,
+            volatility_period: 14,
+            trend_weight: 0.4,
+            momentum_weight: 0.35,
+            volatility_weight: 0.25,
+            smoothing_period: 5,
+        }
+    }
+}
+
+/// Multi-Factor Signal.
+///
+/// A comprehensive composite indicator that combines multiple technical factors:
+/// - Trend Factor: Direction and strength based on moving average analysis
+/// - Momentum Factor: Rate of change and RSI-based momentum
+/// - Volatility Factor: Volatility-adjusted signal strength
+///
+/// Each factor contributes to the overall signal based on configurable weights.
+/// The indicator is designed to produce more reliable signals by requiring
+/// confirmation from multiple factors.
+///
+/// # Signal Interpretation
+///
+/// - Values > 50: Strong bullish signal
+/// - Values 25-50: Moderate bullish signal
+/// - Values -25 to 25: Neutral/no clear signal
+/// - Values -50 to -25: Moderate bearish signal
+/// - Values < -50: Strong bearish signal
+///
+/// # Example
+///
+/// ```ignore
+/// use indicator_core::composite::advanced::{MultiFactorSignal, MultiFactorSignalConfig};
+///
+/// let config = MultiFactorSignalConfig::default();
+/// let indicator = MultiFactorSignal::new(config).unwrap();
+/// let result = indicator.calculate(&high, &low, &close, &volume);
+/// ```
+#[derive(Debug, Clone)]
+pub struct MultiFactorSignal {
+    trend_period: usize,
+    momentum_period: usize,
+    volatility_period: usize,
+    trend_weight: f64,
+    momentum_weight: f64,
+    volatility_weight: f64,
+    smoothing_period: usize,
+}
+
+impl MultiFactorSignal {
+    /// Create a new MultiFactorSignal with the given configuration.
+    pub fn new(config: MultiFactorSignalConfig) -> Result<Self> {
+        if config.trend_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.momentum_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.volatility_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.smoothing_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.trend_weight < 0.0 || config.trend_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "trend_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        if config.momentum_weight < 0.0 || config.momentum_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        if config.volatility_weight < 0.0 || config.volatility_weight > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_weight".to_string(),
+                reason: "must be between 0.0 and 1.0".to_string(),
+            });
+        }
+
+        Ok(Self {
+            trend_period: config.trend_period,
+            momentum_period: config.momentum_period,
+            volatility_period: config.volatility_period,
+            trend_weight: config.trend_weight,
+            momentum_weight: config.momentum_weight,
+            volatility_weight: config.volatility_weight,
+            smoothing_period: config.smoothing_period,
+        })
+    }
+
+    /// Calculate the Multi-Factor Signal values.
+    pub fn calculate(
+        &self,
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        volume: &[f64],
+    ) -> MultiFactorSignalOutput {
+        let n = close.len();
+        let mut signal = vec![f64::NAN; n];
+        let mut trend_factor = vec![f64::NAN; n];
+        let mut momentum_factor = vec![f64::NAN; n];
+        let mut volatility_factor = vec![f64::NAN; n];
+
+        let max_period = self
+            .trend_period
+            .max(self.momentum_period)
+            .max(self.volatility_period);
+        if n <= max_period {
+            return MultiFactorSignalOutput {
+                signal,
+                trend_factor,
+                momentum_factor,
+                volatility_factor,
+            };
+        }
+
+        // Calculate trend factor
+        let ema = self.calculate_ema(close, self.trend_period);
+        for i in self.trend_period..n {
+            if !ema[i].is_nan() && ema[i].abs() > 1e-10 {
+                // Deviation from EMA
+                let deviation = (close[i] - ema[i]) / ema[i] * 100.0;
+
+                // EMA slope
+                let ema_slope = if i > 0 && !ema[i - 1].is_nan() && ema[i - 1].abs() > 1e-10 {
+                    (ema[i] - ema[i - 1]) / ema[i - 1] * 100.0
+                } else {
+                    0.0
+                };
+
+                trend_factor[i] = (deviation * 5.0 + ema_slope * 20.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Calculate momentum factor (ROC + RSI)
+        for i in self.momentum_period..n {
+            // Rate of change
+            let roc = if close[i - self.momentum_period].abs() > 1e-10 {
+                ((close[i] - close[i - self.momentum_period]) / close[i - self.momentum_period])
+                    * 100.0
+            } else {
+                0.0
+            };
+
+            // RSI
+            let mut gains = 0.0;
+            let mut losses = 0.0;
+            for j in (i - self.momentum_period + 1)..=i {
+                let change = close[j] - close[j - 1];
+                if change > 0.0 {
+                    gains += change;
+                } else {
+                    losses += -change;
+                }
+            }
+
+            let avg_gain = gains / self.momentum_period as f64;
+            let avg_loss = losses / self.momentum_period as f64;
+
+            let rsi = if avg_loss > 1e-10 {
+                100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+            } else if avg_gain > 0.0 {
+                100.0
+            } else {
+                50.0
+            };
+
+            // Combine ROC and centered RSI
+            let rsi_centered = (rsi - 50.0) * 2.0;
+            momentum_factor[i] = (roc * 5.0 + rsi_centered * 0.5).clamp(-100.0, 100.0);
+        }
+
+        // Calculate volatility factor
+        let mut atr = vec![f64::NAN; n];
+        for i in 1..n {
+            if i >= self.volatility_period {
+                let mut sum = 0.0;
+                for j in (i - self.volatility_period + 1)..=i {
+                    let tr = if j == 0 {
+                        high[j] - low[j]
+                    } else {
+                        (high[j] - low[j])
+                            .max((high[j] - close[j - 1]).abs())
+                            .max((low[j] - close[j - 1]).abs())
+                    };
+                    sum += tr;
+                }
+                atr[i] = sum / self.volatility_period as f64;
+            }
+        }
+
+        for i in max_period..n {
+            if !atr[i].is_nan() && close[i].abs() > 1e-10 {
+                let atr_percent = atr[i] / close[i] * 100.0;
+
+                // Direction based on recent price movement
+                let direction = if close[i] > close[i - 1] {
+                    1.0
+                } else if close[i] < close[i - 1] {
+                    -1.0
+                } else {
+                    0.0
+                };
+
+                // High volatility amplifies signal in direction of move
+                volatility_factor[i] = (direction * atr_percent * 25.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Combine all factors
+        for i in max_period..n {
+            if !trend_factor[i].is_nan()
+                && !momentum_factor[i].is_nan()
+                && !volatility_factor[i].is_nan()
+            {
+                // Count agreeing factors for confirmation bonus
+                let signs = [
+                    trend_factor[i].signum(),
+                    momentum_factor[i].signum(),
+                    volatility_factor[i].signum(),
+                ];
+                let positive_count = signs.iter().filter(|&&s| s > 0.0).count();
+                let negative_count = signs.iter().filter(|&&s| s < 0.0).count();
+                let agreement = positive_count.max(negative_count) as f64 / 3.0;
+
+                let raw_signal = self.trend_weight * trend_factor[i]
+                    + self.momentum_weight * momentum_factor[i]
+                    + self.volatility_weight * volatility_factor[i];
+
+                // Apply agreement bonus
+                signal[i] = (raw_signal * (0.7 + agreement * 0.6)).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Apply smoothing
+        if self.smoothing_period > 1 {
+            let smoothed = self.ema_smooth(&signal, self.smoothing_period);
+            for i in 0..n {
+                if !smoothed[i].is_nan() {
+                    signal[i] = smoothed[i];
+                }
+            }
+        }
+
+        MultiFactorSignalOutput {
+            signal,
+            trend_factor,
+            momentum_factor,
+            volatility_factor,
+        }
+    }
+
+    /// Calculate EMA for given period.
+    fn calculate_ema(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut ema = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        if n >= period {
+            let sum: f64 = data[0..period].iter().sum();
+            ema[period - 1] = sum / period as f64;
+
+            for i in period..n {
+                ema[i] = (data[i] - ema[i - 1]) * multiplier + ema[i - 1];
+            }
+        }
+
+        ema
+    }
+
+    /// Simple EMA smoothing.
+    fn ema_smooth(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        let mut first_valid = None;
+        for i in 0..n {
+            if !data[i].is_nan() {
+                first_valid = Some(i);
+                result[i] = data[i];
+                break;
+            }
+        }
+
+        if let Some(start) = first_valid {
+            for i in (start + 1)..n {
+                if !data[i].is_nan() {
+                    if !result[i - 1].is_nan() {
+                        result[i] = (data[i] - result[i - 1]) * multiplier + result[i - 1];
+                    } else {
+                        result[i] = data[i];
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MultiFactorSignal {
+    fn name(&self) -> &str {
+        "MultiFactorSignal"
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+
+        let result = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::triple(
+            result.signal,
+            result.trend_factor,
+            result.momentum_factor,
+        ))
+    }
+
+    fn min_periods(&self) -> usize {
+        self.trend_period
+            .max(self.momentum_period)
+            .max(self.volatility_period)
+            + 1
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+// ============================================================================
+// 17. AdaptiveMarketScore
+// ============================================================================
+
+/// Adaptive Market Score output.
+#[derive(Debug, Clone)]
+pub struct AdaptiveMarketScoreOutput {
+    /// Adaptive market score (-100 to 100).
+    pub score: Vec<f64>,
+    /// Market condition indicator (0-100).
+    pub market_condition: Vec<f64>,
+    /// Adaptive weight applied (0-1).
+    pub adaptive_weight: Vec<f64>,
+}
+
+/// Adaptive Market Score configuration.
+#[derive(Debug, Clone)]
+pub struct AdaptiveMarketScoreConfig {
+    /// Fast period for responsive signals (default: 5).
+    pub fast_period: usize,
+    /// Slow period for stable signals (default: 20).
+    pub slow_period: usize,
+    /// Efficiency period for adaptation (default: 10).
+    pub efficiency_period: usize,
+    /// Volatility period for condition assessment (default: 14).
+    pub volatility_period: usize,
+}
+
+impl Default for AdaptiveMarketScoreConfig {
+    fn default() -> Self {
+        Self {
+            fast_period: 5,
+            slow_period: 20,
+            efficiency_period: 10,
+            volatility_period: 14,
+        }
+    }
+}
+
+/// Adaptive Market Score.
+///
+/// A market scoring system that automatically adapts to current market conditions:
+/// - In trending markets: Uses faster, more responsive calculations
+/// - In ranging markets: Uses slower, more stable calculations
+///
+/// The adaptation is based on the Efficiency Ratio (ER), which measures how
+/// efficiently price moves from point A to point B.
+///
+/// # Components
+///
+/// - Fast Score: Responsive to recent price changes
+/// - Slow Score: Stable, smoothed signal
+/// - Adaptive Weight: ER-based blend between fast and slow
+/// - Market Condition: Assessment of current market state
+///
+/// # Example
+///
+/// ```ignore
+/// use indicator_core::composite::advanced::{AdaptiveMarketScore, AdaptiveMarketScoreConfig};
+///
+/// let config = AdaptiveMarketScoreConfig::default();
+/// let indicator = AdaptiveMarketScore::new(config).unwrap();
+/// let result = indicator.calculate(&high, &low, &close);
+/// ```
+#[derive(Debug, Clone)]
+pub struct AdaptiveMarketScore {
+    fast_period: usize,
+    slow_period: usize,
+    efficiency_period: usize,
+    volatility_period: usize,
+}
+
+impl AdaptiveMarketScore {
+    /// Create a new AdaptiveMarketScore with the given configuration.
+    pub fn new(config: AdaptiveMarketScoreConfig) -> Result<Self> {
+        if config.fast_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.slow_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "slow_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.efficiency_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "efficiency_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.volatility_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volatility_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.fast_period >= config.slow_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "fast_period".to_string(),
+                reason: "must be less than slow_period".to_string(),
+            });
+        }
+
+        Ok(Self {
+            fast_period: config.fast_period,
+            slow_period: config.slow_period,
+            efficiency_period: config.efficiency_period,
+            volatility_period: config.volatility_period,
+        })
+    }
+
+    /// Calculate the Adaptive Market Score values.
+    pub fn calculate(&self, high: &[f64], low: &[f64], close: &[f64]) -> AdaptiveMarketScoreOutput {
+        let n = close.len();
+        let mut score = vec![f64::NAN; n];
+        let mut market_condition = vec![f64::NAN; n];
+        let mut adaptive_weight = vec![f64::NAN; n];
+
+        let min_required = self
+            .slow_period
+            .max(self.efficiency_period)
+            .max(self.volatility_period);
+        if n <= min_required {
+            return AdaptiveMarketScoreOutput {
+                score,
+                market_condition,
+                adaptive_weight,
+            };
+        }
+
+        // Calculate efficiency ratio
+        let mut efficiency = vec![f64::NAN; n];
+        for i in self.efficiency_period..n {
+            let net_change = (close[i] - close[i - self.efficiency_period]).abs();
+            let mut sum_changes = 0.0;
+            for j in (i - self.efficiency_period + 1)..=i {
+                sum_changes += (close[j] - close[j - 1]).abs();
+            }
+
+            if sum_changes > 1e-10 {
+                efficiency[i] = (net_change / sum_changes).clamp(0.0, 1.0);
+            } else {
+                efficiency[i] = 0.0;
+            }
+        }
+
+        // Calculate fast score (ROC-based)
+        let mut fast_score = vec![f64::NAN; n];
+        for i in self.fast_period..n {
+            if close[i - self.fast_period].abs() > 1e-10 {
+                let roc = ((close[i] - close[i - self.fast_period]) / close[i - self.fast_period])
+                    * 100.0;
+                fast_score[i] = (roc * 10.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Calculate slow score (smoothed deviation from SMA)
+        let mut slow_score = vec![f64::NAN; n];
+        for i in self.slow_period..n {
+            let sma: f64 = close[(i - self.slow_period + 1)..=i].iter().sum::<f64>()
+                / self.slow_period as f64;
+            if sma.abs() > 1e-10 {
+                let deviation = (close[i] - sma) / sma * 100.0;
+                slow_score[i] = (deviation * 5.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Calculate volatility for market condition
+        let mut atr = vec![f64::NAN; n];
+        for i in 1..n {
+            if i >= self.volatility_period {
+                let mut sum = 0.0;
+                for j in (i - self.volatility_period + 1)..=i {
+                    let tr = if j == 0 {
+                        high[j] - low[j]
+                    } else {
+                        (high[j] - low[j])
+                            .max((high[j] - close[j - 1]).abs())
+                            .max((low[j] - close[j - 1]).abs())
+                    };
+                    sum += tr;
+                }
+                atr[i] = sum / self.volatility_period as f64;
+            }
+        }
+
+        // Calculate market condition and adaptive score
+        for i in min_required..n {
+            if !efficiency[i].is_nan() && !atr[i].is_nan() && close[i].abs() > 1e-10 {
+                let er = efficiency[i];
+                adaptive_weight[i] = er;
+
+                // Market condition: combination of efficiency and volatility
+                let atr_percent = atr[i] / close[i] * 100.0;
+                // High efficiency + moderate volatility = good trending
+                // Low efficiency + high volatility = choppy
+                let trend_quality = er * 100.0;
+                let vol_factor = (100.0 - atr_percent * 25.0).clamp(0.0, 100.0);
+                market_condition[i] = (trend_quality * 0.7 + vol_factor * 0.3).clamp(0.0, 100.0);
+
+                // Adaptive score: blend fast and slow based on efficiency
+                if !fast_score[i].is_nan() && !slow_score[i].is_nan() {
+                    // High efficiency = more weight to fast score
+                    score[i] = (er * fast_score[i] + (1.0 - er) * slow_score[i]).clamp(-100.0, 100.0);
+                }
+            }
+        }
+
+        AdaptiveMarketScoreOutput {
+            score,
+            market_condition,
+            adaptive_weight,
+        }
+    }
+}
+
+impl TechnicalIndicator for AdaptiveMarketScore {
+    fn name(&self) -> &str {
+        "AdaptiveMarketScore"
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+
+        let result = self.calculate(&data.high, &data.low, &data.close);
+        Ok(IndicatorOutput::triple(
+            result.score,
+            result.market_condition,
+            result.adaptive_weight,
+        ))
+    }
+
+    fn min_periods(&self) -> usize {
+        self.slow_period
+            .max(self.efficiency_period)
+            .max(self.volatility_period)
+            + 1
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+// ============================================================================
+// 18. CompositeLeadingIndicator
+// ============================================================================
+
+/// Composite Leading Indicator output.
+#[derive(Debug, Clone)]
+pub struct CompositeLeadingIndicatorOutput {
+    /// Combined leading indicator (-100 to 100).
+    pub indicator: Vec<f64>,
+    /// Price momentum lead component.
+    pub price_lead: Vec<f64>,
+    /// Volume lead component.
+    pub volume_lead: Vec<f64>,
+    /// Rate of change lead component.
+    pub roc_lead: Vec<f64>,
+}
+
+/// Composite Leading Indicator configuration.
+#[derive(Debug, Clone)]
+pub struct CompositeLeadingIndicatorConfig {
+    /// Short period for leading signals (default: 5).
+    pub short_period: usize,
+    /// Medium period for confirmation (default: 10).
+    pub medium_period: usize,
+    /// Long period for trend context (default: 20).
+    pub long_period: usize,
+    /// Volume period (default: 10).
+    pub volume_period: usize,
+    /// Smoothing period (default: 3).
+    pub smoothing_period: usize,
+}
+
+impl Default for CompositeLeadingIndicatorConfig {
+    fn default() -> Self {
+        Self {
+            short_period: 5,
+            medium_period: 10,
+            long_period: 20,
+            volume_period: 10,
+            smoothing_period: 3,
+        }
+    }
+}
+
+/// Composite Leading Indicator.
+///
+/// A forward-looking composite indicator designed to identify potential market
+/// turning points by combining multiple leading signals:
+///
+/// - Price Lead: Short-term price momentum diverging from longer-term trend
+/// - Volume Lead: Volume patterns that often precede price movements
+/// - ROC Lead: Acceleration/deceleration of price change
+///
+/// The indicator attempts to signal market changes before they occur by
+/// identifying early signs of momentum shifts.
+///
+/// # Signal Interpretation
+///
+/// - Rising from low values: Potential bullish reversal
+/// - Falling from high values: Potential bearish reversal
+/// - Divergence from price: Warning of potential trend change
+///
+/// # Example
+///
+/// ```ignore
+/// use indicator_core::composite::advanced::{CompositeLeadingIndicator, CompositeLeadingIndicatorConfig};
+///
+/// let config = CompositeLeadingIndicatorConfig::default();
+/// let indicator = CompositeLeadingIndicator::new(config).unwrap();
+/// let result = indicator.calculate(&high, &low, &close, &volume);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CompositeLeadingIndicator {
+    short_period: usize,
+    medium_period: usize,
+    long_period: usize,
+    volume_period: usize,
+    smoothing_period: usize,
+}
+
+impl CompositeLeadingIndicator {
+    /// Create a new CompositeLeadingIndicator with the given configuration.
+    pub fn new(config: CompositeLeadingIndicatorConfig) -> Result<Self> {
+        if config.short_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.medium_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "medium_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.long_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.volume_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "volume_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.smoothing_period == 0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing_period".to_string(),
+                reason: "must be greater than 0".to_string(),
+            });
+        }
+        if config.short_period >= config.medium_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be less than medium_period".to_string(),
+            });
+        }
+        if config.medium_period >= config.long_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "medium_period".to_string(),
+                reason: "must be less than long_period".to_string(),
+            });
+        }
+
+        Ok(Self {
+            short_period: config.short_period,
+            medium_period: config.medium_period,
+            long_period: config.long_period,
+            volume_period: config.volume_period,
+            smoothing_period: config.smoothing_period,
+        })
+    }
+
+    /// Calculate the Composite Leading Indicator values.
+    pub fn calculate(
+        &self,
+        high: &[f64],
+        low: &[f64],
+        close: &[f64],
+        volume: &[f64],
+    ) -> CompositeLeadingIndicatorOutput {
+        let n = close.len();
+        let mut indicator = vec![f64::NAN; n];
+        let mut price_lead = vec![f64::NAN; n];
+        let mut volume_lead = vec![f64::NAN; n];
+        let mut roc_lead = vec![f64::NAN; n];
+
+        let min_required = self.long_period.max(self.volume_period);
+        if n <= min_required {
+            return CompositeLeadingIndicatorOutput {
+                indicator,
+                price_lead,
+                volume_lead,
+                roc_lead,
+            };
+        }
+
+        // Calculate EMAs for price lead
+        let short_ema = self.calculate_ema(close, self.short_period);
+        let medium_ema = self.calculate_ema(close, self.medium_period);
+        let long_ema = self.calculate_ema(close, self.long_period);
+
+        // Calculate price lead (short-term deviation from longer-term)
+        for i in self.long_period..n {
+            if !short_ema[i].is_nan() && !medium_ema[i].is_nan() && !long_ema[i].is_nan() {
+                if long_ema[i].abs() > 1e-10 {
+                    // Short vs long deviation
+                    let short_dev = (short_ema[i] - long_ema[i]) / long_ema[i] * 100.0;
+                    // Medium vs long deviation (for confirmation)
+                    let medium_dev = (medium_ema[i] - long_ema[i]) / long_ema[i] * 100.0;
+
+                    // Price lead = short deviation with medium confirmation
+                    let confirmation = if short_dev.signum() == medium_dev.signum() {
+                        1.2
+                    } else {
+                        0.8
+                    };
+                    price_lead[i] = (short_dev * 10.0 * confirmation).clamp(-100.0, 100.0);
+                }
+            }
+        }
+
+        // Calculate volume lead (volume patterns preceding price)
+        for i in self.volume_period..n {
+            let avg_volume: f64 = volume[(i - self.volume_period + 1)..=i]
+                .iter()
+                .sum::<f64>()
+                / self.volume_period as f64;
+
+            if avg_volume > 1e-10 {
+                // Volume ratio
+                let vol_ratio = volume[i] / avg_volume;
+
+                // Volume trend (is volume increasing?)
+                let vol_prev: f64 = if i >= self.volume_period + self.short_period {
+                    volume[(i - self.volume_period - self.short_period + 1)..=(i - self.short_period)]
+                        .iter()
+                        .sum::<f64>()
+                        / self.volume_period as f64
+                } else {
+                    avg_volume
+                };
+
+                let vol_change = if vol_prev > 1e-10 {
+                    (avg_volume - vol_prev) / vol_prev
+                } else {
+                    0.0
+                };
+
+                // Price direction for volume context
+                let price_dir = if close[i] > close[i - 1] {
+                    1.0
+                } else if close[i] < close[i - 1] {
+                    -1.0
+                } else {
+                    0.0
+                };
+
+                // Volume lead: rising volume in direction of move is leading
+                volume_lead[i] =
+                    (price_dir * (vol_ratio - 1.0) * 30.0 + vol_change * 50.0).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Calculate ROC lead (acceleration of price change)
+        for i in self.medium_period..n {
+            // Current ROC
+            let roc_current = if close[i - self.short_period].abs() > 1e-10 {
+                ((close[i] - close[i - self.short_period]) / close[i - self.short_period]) * 100.0
+            } else {
+                0.0
+            };
+
+            // Previous ROC
+            let roc_prev = if i >= self.short_period + 1
+                && close[i - self.short_period - 1].abs() > 1e-10
+            {
+                ((close[i - 1] - close[i - self.short_period - 1])
+                    / close[i - self.short_period - 1])
+                    * 100.0
+            } else {
+                0.0
+            };
+
+            // ROC of ROC (acceleration)
+            let roc_accel = roc_current - roc_prev;
+
+            // Longer-term ROC for context
+            let roc_long = if close[i - self.medium_period].abs() > 1e-10 {
+                ((close[i] - close[i - self.medium_period]) / close[i - self.medium_period]) * 100.0
+            } else {
+                0.0
+            };
+
+            // ROC lead: acceleration with trend context
+            roc_lead[i] = (roc_accel * 20.0 + roc_current * 2.0).clamp(-100.0, 100.0);
+        }
+
+        // Combine leading components
+        for i in min_required..n {
+            if !price_lead[i].is_nan() && !volume_lead[i].is_nan() && !roc_lead[i].is_nan() {
+                // Weight components
+                let raw_indicator =
+                    price_lead[i] * 0.4 + volume_lead[i] * 0.3 + roc_lead[i] * 0.3;
+
+                // Agreement bonus
+                let signs = [
+                    price_lead[i].signum(),
+                    volume_lead[i].signum(),
+                    roc_lead[i].signum(),
+                ];
+                let positive_count = signs.iter().filter(|&&s| s > 0.0).count();
+                let negative_count = signs.iter().filter(|&&s| s < 0.0).count();
+                let agreement = positive_count.max(negative_count) as f64 / 3.0;
+
+                indicator[i] = (raw_indicator * (0.7 + agreement * 0.6)).clamp(-100.0, 100.0);
+            }
+        }
+
+        // Apply smoothing
+        if self.smoothing_period > 1 {
+            let smoothed = self.ema_smooth(&indicator, self.smoothing_period);
+            for i in 0..n {
+                if !smoothed[i].is_nan() {
+                    indicator[i] = smoothed[i];
+                }
+            }
+        }
+
+        CompositeLeadingIndicatorOutput {
+            indicator,
+            price_lead,
+            volume_lead,
+            roc_lead,
+        }
+    }
+
+    /// Calculate EMA for given period.
+    fn calculate_ema(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut ema = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        if n >= period {
+            let sum: f64 = data[0..period].iter().sum();
+            ema[period - 1] = sum / period as f64;
+
+            for i in period..n {
+                ema[i] = (data[i] - ema[i - 1]) * multiplier + ema[i - 1];
+            }
+        }
+
+        ema
+    }
+
+    /// Simple EMA smoothing.
+    fn ema_smooth(&self, data: &[f64], period: usize) -> Vec<f64> {
+        let n = data.len();
+        let mut result = vec![f64::NAN; n];
+        let multiplier = 2.0 / (period + 1) as f64;
+
+        let mut first_valid = None;
+        for i in 0..n {
+            if !data[i].is_nan() {
+                first_valid = Some(i);
+                result[i] = data[i];
+                break;
+            }
+        }
+
+        if let Some(start) = first_valid {
+            for i in (start + 1)..n {
+                if !data[i].is_nan() {
+                    if !result[i - 1].is_nan() {
+                        result[i] = (data[i] - result[i - 1]) * multiplier + result[i - 1];
+                    } else {
+                        result[i] = data[i];
+                    }
+                }
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CompositeLeadingIndicator {
+    fn name(&self) -> &str {
+        "CompositeLeadingIndicator"
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        let min_required = self.min_periods();
+        if data.close.len() < min_required {
+            return Err(IndicatorError::InsufficientData {
+                required: min_required,
+                got: data.close.len(),
+            });
+        }
+
+        let result = self.calculate(&data.high, &data.low, &data.close, &data.volume);
+        Ok(IndicatorOutput::triple(
+            result.indicator,
+            result.price_lead,
+            result.volume_lead,
+        ))
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period.max(self.volume_period) + 1
+    }
+
+    fn output_features(&self) -> usize {
+        3
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -3708,5 +5636,518 @@ mod tests {
         assert_eq!(output.primary.len(), 50);
         assert!(output.secondary.is_some());
         assert!(output.tertiary.is_some());
+    }
+
+    // ========== MarketStrengthIndex Tests ==========
+
+    #[test]
+    fn test_market_strength_index_new() {
+        let config = MarketStrengthIndexConfig::default();
+        let indicator = MarketStrengthIndex::new(config);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_market_strength_index_invalid_price_period() {
+        let config = MarketStrengthIndexConfig {
+            price_period: 0,
+            ..Default::default()
+        };
+        let result = MarketStrengthIndex::new(config);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "price_period");
+        }
+    }
+
+    #[test]
+    fn test_market_strength_index_invalid_weight() {
+        let config = MarketStrengthIndexConfig {
+            price_weight: 1.5,
+            ..Default::default()
+        };
+        let result = MarketStrengthIndex::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_market_strength_index_calculate() {
+        let config = MarketStrengthIndexConfig::default();
+        let indicator = MarketStrengthIndex::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 10.0)).collect();
+
+        let result = indicator.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.strength.len(), 50);
+        assert_eq!(result.price_strength.len(), 50);
+        assert_eq!(result.volume_strength.len(), 50);
+
+        for i in 20..50 {
+            if !result.strength[i].is_nan() {
+                assert!(result.strength[i] >= 0.0 && result.strength[i] <= 100.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_market_strength_index_trait() {
+        let config = MarketStrengthIndexConfig::default();
+        let indicator = MarketStrengthIndex::new(config).unwrap();
+
+        assert_eq!(indicator.name(), "MarketStrengthIndex");
+        assert_eq!(indicator.min_periods(), 15);
+        assert_eq!(indicator.output_features(), 3);
+    }
+
+    #[test]
+    fn test_market_strength_index_compute() {
+        let config = MarketStrengthIndexConfig::default();
+        let indicator = MarketStrengthIndex::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 10.0)).collect();
+
+        let series = OHLCVSeries {
+            open: close.clone(),
+            high,
+            low,
+            close,
+            volume,
+        };
+
+        let output = indicator.compute(&series).unwrap();
+        assert_eq!(output.primary.len(), 50);
+        assert!(output.secondary.is_some());
+        assert!(output.tertiary.is_some());
+    }
+
+    // ========== TrendMomentumComposite Tests ==========
+
+    #[test]
+    fn test_trend_momentum_composite_new() {
+        let config = TrendMomentumCompositeConfig::default();
+        let indicator = TrendMomentumComposite::new(config);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_trend_momentum_composite_invalid_period() {
+        let config = TrendMomentumCompositeConfig {
+            short_ema_period: 0,
+            ..Default::default()
+        };
+        let result = TrendMomentumComposite::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_trend_momentum_composite_invalid_period_order() {
+        let config = TrendMomentumCompositeConfig {
+            short_ema_period: 30,
+            long_ema_period: 20,
+            ..Default::default()
+        };
+        let result = TrendMomentumComposite::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_trend_momentum_composite_invalid_weight() {
+        let config = TrendMomentumCompositeConfig {
+            trend_weight: 1.5,
+            ..Default::default()
+        };
+        let result = TrendMomentumComposite::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_trend_momentum_composite_calculate() {
+        let config = TrendMomentumCompositeConfig::default();
+        let indicator = TrendMomentumComposite::new(config).unwrap();
+        let (_, _, close) = generate_uptrend_data(50);
+
+        let result = indicator.calculate(&close);
+
+        assert_eq!(result.signal.len(), 50);
+        assert_eq!(result.trend_component.len(), 50);
+        assert_eq!(result.momentum_component.len(), 50);
+
+        for i in 30..50 {
+            if !result.signal[i].is_nan() {
+                assert!(result.signal[i] >= -100.0 && result.signal[i] <= 100.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_trend_momentum_composite_trait() {
+        let config = TrendMomentumCompositeConfig::default();
+        let indicator = TrendMomentumComposite::new(config).unwrap();
+
+        assert_eq!(indicator.name(), "TrendMomentumComposite");
+        assert_eq!(indicator.min_periods(), 27);
+        assert_eq!(indicator.output_features(), 3);
+    }
+
+    #[test]
+    fn test_trend_momentum_composite_compute() {
+        let config = TrendMomentumCompositeConfig::default();
+        let indicator = TrendMomentumComposite::new(config).unwrap();
+        let (_, _, close) = generate_uptrend_data(50);
+
+        let series = OHLCVSeries::from_close(close);
+
+        let output = indicator.compute(&series).unwrap();
+        assert_eq!(output.primary.len(), 50);
+        assert!(output.secondary.is_some());
+        assert!(output.tertiary.is_some());
+    }
+
+    // ========== VolatilityTrendIndex Tests ==========
+
+    #[test]
+    fn test_volatility_trend_index_new() {
+        let config = VolatilityTrendIndexConfig::default();
+        let indicator = VolatilityTrendIndex::new(config);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_volatility_trend_index_invalid_atr_period() {
+        let config = VolatilityTrendIndexConfig {
+            atr_period: 0,
+            ..Default::default()
+        };
+        let result = VolatilityTrendIndex::new(config);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "atr_period");
+        }
+    }
+
+    #[test]
+    fn test_volatility_trend_index_calculate() {
+        let config = VolatilityTrendIndexConfig::default();
+        let indicator = VolatilityTrendIndex::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(70);
+
+        let result = indicator.calculate(&high, &low, &close);
+
+        assert_eq!(result.index.len(), 70);
+        assert_eq!(result.volatility_regime.len(), 70);
+        assert_eq!(result.trend_direction.len(), 70);
+
+        for i in 55..70 {
+            if !result.index[i].is_nan() {
+                assert!(result.index[i] >= -100.0 && result.index[i] <= 100.0);
+            }
+            if !result.volatility_regime[i].is_nan() {
+                assert!(result.volatility_regime[i] >= 0.0 && result.volatility_regime[i] <= 100.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_volatility_trend_index_trait() {
+        let config = VolatilityTrendIndexConfig::default();
+        let indicator = VolatilityTrendIndex::new(config).unwrap();
+
+        assert_eq!(indicator.name(), "VolatilityTrendIndex");
+        assert_eq!(indicator.min_periods(), 51);
+        assert_eq!(indicator.output_features(), 3);
+    }
+
+    #[test]
+    fn test_volatility_trend_index_compute() {
+        let config = VolatilityTrendIndexConfig::default();
+        let indicator = VolatilityTrendIndex::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(70);
+
+        let series = OHLCVSeries {
+            open: close.clone(),
+            high,
+            low,
+            close,
+            volume: vec![1000.0; 70],
+        };
+
+        let output = indicator.compute(&series).unwrap();
+        assert_eq!(output.primary.len(), 70);
+        assert!(output.secondary.is_some());
+        assert!(output.tertiary.is_some());
+    }
+
+    // ========== MultiFactorSignal Tests ==========
+
+    #[test]
+    fn test_multi_factor_signal_new() {
+        let config = MultiFactorSignalConfig::default();
+        let indicator = MultiFactorSignal::new(config);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_multi_factor_signal_invalid_trend_period() {
+        let config = MultiFactorSignalConfig {
+            trend_period: 0,
+            ..Default::default()
+        };
+        let result = MultiFactorSignal::new(config);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "trend_period");
+        }
+    }
+
+    #[test]
+    fn test_multi_factor_signal_invalid_weight() {
+        let config = MultiFactorSignalConfig {
+            trend_weight: 1.5,
+            ..Default::default()
+        };
+        let result = MultiFactorSignal::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multi_factor_signal_calculate() {
+        let config = MultiFactorSignalConfig::default();
+        let indicator = MultiFactorSignal::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 10.0)).collect();
+
+        let result = indicator.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.signal.len(), 50);
+        assert_eq!(result.trend_factor.len(), 50);
+        assert_eq!(result.momentum_factor.len(), 50);
+        assert_eq!(result.volatility_factor.len(), 50);
+
+        for i in 25..50 {
+            if !result.signal[i].is_nan() {
+                assert!(result.signal[i] >= -100.0 && result.signal[i] <= 100.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_multi_factor_signal_trait() {
+        let config = MultiFactorSignalConfig::default();
+        let indicator = MultiFactorSignal::new(config).unwrap();
+
+        assert_eq!(indicator.name(), "MultiFactorSignal");
+        assert_eq!(indicator.min_periods(), 21);
+        assert_eq!(indicator.output_features(), 3);
+    }
+
+    #[test]
+    fn test_multi_factor_signal_compute() {
+        let config = MultiFactorSignalConfig::default();
+        let indicator = MultiFactorSignal::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 10.0)).collect();
+
+        let series = OHLCVSeries {
+            open: close.clone(),
+            high,
+            low,
+            close,
+            volume,
+        };
+
+        let output = indicator.compute(&series).unwrap();
+        assert_eq!(output.primary.len(), 50);
+        assert!(output.secondary.is_some());
+        assert!(output.tertiary.is_some());
+    }
+
+    // ========== AdaptiveMarketScore Tests ==========
+
+    #[test]
+    fn test_adaptive_market_score_new() {
+        let config = AdaptiveMarketScoreConfig::default();
+        let indicator = AdaptiveMarketScore::new(config);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_adaptive_market_score_invalid_fast_period() {
+        let config = AdaptiveMarketScoreConfig {
+            fast_period: 0,
+            ..Default::default()
+        };
+        let result = AdaptiveMarketScore::new(config);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "fast_period");
+        }
+    }
+
+    #[test]
+    fn test_adaptive_market_score_invalid_period_order() {
+        let config = AdaptiveMarketScoreConfig {
+            fast_period: 25,
+            slow_period: 20,
+            ..Default::default()
+        };
+        let result = AdaptiveMarketScore::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_adaptive_market_score_calculate() {
+        let config = AdaptiveMarketScoreConfig::default();
+        let indicator = AdaptiveMarketScore::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+
+        let result = indicator.calculate(&high, &low, &close);
+
+        assert_eq!(result.score.len(), 50);
+        assert_eq!(result.market_condition.len(), 50);
+        assert_eq!(result.adaptive_weight.len(), 50);
+
+        for i in 25..50 {
+            if !result.score[i].is_nan() {
+                assert!(result.score[i] >= -100.0 && result.score[i] <= 100.0);
+            }
+            if !result.market_condition[i].is_nan() {
+                assert!(result.market_condition[i] >= 0.0 && result.market_condition[i] <= 100.0);
+            }
+            if !result.adaptive_weight[i].is_nan() {
+                assert!(result.adaptive_weight[i] >= 0.0 && result.adaptive_weight[i] <= 1.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_adaptive_market_score_trait() {
+        let config = AdaptiveMarketScoreConfig::default();
+        let indicator = AdaptiveMarketScore::new(config).unwrap();
+
+        assert_eq!(indicator.name(), "AdaptiveMarketScore");
+        assert_eq!(indicator.min_periods(), 21);
+        assert_eq!(indicator.output_features(), 3);
+    }
+
+    #[test]
+    fn test_adaptive_market_score_compute() {
+        let config = AdaptiveMarketScoreConfig::default();
+        let indicator = AdaptiveMarketScore::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+
+        let series = OHLCVSeries {
+            open: close.clone(),
+            high,
+            low,
+            close,
+            volume: vec![1000.0; 50],
+        };
+
+        let output = indicator.compute(&series).unwrap();
+        assert_eq!(output.primary.len(), 50);
+        assert!(output.secondary.is_some());
+        assert!(output.tertiary.is_some());
+    }
+
+    // ========== CompositeLeadingIndicator Tests ==========
+
+    #[test]
+    fn test_composite_leading_indicator_new() {
+        let config = CompositeLeadingIndicatorConfig::default();
+        let indicator = CompositeLeadingIndicator::new(config);
+        assert!(indicator.is_ok());
+    }
+
+    #[test]
+    fn test_composite_leading_indicator_invalid_short_period() {
+        let config = CompositeLeadingIndicatorConfig {
+            short_period: 0,
+            ..Default::default()
+        };
+        let result = CompositeLeadingIndicator::new(config);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InvalidParameter { name, .. }) = result {
+            assert_eq!(name, "short_period");
+        }
+    }
+
+    #[test]
+    fn test_composite_leading_indicator_invalid_period_order() {
+        let config = CompositeLeadingIndicatorConfig {
+            short_period: 15,
+            medium_period: 10,
+            long_period: 20,
+            ..Default::default()
+        };
+        let result = CompositeLeadingIndicator::new(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_composite_leading_indicator_calculate() {
+        let config = CompositeLeadingIndicatorConfig::default();
+        let indicator = CompositeLeadingIndicator::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 10.0)).collect();
+
+        let result = indicator.calculate(&high, &low, &close, &volume);
+
+        assert_eq!(result.indicator.len(), 50);
+        assert_eq!(result.price_lead.len(), 50);
+        assert_eq!(result.volume_lead.len(), 50);
+        assert_eq!(result.roc_lead.len(), 50);
+
+        for i in 25..50 {
+            if !result.indicator[i].is_nan() {
+                assert!(result.indicator[i] >= -100.0 && result.indicator[i] <= 100.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_composite_leading_indicator_trait() {
+        let config = CompositeLeadingIndicatorConfig::default();
+        let indicator = CompositeLeadingIndicator::new(config).unwrap();
+
+        assert_eq!(indicator.name(), "CompositeLeadingIndicator");
+        assert_eq!(indicator.min_periods(), 21);
+        assert_eq!(indicator.output_features(), 3);
+    }
+
+    #[test]
+    fn test_composite_leading_indicator_compute() {
+        let config = CompositeLeadingIndicatorConfig::default();
+        let indicator = CompositeLeadingIndicator::new(config).unwrap();
+        let (high, low, close) = generate_uptrend_data(50);
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + (i as f64 * 10.0)).collect();
+
+        let series = OHLCVSeries {
+            open: close.clone(),
+            high,
+            low,
+            close,
+            volume,
+        };
+
+        let output = indicator.compute(&series).unwrap();
+        assert_eq!(output.primary.len(), 50);
+        assert!(output.secondary.is_some());
+        assert!(output.tertiary.is_some());
+    }
+
+    #[test]
+    fn test_composite_leading_indicator_insufficient_data() {
+        let config = CompositeLeadingIndicatorConfig::default();
+        let indicator = CompositeLeadingIndicator::new(config).unwrap();
+
+        let series = OHLCVSeries::from_close(vec![100.0; 10]);
+
+        let result = indicator.compute(&series);
+        assert!(result.is_err());
+        if let Err(IndicatorError::InsufficientData { required, got }) = result {
+            assert_eq!(required, 21);
+            assert_eq!(got, 10);
+        }
     }
 }

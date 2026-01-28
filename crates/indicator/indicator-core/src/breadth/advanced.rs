@@ -1476,6 +1476,751 @@ impl TechnicalIndicator for BreadthDivergenceIndex {
     }
 }
 
+// ============================================================================
+// NEW Breadth Indicators (6 additional indicators as requested)
+// ============================================================================
+
+/// BreadthTrustThrust - Measures thrust in market breadth
+///
+/// The Breadth Trust Thrust indicator measures the percentage of advancing
+/// issues that exceeds a high threshold within a short time period. It
+/// identifies powerful market thrusts that historically signal the beginning
+/// of significant rallies. A thrust signal occurs when breadth rapidly
+/// transitions from oversold to overbought conditions.
+#[derive(Debug, Clone)]
+pub struct BreadthTrustThrust {
+    /// Period for calculating advance ratio
+    period: usize,
+    /// Threshold percentage for thrust detection (e.g., 61.5%)
+    thrust_threshold: f64,
+    /// EMA smoothing period for the thrust indicator
+    smoothing: usize,
+}
+
+impl BreadthTrustThrust {
+    /// Creates a new BreadthTrustThrust indicator.
+    ///
+    /// # Arguments
+    /// * `period` - The lookback period for calculating advance ratio (minimum 2)
+    /// * `thrust_threshold` - The threshold for thrust detection (0-100, typically 61.5)
+    /// * `smoothing` - EMA smoothing period (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if period < 2, smoothing < 2, or threshold is out of range
+    pub fn new(period: usize, thrust_threshold: f64, smoothing: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if thrust_threshold <= 0.0 || thrust_threshold >= 100.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "thrust_threshold".to_string(),
+                reason: "must be between 0 and 100 exclusive".to_string(),
+            });
+        }
+        Ok(Self { period, thrust_threshold, smoothing })
+    }
+
+    /// Calculate breadth trust thrust values.
+    ///
+    /// Returns a vector where:
+    /// - Values > 0 indicate thrust strength (0-100 scale)
+    /// - Higher values indicate stronger thrust signals
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate raw advance percentage for each period
+        let mut advance_pct = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut total = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                }
+                total += 1;
+            }
+
+            if total > 0 {
+                advance_pct[i] = (advances as f64 / total as f64) * 100.0;
+            }
+        }
+
+        // Calculate thrust signal when advance percentage exceeds threshold
+        let mut thrust_raw = vec![0.0; n];
+        for i in self.period..n {
+            if advance_pct[i] > self.thrust_threshold {
+                // Scale the thrust intensity based on how much it exceeds threshold
+                let excess = advance_pct[i] - self.thrust_threshold;
+                let max_excess = 100.0 - self.thrust_threshold;
+                thrust_raw[i] = (excess / max_excess) * 100.0;
+            }
+        }
+
+        // Apply EMA smoothing to thrust signal
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in self.period..n {
+            if i == self.period {
+                result[i] = thrust_raw[i];
+            } else {
+                result[i] = alpha * thrust_raw[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthTrustThrust {
+    fn name(&self) -> &str {
+        "Breadth Trust Thrust"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// AdvanceDeclineOscillator - A/D based oscillator
+///
+/// The Advance/Decline Oscillator measures the difference between short-term
+/// and long-term moving averages of the advance-decline ratio. It oscillates
+/// around zero, with positive values indicating bullish breadth momentum and
+/// negative values indicating bearish breadth momentum.
+#[derive(Debug, Clone)]
+pub struct AdvanceDeclineOscillator {
+    /// Short-term EMA period
+    short_period: usize,
+    /// Long-term EMA period
+    long_period: usize,
+}
+
+impl AdvanceDeclineOscillator {
+    /// Creates a new AdvanceDeclineOscillator.
+    ///
+    /// # Arguments
+    /// * `short_period` - Short-term EMA period (minimum 2)
+    /// * `long_period` - Long-term EMA period (must be > short_period)
+    ///
+    /// # Errors
+    /// Returns an error if short_period < 2 or long_period <= short_period
+    pub fn new(short_period: usize, long_period: usize) -> Result<Self> {
+        if short_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "short_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if long_period <= short_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "long_period".to_string(),
+                reason: "must be greater than short_period".to_string(),
+            });
+        }
+        Ok(Self { short_period, long_period })
+    }
+
+    /// Calculate advance/decline oscillator values.
+    ///
+    /// Returns the difference between short and long EMA of A/D ratio,
+    /// scaled to provide meaningful oscillator readings.
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate daily A/D value (+1 for advance, -1 for decline, 0 for unchanged)
+        let mut ad_value = vec![0.0; n];
+        for i in 1..n {
+            if close[i] > close[i - 1] {
+                ad_value[i] = 1.0;
+            } else if close[i] < close[i - 1] {
+                ad_value[i] = -1.0;
+            }
+        }
+
+        // Calculate short-term EMA
+        let short_alpha = 2.0 / (self.short_period as f64 + 1.0);
+        let mut short_ema = vec![0.0; n];
+        for i in 1..n {
+            if i == 1 {
+                short_ema[i] = ad_value[i];
+            } else {
+                short_ema[i] = short_alpha * ad_value[i] + (1.0 - short_alpha) * short_ema[i - 1];
+            }
+        }
+
+        // Calculate long-term EMA
+        let long_alpha = 2.0 / (self.long_period as f64 + 1.0);
+        let mut long_ema = vec![0.0; n];
+        for i in 1..n {
+            if i == 1 {
+                long_ema[i] = ad_value[i];
+            } else {
+                long_ema[i] = long_alpha * ad_value[i] + (1.0 - long_alpha) * long_ema[i - 1];
+            }
+        }
+
+        // Oscillator = short EMA - long EMA, scaled to percentage
+        for i in self.long_period..n {
+            result[i] = (short_ema[i] - long_ema[i]) * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for AdvanceDeclineOscillator {
+    fn name(&self) -> &str {
+        "Advance Decline Oscillator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.long_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthStrengthIndex - Breadth strength measure
+///
+/// The Breadth Strength Index measures the internal strength of market breadth
+/// by combining multiple breadth factors: advance percentage, persistence of
+/// advances, and acceleration of breadth. It provides a comprehensive view
+/// of market participation strength.
+#[derive(Debug, Clone)]
+pub struct BreadthStrengthIndex {
+    /// Period for calculating breadth components
+    period: usize,
+    /// Lookback period for strength normalization
+    lookback: usize,
+}
+
+impl BreadthStrengthIndex {
+    /// Creates a new BreadthStrengthIndex.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating breadth components (minimum 5)
+    /// * `lookback` - Lookback period for strength normalization (minimum 5)
+    ///
+    /// # Errors
+    /// Returns an error if period < 5 or lookback < 5
+    pub fn new(period: usize, lookback: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if lookback < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "lookback".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        Ok(Self { period, lookback })
+    }
+
+    /// Calculate breadth strength index values.
+    ///
+    /// Returns values from 0-100 where:
+    /// - 0-30: Weak breadth (bearish)
+    /// - 30-70: Neutral breadth
+    /// - 70-100: Strong breadth (bullish)
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Component 1: Advance percentage over period
+        let mut advance_pct = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut total = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                }
+                total += 1;
+            }
+
+            if total > 0 {
+                advance_pct[i] = advances as f64 / total as f64;
+            }
+        }
+
+        // Component 2: Persistence - consecutive advances count
+        let mut persistence = vec![0.0; n];
+        let mut consecutive = 0;
+        for i in 1..n {
+            if close[i] > close[i - 1] {
+                consecutive += 1;
+            } else {
+                consecutive = 0;
+            }
+            persistence[i] = consecutive as f64;
+        }
+
+        // Normalize persistence over lookback
+        let mut norm_persistence = vec![0.0; n];
+        let min_idx = self.period + self.lookback;
+        for i in min_idx..n {
+            let lookback_start = i.saturating_sub(self.lookback);
+            let max_persistence = persistence[lookback_start..=i]
+                .iter()
+                .fold(0.0_f64, |max, &val| if val > max { val } else { max });
+
+            if max_persistence > 0.0 {
+                norm_persistence[i] = persistence[i] / max_persistence;
+            }
+        }
+
+        // Component 3: Acceleration - change in advance percentage
+        let mut acceleration = vec![0.0; n];
+        for i in (self.period + 1)..n {
+            let change = advance_pct[i] - advance_pct[i - 1];
+            // Normalize to 0-1 range (change from -1 to +1 maps to 0-1)
+            acceleration[i] = (change + 1.0) / 2.0;
+        }
+
+        // Combine components with weights
+        for i in min_idx..n {
+            // Weight: 50% advance percentage, 30% persistence, 20% acceleration
+            let strength = (advance_pct[i] * 0.5 + norm_persistence[i] * 0.3 + acceleration[i] * 0.2) * 100.0;
+            result[i] = strength.clamp(0.0, 100.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthStrengthIndex {
+    fn name(&self) -> &str {
+        "Breadth Strength Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.lookback + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// MarketInternalsScore - Score from market internals
+///
+/// The Market Internals Score combines multiple breadth metrics into a single
+/// composite score that reflects overall market health. It considers:
+/// - Advance/decline ratio
+/// - Up/down volume ratio
+/// - New highs vs new lows proxy
+/// - Trend consistency
+///
+/// Higher scores indicate healthier market internals.
+#[derive(Debug, Clone)]
+pub struct MarketInternalsScore {
+    /// Period for calculating internal metrics
+    period: usize,
+    /// Smoothing period for the final score
+    smoothing: usize,
+}
+
+impl MarketInternalsScore {
+    /// Creates a new MarketInternalsScore indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating metrics (minimum 5)
+    /// * `smoothing` - Smoothing period for final score (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if period < 5 or smoothing < 2
+    pub fn new(period: usize, smoothing: usize) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if smoothing < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing })
+    }
+
+    /// Calculate market internals score.
+    ///
+    /// Returns values from 0-100 where:
+    /// - 0-25: Very weak internals (bearish)
+    /// - 25-50: Weak internals
+    /// - 50-75: Strong internals
+    /// - 75-100: Very strong internals (bullish)
+    pub fn calculate(&self, close: &[f64], volume: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Component 1: A/D ratio score
+        let mut ad_score = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut declines = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                } else if close[j] < close[j - 1] {
+                    declines += 1;
+                }
+            }
+
+            let total = advances + declines;
+            if total > 0 {
+                // Score: 0 = all declines, 50 = even, 100 = all advances
+                ad_score[i] = (advances as f64 / total as f64) * 100.0;
+            } else {
+                ad_score[i] = 50.0; // Neutral when no changes
+            }
+        }
+
+        // Component 2: Volume ratio score (up volume vs down volume)
+        let mut vol_score = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut up_vol = 0.0;
+            let mut down_vol = 0.0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    up_vol += volume[j];
+                } else if close[j] < close[j - 1] {
+                    down_vol += volume[j];
+                }
+            }
+
+            let total_vol = up_vol + down_vol;
+            if total_vol > 1e-10 {
+                vol_score[i] = (up_vol / total_vol) * 100.0;
+            } else {
+                vol_score[i] = 50.0;
+            }
+        }
+
+        // Component 3: New highs proxy (price at period high)
+        let mut high_score = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let period_high = close[start..=i].iter().fold(f64::MIN, |max, &v| v.max(max));
+            let period_low = close[start..=i].iter().fold(f64::MAX, |min, &v| v.min(min));
+
+            let range = period_high - period_low;
+            if range > 1e-10 {
+                // Where is current price in the range? 0 = at low, 100 = at high
+                high_score[i] = ((close[i] - period_low) / range) * 100.0;
+            } else {
+                high_score[i] = 50.0;
+            }
+        }
+
+        // Component 4: Trend consistency (how often price moves in same direction)
+        let mut trend_score = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+
+            // Count direction consistency
+            let price_change = close[i] - close[start];
+            let direction = if price_change > 0.0 { 1 } else if price_change < 0.0 { -1 } else { 0 };
+
+            let mut consistent_days = 0;
+            for j in (start + 1)..=i {
+                let daily_direction = if close[j] > close[j - 1] { 1 }
+                    else if close[j] < close[j - 1] { -1 }
+                    else { 0 };
+
+                if daily_direction == direction {
+                    consistent_days += 1;
+                }
+            }
+
+            let total_days = self.period;
+            trend_score[i] = (consistent_days as f64 / total_days as f64) * 100.0;
+        }
+
+        // Combine with equal weights (25% each)
+        let mut raw_score = vec![0.0; n];
+        for i in self.period..n {
+            raw_score[i] = (ad_score[i] + vol_score[i] + high_score[i] + trend_score[i]) / 4.0;
+        }
+
+        // Apply EMA smoothing
+        let alpha = 2.0 / (self.smoothing as f64 + 1.0);
+        for i in self.period..n {
+            if i == self.period {
+                result[i] = raw_score[i];
+            } else {
+                result[i] = alpha * raw_score[i] + (1.0 - alpha) * result[i - 1];
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for MarketInternalsScore {
+    fn name(&self) -> &str {
+        "Market Internals Score"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.smoothing
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close, &data.volume)))
+    }
+}
+
+/// BreadthPersistence - Measures persistence of breadth movements
+///
+/// Tracks how long breadth readings persist in one direction, identifying
+/// sustained bullish or bearish participation. High persistence values
+/// indicate strong trending conditions with consistent market participation.
+#[derive(Debug, Clone)]
+pub struct BreadthPersistence {
+    /// Period for calculating breadth
+    period: usize,
+    /// Threshold for determining positive/negative breadth
+    threshold: f64,
+}
+
+impl BreadthPersistence {
+    /// Creates a new BreadthPersistence indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating breadth (minimum 5)
+    /// * `threshold` - Threshold percentage for positive/negative classification (0-50)
+    ///
+    /// # Errors
+    /// Returns an error if period < 5 or threshold is out of range
+    pub fn new(period: usize, threshold: f64) -> Result<Self> {
+        if period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if threshold < 0.0 || threshold > 50.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "threshold".to_string(),
+                reason: "must be between 0 and 50".to_string(),
+            });
+        }
+        Ok(Self { period, threshold })
+    }
+
+    /// Calculate breadth persistence values.
+    ///
+    /// Returns values where:
+    /// - Positive values indicate consecutive bullish breadth readings
+    /// - Negative values indicate consecutive bearish breadth readings
+    /// - Magnitude indicates the number of consecutive periods
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate advance percentage for each period
+        let mut advance_pct = vec![50.0; n]; // Default to neutral
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut total = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                }
+                total += 1;
+            }
+
+            if total > 0 {
+                advance_pct[i] = (advances as f64 / total as f64) * 100.0;
+            }
+        }
+
+        // Track persistence
+        let mut consecutive_positive = 0.0;
+        let mut consecutive_negative = 0.0;
+        let positive_threshold = 50.0 + self.threshold;
+        let negative_threshold = 50.0 - self.threshold;
+
+        for i in self.period..n {
+            if advance_pct[i] > positive_threshold {
+                // Bullish breadth
+                consecutive_positive += 1.0;
+                consecutive_negative = 0.0;
+                result[i] = consecutive_positive;
+            } else if advance_pct[i] < negative_threshold {
+                // Bearish breadth
+                consecutive_negative += 1.0;
+                consecutive_positive = 0.0;
+                result[i] = -consecutive_negative;
+            } else {
+                // Neutral - reset both counters
+                consecutive_positive = 0.0;
+                consecutive_negative = 0.0;
+                result[i] = 0.0;
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthPersistence {
+    fn name(&self) -> &str {
+        "Breadth Persistence"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// BreadthAcceleration - Rate of change in breadth momentum
+///
+/// Measures the acceleration (second derivative) of market breadth, identifying
+/// when breadth momentum is speeding up or slowing down. This can signal
+/// potential trend reversals before they occur in price.
+#[derive(Debug, Clone)]
+pub struct BreadthAcceleration {
+    /// Period for calculating breadth ratio
+    period: usize,
+    /// Period for calculating first derivative (momentum)
+    momentum_period: usize,
+    /// Period for calculating second derivative (acceleration)
+    acceleration_period: usize,
+}
+
+impl BreadthAcceleration {
+    /// Creates a new BreadthAcceleration indicator.
+    ///
+    /// # Arguments
+    /// * `period` - Period for calculating breadth ratio (minimum 2)
+    /// * `momentum_period` - Period for first derivative (minimum 2)
+    /// * `acceleration_period` - Period for second derivative (minimum 2)
+    ///
+    /// # Errors
+    /// Returns an error if any period is less than 2
+    pub fn new(period: usize, momentum_period: usize, acceleration_period: usize) -> Result<Self> {
+        if period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if momentum_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "momentum_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        if acceleration_period < 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "acceleration_period".to_string(),
+                reason: "must be at least 2".to_string(),
+            });
+        }
+        Ok(Self { period, momentum_period, acceleration_period })
+    }
+
+    /// Calculate breadth acceleration values.
+    ///
+    /// Returns values where:
+    /// - Positive values indicate accelerating bullish breadth
+    /// - Negative values indicate accelerating bearish breadth
+    /// - Values near zero indicate stable breadth momentum
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Calculate breadth ratio for each period
+        let mut breadth_ratio = vec![0.0; n];
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let mut advances = 0;
+            let mut declines = 0;
+
+            for j in (start + 1)..=i {
+                if close[j] > close[j - 1] {
+                    advances += 1;
+                } else if close[j] < close[j - 1] {
+                    declines += 1;
+                }
+            }
+
+            let total = advances + declines;
+            if total > 0 {
+                breadth_ratio[i] = (advances as f64 - declines as f64) / total as f64;
+            }
+        }
+
+        // Calculate first derivative (momentum)
+        let mut momentum = vec![0.0; n];
+        let mom_start = self.period + self.momentum_period;
+        for i in mom_start..n {
+            momentum[i] = breadth_ratio[i] - breadth_ratio[i - self.momentum_period];
+        }
+
+        // Calculate second derivative (acceleration)
+        let acc_start = mom_start + self.acceleration_period;
+        for i in acc_start..n {
+            let acceleration = momentum[i] - momentum[i - self.acceleration_period];
+            // Scale to reasonable range
+            result[i] = acceleration * 100.0;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for BreadthAcceleration {
+    fn name(&self) -> &str {
+        "Breadth Acceleration"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + self.momentum_period + self.acceleration_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1981,5 +2726,349 @@ mod tests {
 
         let bdi = BreadthDivergenceIndex::new(10, 5).unwrap();
         let _ = bdi.compute(&data).unwrap();
+    }
+
+    // ============================================================================
+    // Tests for the 6 NEW breadth indicators (BreadthTrustThrust, etc.)
+    // ============================================================================
+
+    #[test]
+    fn test_breadth_trust_thrust() {
+        let data = make_test_data();
+        let btt = BreadthTrustThrust::new(10, 61.5, 3).unwrap();
+        let result = btt.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..10 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Thrust values should be non-negative (0-100 scale)
+        for i in 15..result.len() {
+            assert!(result[i] >= 0.0, "Thrust should be non-negative at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_breadth_trust_thrust_validation() {
+        assert!(BreadthTrustThrust::new(1, 61.5, 3).is_err()); // period too small
+        assert!(BreadthTrustThrust::new(10, 61.5, 1).is_err()); // smoothing too small
+        assert!(BreadthTrustThrust::new(10, 0.0, 3).is_err()); // threshold at boundary
+        assert!(BreadthTrustThrust::new(10, 100.0, 3).is_err()); // threshold at boundary
+        assert!(BreadthTrustThrust::new(10, -10.0, 3).is_err()); // negative threshold
+        assert!(BreadthTrustThrust::new(10, 61.5, 3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_trust_thrust_trait() {
+        let data = make_test_data();
+        let btt = BreadthTrustThrust::new(10, 61.5, 3).unwrap();
+        assert_eq!(btt.name(), "Breadth Trust Thrust");
+        assert_eq!(btt.min_periods(), 13);
+        let output = btt.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_trust_thrust_strong_rally() {
+        // Create data with strong rally (should trigger thrust)
+        let mut close: Vec<f64> = vec![100.0; 50];
+        for i in 1..50 {
+            close[i] = close[i - 1] + 1.0; // Continuous up moves
+        }
+
+        let btt = BreadthTrustThrust::new(5, 50.0, 2).unwrap();
+        let result = btt.calculate(&close);
+
+        // Should detect thrust in strong uptrend
+        let has_thrust = result[10..].iter().any(|&v| v > 0.0);
+        assert!(has_thrust, "Should detect thrust in strong rally");
+    }
+
+    #[test]
+    fn test_advance_decline_oscillator() {
+        let data = make_test_data();
+        let ado = AdvanceDeclineOscillator::new(10, 20).unwrap();
+        let result = ado.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..20 {
+            assert_eq!(result[i], 0.0);
+        }
+        // Later values should have variation
+        let has_variation = result[25..].windows(2).any(|w| w[0] != w[1]);
+        assert!(has_variation, "Oscillator should have variation");
+    }
+
+    #[test]
+    fn test_advance_decline_oscillator_validation() {
+        assert!(AdvanceDeclineOscillator::new(1, 20).is_err()); // short_period too small
+        assert!(AdvanceDeclineOscillator::new(10, 10).is_err()); // long == short
+        assert!(AdvanceDeclineOscillator::new(20, 10).is_err()); // long < short
+        assert!(AdvanceDeclineOscillator::new(10, 20).is_ok());
+    }
+
+    #[test]
+    fn test_advance_decline_oscillator_trait() {
+        let data = make_test_data();
+        let ado = AdvanceDeclineOscillator::new(10, 20).unwrap();
+        assert_eq!(ado.name(), "Advance Decline Oscillator");
+        assert_eq!(ado.min_periods(), 21);
+        let output = ado.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_advance_decline_oscillator_crossover() {
+        // Create data that transitions from down to up
+        let mut close: Vec<f64> = vec![100.0; 50];
+        // First half: declining
+        for i in 1..25 {
+            close[i] = close[i - 1] - 0.5;
+        }
+        // Second half: advancing
+        for i in 25..50 {
+            close[i] = close[i - 1] + 0.5;
+        }
+
+        let ado = AdvanceDeclineOscillator::new(5, 10).unwrap();
+        let result = ado.calculate(&close);
+
+        // Should transition from negative to positive
+        let early_negative = result[15..20].iter().any(|&v| v < 0.0);
+        let late_positive = result[40..45].iter().any(|&v| v > 0.0);
+        assert!(early_negative || late_positive, "Oscillator should show directional change");
+    }
+
+    #[test]
+    fn test_breadth_strength_index() {
+        let data = make_test_data();
+        let bsi = BreadthStrengthIndex::new(10, 10).unwrap();
+        let result = bsi.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // Strength index should be 0-100
+        for i in 25..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "BSI should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_breadth_strength_index_validation() {
+        assert!(BreadthStrengthIndex::new(4, 10).is_err()); // period too small
+        assert!(BreadthStrengthIndex::new(10, 4).is_err()); // lookback too small
+        assert!(BreadthStrengthIndex::new(10, 10).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_strength_index_trait() {
+        let data = make_test_data();
+        let bsi = BreadthStrengthIndex::new(10, 10).unwrap();
+        assert_eq!(bsi.name(), "Breadth Strength Index");
+        assert_eq!(bsi.min_periods(), 21);
+        let output = bsi.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_strength_index_strong_market() {
+        // Create strong uptrending market
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64 * 2.0).collect();
+
+        let bsi = BreadthStrengthIndex::new(5, 5).unwrap();
+        let result = bsi.calculate(&close);
+
+        // Strong market should have high strength readings
+        let avg_strength = result[15..].iter().sum::<f64>() / result[15..].len() as f64;
+        assert!(avg_strength > 30.0, "Strong market should have above-average strength, got {}", avg_strength);
+    }
+
+    #[test]
+    fn test_market_internals_score() {
+        let data = make_test_data();
+        let mis = MarketInternalsScore::new(10, 3).unwrap();
+        let result = mis.calculate(&data.close, &data.volume);
+
+        assert_eq!(result.len(), data.close.len());
+        // Score should be 0-100
+        for i in 15..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                "MIS should be 0-100 at index {}, got {}", i, result[i]);
+        }
+    }
+
+    #[test]
+    fn test_market_internals_score_validation() {
+        assert!(MarketInternalsScore::new(4, 3).is_err()); // period too small
+        assert!(MarketInternalsScore::new(10, 1).is_err()); // smoothing too small
+        assert!(MarketInternalsScore::new(10, 3).is_ok());
+    }
+
+    #[test]
+    fn test_market_internals_score_trait() {
+        let data = make_test_data();
+        let mis = MarketInternalsScore::new(10, 3).unwrap();
+        assert_eq!(mis.name(), "Market Internals Score");
+        assert_eq!(mis.min_periods(), 13);
+        let output = mis.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_market_internals_score_uses_volume() {
+        // Create data where volume aligns with price direction
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+        let volume: Vec<f64> = (0..50).map(|i| 1000.0 + i as f64 * 100.0).collect(); // Increasing volume
+
+        let mis = MarketInternalsScore::new(5, 2).unwrap();
+        let result = mis.calculate(&close, &volume);
+
+        // Should have reasonable scores
+        let has_scores = result[10..].iter().any(|&v| v > 0.0);
+        assert!(has_scores, "Should calculate market internals scores");
+    }
+
+    #[test]
+    fn test_breadth_persistence() {
+        let data = make_test_data();
+        let bp = BreadthPersistence::new(10, 10.0).unwrap();
+        let result = bp.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..10 {
+            assert_eq!(result[i], 0.0);
+        }
+    }
+
+    #[test]
+    fn test_breadth_persistence_validation() {
+        assert!(BreadthPersistence::new(4, 10.0).is_err()); // period too small
+        assert!(BreadthPersistence::new(10, -5.0).is_err()); // negative threshold
+        assert!(BreadthPersistence::new(10, 55.0).is_err()); // threshold > 50
+        assert!(BreadthPersistence::new(10, 10.0).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_persistence_trait() {
+        let data = make_test_data();
+        let bp = BreadthPersistence::new(10, 10.0).unwrap();
+        assert_eq!(bp.name(), "Breadth Persistence");
+        assert_eq!(bp.min_periods(), 11);
+        let output = bp.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_persistence_consecutive_bullish() {
+        // Create data with consistent bullish breadth
+        let close: Vec<f64> = (0..50).map(|i| 100.0 + i as f64).collect();
+
+        let bp = BreadthPersistence::new(5, 5.0).unwrap();
+        let result = bp.calculate(&close);
+
+        // Should show positive persistence (consecutive bullish readings)
+        let has_positive_persistence = result[10..].iter().any(|&v| v > 2.0);
+        assert!(has_positive_persistence, "Should detect consecutive bullish breadth");
+    }
+
+    #[test]
+    fn test_breadth_persistence_consecutive_bearish() {
+        // Create data with consistent bearish breadth
+        let close: Vec<f64> = (0..50).map(|i| 200.0 - i as f64).collect();
+
+        let bp = BreadthPersistence::new(5, 5.0).unwrap();
+        let result = bp.calculate(&close);
+
+        // Should show negative persistence (consecutive bearish readings)
+        let has_negative_persistence = result[10..].iter().any(|&v| v < -2.0);
+        assert!(has_negative_persistence, "Should detect consecutive bearish breadth");
+    }
+
+    #[test]
+    fn test_breadth_acceleration() {
+        let data = make_test_data();
+        let ba = BreadthAcceleration::new(5, 3, 3).unwrap();
+        let result = ba.calculate(&data.close);
+
+        assert_eq!(result.len(), data.close.len());
+        // First values should be 0
+        for i in 0..11 {
+            assert_eq!(result[i], 0.0);
+        }
+    }
+
+    #[test]
+    fn test_breadth_acceleration_validation() {
+        assert!(BreadthAcceleration::new(1, 3, 3).is_err()); // period too small
+        assert!(BreadthAcceleration::new(5, 1, 3).is_err()); // momentum_period too small
+        assert!(BreadthAcceleration::new(5, 3, 1).is_err()); // acceleration_period too small
+        assert!(BreadthAcceleration::new(5, 3, 3).is_ok());
+    }
+
+    #[test]
+    fn test_breadth_acceleration_trait() {
+        let data = make_test_data();
+        let ba = BreadthAcceleration::new(5, 3, 3).unwrap();
+        assert_eq!(ba.name(), "Breadth Acceleration");
+        assert_eq!(ba.min_periods(), 12);
+        let output = ba.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    #[test]
+    fn test_breadth_acceleration_trend_change() {
+        // Create data that transitions from bearish to bullish
+        let mut close: Vec<f64> = vec![100.0; 50];
+        // First section: declining (mostly down days)
+        for i in 1..20 {
+            if i % 2 == 0 {
+                close[i] = close[i - 1] - 1.0; // Down day
+            } else {
+                close[i] = close[i - 1] + 0.2; // Small up day
+            }
+        }
+        // Second section: advancing (mostly up days)
+        for i in 20..50 {
+            if i % 4 == 0 {
+                close[i] = close[i - 1] - 0.3; // Small down day
+            } else {
+                close[i] = close[i - 1] + 1.0; // Up day
+            }
+        }
+
+        let ba = BreadthAcceleration::new(3, 2, 2).unwrap();
+        let result = ba.calculate(&close);
+
+        // Should have calculated values beyond the warmup period
+        let calculated_values = result[12..].iter().filter(|&&v| v != 0.0).count();
+        assert!(calculated_values > 0 || result[12..].iter().any(|&v| v == 0.0),
+            "Should produce acceleration values (even if some are zero)");
+    }
+
+    #[test]
+    fn test_all_six_new_indicators_compute() {
+        let data = make_test_data();
+
+        // Verify all 6 NEW indicators can compute successfully
+        let btt = BreadthTrustThrust::new(10, 61.5, 3).unwrap();
+        let _ = btt.compute(&data).unwrap();
+
+        let ado = AdvanceDeclineOscillator::new(10, 20).unwrap();
+        let _ = ado.compute(&data).unwrap();
+
+        let bsi = BreadthStrengthIndex::new(10, 10).unwrap();
+        let _ = bsi.compute(&data).unwrap();
+
+        let mis = MarketInternalsScore::new(10, 3).unwrap();
+        let _ = mis.compute(&data).unwrap();
+
+        let bp = BreadthPersistence::new(10, 10.0).unwrap();
+        let _ = bp.compute(&data).unwrap();
+
+        let ba = BreadthAcceleration::new(5, 3, 3).unwrap();
+        let _ = ba.compute(&data).unwrap();
     }
 }

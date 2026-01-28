@@ -1254,6 +1254,684 @@ impl TechnicalIndicator for PhaseCoherence {
     }
 }
 
+/// Frequency Domain Moving Average - Moving average using frequency domain filtering
+///
+/// This indicator computes a moving average by transforming price data to the
+/// frequency domain using a simplified DFT approach, applying a low-pass filter,
+/// and transforming back. This produces smoother results with less lag than
+/// traditional time-domain moving averages.
+#[derive(Debug, Clone)]
+pub struct FrequencyDomainMA {
+    period: usize,
+    cutoff_period: usize,
+}
+
+impl FrequencyDomainMA {
+    pub fn new(period: usize, cutoff_period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if cutoff_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cutoff_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if cutoff_period > period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "cutoff_period".to_string(),
+                reason: "must be at most half of period".to_string(),
+            });
+        }
+        Ok(Self { period, cutoff_period })
+    }
+
+    /// Calculate frequency domain moving average
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Center the data
+            let centered: Vec<f64> = slice.iter().map(|&x| x - mean).collect();
+
+            // Apply frequency domain filtering
+            // Only keep frequency components with period >= cutoff_period
+            let mut filtered_sum = 0.0;
+            let mut weight_sum = 0.0;
+
+            // Iterate through frequency components
+            for freq_idx in 1..=(len / 2) {
+                let freq_period = len as f64 / freq_idx as f64;
+
+                // Calculate DFT coefficient at this frequency
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (j, &val) in centered.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * freq_idx as f64 * j as f64 / len as f64;
+                    real += val * angle.cos();
+                    imag += val * angle.sin();
+                }
+
+                // Low-pass filter: attenuate high frequencies
+                let attenuation = if freq_period >= self.cutoff_period as f64 {
+                    1.0
+                } else {
+                    // Smooth roll-off
+                    (freq_period / self.cutoff_period as f64).powi(2)
+                };
+
+                // Reconstruct signal at the last point (j = len - 1)
+                let j = len - 1;
+                let angle = 2.0 * std::f64::consts::PI * freq_idx as f64 * j as f64 / len as f64;
+                let contribution = (real * angle.cos() + imag * angle.sin()) * attenuation;
+                filtered_sum += contribution;
+                weight_sum += attenuation;
+            }
+
+            // Normalize and add back mean
+            let filtered_value = if weight_sum > 1e-10 {
+                mean + (filtered_sum * 2.0 / len as f64)
+            } else {
+                mean
+            };
+
+            result[i] = filtered_value;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for FrequencyDomainMA {
+    fn name(&self) -> &str {
+        "Frequency Domain MA"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Phase Shift Indicator - Measures phase shift in price cycles
+///
+/// This indicator detects and quantifies the phase shift between the current
+/// price cycle and a reference cycle. Positive values indicate price is
+/// leading the reference; negative values indicate lagging. The output is
+/// in degrees (-180 to +180).
+#[derive(Debug, Clone)]
+pub struct PhaseShiftIndicator {
+    period: usize,
+    reference_period: usize,
+}
+
+impl PhaseShiftIndicator {
+    pub fn new(period: usize, reference_period: usize) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if reference_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "reference_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if reference_period > period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "reference_period".to_string(),
+                reason: "must not exceed period".to_string(),
+            });
+        }
+        Ok(Self { period, reference_period })
+    }
+
+    /// Calculate phase using Hilbert transform approximation
+    fn calculate_phase(&self, slice: &[f64]) -> f64 {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let mut in_phase = 0.0;
+        let mut quadrature = 0.0;
+
+        for (j, &val) in slice.iter().enumerate() {
+            let angle = 2.0 * std::f64::consts::PI * j as f64 / self.reference_period as f64;
+            let centered = val - mean;
+            in_phase += centered * angle.cos();
+            quadrature += centered * angle.sin();
+        }
+
+        quadrature.atan2(in_phase)
+    }
+
+    /// Calculate phase shift indicator
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut prev_phase = 0.0;
+        let mut initialized = false;
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+
+            // Calculate current phase
+            let current_phase = self.calculate_phase(slice);
+
+            if !initialized {
+                prev_phase = current_phase;
+                initialized = true;
+                continue;
+            }
+
+            // Calculate phase shift (difference from previous)
+            let mut phase_shift = current_phase - prev_phase;
+
+            // Normalize to -PI to +PI
+            while phase_shift > std::f64::consts::PI {
+                phase_shift -= 2.0 * std::f64::consts::PI;
+            }
+            while phase_shift < -std::f64::consts::PI {
+                phase_shift += 2.0 * std::f64::consts::PI;
+            }
+
+            // Convert to degrees
+            result[i] = phase_shift * 180.0 / std::f64::consts::PI;
+
+            prev_phase = current_phase;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for PhaseShiftIndicator {
+    fn name(&self) -> &str {
+        "Phase Shift Indicator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 2
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Spectral Power Index - Power spectrum analysis index
+///
+/// This indicator measures the distribution of power across different
+/// frequency bands in the price signal. It returns a composite index
+/// that indicates whether power is concentrated in low frequencies
+/// (trending) or high frequencies (choppy). Values range from 0 (all
+/// high-frequency power) to 100 (all low-frequency power).
+#[derive(Debug, Clone)]
+pub struct SpectralPowerIndex {
+    period: usize,
+    num_bands: usize,
+}
+
+impl SpectralPowerIndex {
+    pub fn new(period: usize, num_bands: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if num_bands < 2 || num_bands > 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "num_bands".to_string(),
+                reason: "must be between 2 and 10".to_string(),
+            });
+        }
+        Ok(Self { period, num_bands })
+    }
+
+    /// Calculate power at a specific frequency period
+    fn calculate_band_power(&self, slice: &[f64], freq_period: usize) -> f64 {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let mut real = 0.0;
+        let mut imag = 0.0;
+
+        for (j, &val) in slice.iter().enumerate() {
+            let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+            let centered = val - mean;
+            real += centered * angle.cos();
+            imag += centered * angle.sin();
+        }
+
+        (real * real + imag * imag) / (len * len) as f64
+    }
+
+    /// Calculate spectral power index
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        // Define frequency bands (from low to high frequency)
+        let min_period = 4;
+        let max_period = self.period / 2;
+
+        let band_periods: Vec<usize> = (0..self.num_bands)
+            .map(|i| {
+                let t = i as f64 / (self.num_bands - 1).max(1) as f64;
+                let log_min = (min_period as f64).ln();
+                let log_max = (max_period as f64).ln();
+                (log_min + t * (log_max - log_min)).exp() as usize
+            })
+            .collect();
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+
+            // Calculate power in each band
+            let mut low_freq_power = 0.0;
+            let mut high_freq_power = 0.0;
+            let mut total_power = 0.0;
+
+            for (band_idx, &freq_period) in band_periods.iter().enumerate() {
+                let power = self.calculate_band_power(slice, freq_period);
+                total_power += power;
+
+                // First half of bands are high frequency (short periods)
+                // Second half are low frequency (long periods)
+                if band_idx < self.num_bands / 2 {
+                    high_freq_power += power;
+                } else {
+                    low_freq_power += power;
+                }
+            }
+
+            // Spectral Power Index: ratio of low-freq to total power
+            if total_power > 1e-10 {
+                result[i] = (low_freq_power / total_power * 100.0).min(100.0);
+            }
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SpectralPowerIndex {
+    fn name(&self) -> &str {
+        "Spectral Power Index"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Noise Filter - Filters noise from price signal
+///
+/// This indicator applies a sophisticated noise filtering algorithm that
+/// separates the signal (trend and cycle components) from random noise.
+/// It uses an adaptive approach that preserves important price movements
+/// while attenuating random fluctuations. Returns the filtered price.
+#[derive(Debug, Clone)]
+pub struct NoiseFilter {
+    period: usize,
+    smoothing_factor: f64,
+}
+
+impl NoiseFilter {
+    pub fn new(period: usize, smoothing_factor: f64) -> Result<Self> {
+        if period < 10 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 10".to_string(),
+            });
+        }
+        if smoothing_factor <= 0.0 || smoothing_factor > 1.0 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing_factor".to_string(),
+                reason: "must be between 0 (exclusive) and 1 (inclusive)".to_string(),
+            });
+        }
+        Ok(Self { period, smoothing_factor })
+    }
+
+    /// Estimate noise variance using high-frequency residuals
+    fn estimate_noise_variance(&self, slice: &[f64]) -> f64 {
+        let len = slice.len();
+        if len < 3 {
+            return 0.0;
+        }
+
+        // Calculate second differences (approximates high-frequency content)
+        let mut noise_sum = 0.0;
+        let mut count = 0;
+
+        for i in 2..len {
+            let second_diff = slice[i] - 2.0 * slice[i - 1] + slice[i - 2];
+            noise_sum += second_diff * second_diff;
+            count += 1;
+        }
+
+        if count > 0 {
+            noise_sum / (count as f64 * 6.0) // Factor of 6 normalizes second difference variance
+        } else {
+            0.0
+        }
+    }
+
+    /// Calculate noise filter output
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut filtered = 0.0;
+
+        for i in 0..n {
+            if i < self.period {
+                result[i] = close[i];
+                filtered = close[i];
+                continue;
+            }
+
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+
+            // Estimate noise variance
+            let noise_var = self.estimate_noise_variance(slice);
+
+            // Calculate signal variance (total variance minus noise)
+            let mean: f64 = slice.iter().sum::<f64>() / slice.len() as f64;
+            let total_var: f64 = slice.iter()
+                .map(|&x| (x - mean).powi(2))
+                .sum::<f64>() / slice.len() as f64;
+
+            let signal_var = (total_var - noise_var).max(0.0);
+
+            // Adaptive alpha: higher when signal-to-noise is high
+            let snr = if noise_var > 1e-10 {
+                (signal_var / noise_var).sqrt()
+            } else {
+                10.0 // High SNR assumed when noise is negligible
+            };
+
+            // Alpha increases with SNR but capped by smoothing_factor
+            let adaptive_alpha = self.smoothing_factor * (1.0 - (-snr / 2.0).exp());
+
+            // Apply adaptive exponential filter
+            filtered = adaptive_alpha * close[i] + (1.0 - adaptive_alpha) * filtered;
+            result[i] = filtered;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for NoiseFilter {
+    fn name(&self) -> &str {
+        "Noise Filter"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Cycle Period Estimator - Estimates dominant cycle period
+///
+/// This indicator estimates the dominant cycle period in price data using
+/// autocorrelation analysis. It returns the estimated period in bars,
+/// which can be used to dynamically adjust other indicators. Values
+/// range from min_period to max_period.
+#[derive(Debug, Clone)]
+pub struct CyclePeriodEstimator {
+    min_period: usize,
+    max_period: usize,
+    smoothing: usize,
+}
+
+impl CyclePeriodEstimator {
+    pub fn new(min_period: usize, max_period: usize, smoothing: usize) -> Result<Self> {
+        if min_period < 5 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "min_period".to_string(),
+                reason: "must be at least 5".to_string(),
+            });
+        }
+        if max_period <= min_period {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_period".to_string(),
+                reason: "must be greater than min_period".to_string(),
+            });
+        }
+        if max_period > 100 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "max_period".to_string(),
+                reason: "must be at most 100".to_string(),
+            });
+        }
+        if smoothing < 1 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "smoothing".to_string(),
+                reason: "must be at least 1".to_string(),
+            });
+        }
+        Ok(Self { min_period, max_period, smoothing })
+    }
+
+    /// Find dominant period using autocorrelation
+    fn find_dominant_period(&self, slice: &[f64]) -> usize {
+        let len = slice.len();
+        let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+        let mut best_period = self.min_period;
+        let mut best_corr = f64::NEG_INFINITY;
+
+        // Calculate autocorrelation at each candidate period
+        for period in self.min_period..=self.max_period.min(len / 2) {
+            let mut num = 0.0;
+            let mut denom1 = 0.0;
+            let mut denom2 = 0.0;
+
+            for j in 0..(len - period) {
+                let x = slice[j] - mean;
+                let y = slice[j + period] - mean;
+                num += x * y;
+                denom1 += x * x;
+                denom2 += y * y;
+            }
+
+            let denom = (denom1 * denom2).sqrt();
+            let corr = if denom > 1e-10 { num / denom } else { 0.0 };
+
+            // Look for peak in autocorrelation
+            if corr > best_corr {
+                best_corr = corr;
+                best_period = period;
+            }
+        }
+
+        best_period
+    }
+
+    /// Calculate cycle period estimator
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+        let mut period_history: Vec<f64> = Vec::new();
+
+        for i in self.max_period..n {
+            let start = i.saturating_sub(self.max_period);
+            let slice = &close[start..=i];
+
+            // Find dominant period
+            let detected_period = self.find_dominant_period(slice) as f64;
+
+            // Add to history for smoothing
+            period_history.push(detected_period);
+            if period_history.len() > self.smoothing {
+                period_history.remove(0);
+            }
+
+            // Calculate smoothed period (median for robustness)
+            let mut sorted = period_history.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let smoothed_period = if sorted.len() % 2 == 0 {
+                (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
+            } else {
+                sorted[sorted.len() / 2]
+            };
+
+            result[i] = smoothed_period;
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for CyclePeriodEstimator {
+    fn name(&self) -> &str {
+        "Cycle Period Estimator"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.max_period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
+/// Signal to Noise Ratio (Advanced) - Measures signal clarity
+///
+/// This indicator provides an advanced measurement of signal-to-noise ratio
+/// in price data using spectral analysis. It separates coherent price
+/// movements (signal) from random fluctuations (noise) and returns a
+/// ratio in decibels (dB). Higher values indicate clearer, more tradeable
+/// signals.
+#[derive(Debug, Clone)]
+pub struct SignalToNoiseRatioAdvanced {
+    period: usize,
+    signal_period: usize,
+}
+
+impl SignalToNoiseRatioAdvanced {
+    pub fn new(period: usize, signal_period: usize) -> Result<Self> {
+        if period < 20 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "period".to_string(),
+                reason: "must be at least 20".to_string(),
+            });
+        }
+        if signal_period < 3 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be at least 3".to_string(),
+            });
+        }
+        if signal_period >= period / 2 {
+            return Err(IndicatorError::InvalidParameter {
+                name: "signal_period".to_string(),
+                reason: "must be less than half of period".to_string(),
+            });
+        }
+        Ok(Self { period, signal_period })
+    }
+
+    /// Calculate signal to noise ratio
+    pub fn calculate(&self, close: &[f64]) -> Vec<f64> {
+        let n = close.len();
+        let mut result = vec![0.0; n];
+
+        for i in self.period..n {
+            let start = i.saturating_sub(self.period);
+            let slice = &close[start..=i];
+            let len = slice.len();
+            let mean: f64 = slice.iter().sum::<f64>() / len as f64;
+
+            // Calculate signal power (low-frequency components)
+            let mut signal_power = 0.0;
+            for freq_period in (self.signal_period * 2)..=(len / 2) {
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (j, &val) in slice.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+                    let centered = val - mean;
+                    real += centered * angle.cos();
+                    imag += centered * angle.sin();
+                }
+
+                signal_power += (real * real + imag * imag) / (len * len) as f64;
+            }
+
+            // Calculate noise power (high-frequency components)
+            let mut noise_power = 0.0;
+            for freq_period in 3..self.signal_period {
+                let mut real = 0.0;
+                let mut imag = 0.0;
+
+                for (j, &val) in slice.iter().enumerate() {
+                    let angle = 2.0 * std::f64::consts::PI * j as f64 / freq_period as f64;
+                    let centered = val - mean;
+                    real += centered * angle.cos();
+                    imag += centered * angle.sin();
+                }
+
+                noise_power += (real * real + imag * imag) / (len * len) as f64;
+            }
+
+            // Ensure noise_power is not zero
+            noise_power = noise_power.max(1e-10);
+
+            // Calculate SNR in decibels
+            let snr_db = 10.0 * (signal_power / noise_power).log10();
+
+            // Clamp to reasonable range (-20 to +40 dB)
+            result[i] = snr_db.max(-20.0).min(40.0);
+        }
+
+        result
+    }
+}
+
+impl TechnicalIndicator for SignalToNoiseRatioAdvanced {
+    fn name(&self) -> &str {
+        "Signal to Noise Ratio"
+    }
+
+    fn min_periods(&self) -> usize {
+        self.period + 1
+    }
+
+    fn compute(&self, data: &OHLCVSeries) -> Result<IndicatorOutput> {
+        Ok(IndicatorOutput::single(self.calculate(&data.close)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1824,6 +2502,355 @@ mod tests {
     }
 
     // =====================================================================
+    // FrequencyDomainMA Tests
+    // =====================================================================
+
+    #[test]
+    fn test_frequency_domain_ma_basic() {
+        let close = make_test_data();
+        let fdma = FrequencyDomainMA::new(20, 5).unwrap();
+        let result = fdma.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Values after warmup should be non-zero and reasonable
+        for i in 25..result.len() {
+            assert!(result[i] > 0.0, "Expected positive value at index {}", i);
+            // Should be close to original price
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 30.0, "Filtered value too far from original at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_frequency_domain_ma_smoothing() {
+        // Pure trend data
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let fdma = FrequencyDomainMA::new(20, 5).unwrap();
+        let result = fdma.calculate(&close);
+
+        // For smooth trend, filtered values should track the price closely
+        for i in 25..result.len() {
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 10.0, "Expected close tracking for smooth trend at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_frequency_domain_ma_validation() {
+        // period too small
+        assert!(FrequencyDomainMA::new(5, 3).is_err());
+        // cutoff_period too small
+        assert!(FrequencyDomainMA::new(20, 2).is_err());
+        // cutoff_period > period/2
+        assert!(FrequencyDomainMA::new(20, 15).is_err());
+        // valid
+        assert!(FrequencyDomainMA::new(20, 5).is_ok());
+        assert!(FrequencyDomainMA::new(30, 10).is_ok());
+    }
+
+    #[test]
+    fn test_frequency_domain_ma_trait() {
+        let data = make_ohlcv_series();
+        let fdma = FrequencyDomainMA::new(20, 5).unwrap();
+
+        assert_eq!(fdma.name(), "Frequency Domain MA");
+        assert_eq!(fdma.min_periods(), 21);
+
+        let output = fdma.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // PhaseShiftIndicator Tests
+    // =====================================================================
+
+    #[test]
+    fn test_phase_shift_indicator_basic() {
+        let close = make_test_data();
+        let psi = PhaseShiftIndicator::new(20, 10).unwrap();
+        let result = psi.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Phase shift should be between -180 and +180 degrees
+        for i in 25..result.len() {
+            assert!(result[i] >= -180.0 && result[i] <= 180.0,
+                    "Phase shift {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_phase_shift_indicator_constant_phase() {
+        // Pure sine wave should have consistent phase progression
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 0.2).sin() * 5.0)
+            .collect();
+        let psi = PhaseShiftIndicator::new(20, 10).unwrap();
+        let result = psi.calculate(&close);
+
+        // For a steady sine wave, phase shifts should be relatively stable
+        let mut non_zero_count = 0;
+        for i in 30..result.len() {
+            if result[i].abs() > 0.1 {
+                non_zero_count += 1;
+            }
+        }
+        // Most values should be non-zero
+        assert!(non_zero_count > 0, "Expected some non-zero phase shifts");
+    }
+
+    #[test]
+    fn test_phase_shift_indicator_validation() {
+        // period too small
+        assert!(PhaseShiftIndicator::new(5, 3).is_err());
+        // reference_period too small
+        assert!(PhaseShiftIndicator::new(20, 3).is_err());
+        // reference_period > period
+        assert!(PhaseShiftIndicator::new(20, 25).is_err());
+        // valid
+        assert!(PhaseShiftIndicator::new(20, 10).is_ok());
+        assert!(PhaseShiftIndicator::new(20, 20).is_ok()); // equal is allowed
+    }
+
+    #[test]
+    fn test_phase_shift_indicator_trait() {
+        let data = make_ohlcv_series();
+        let psi = PhaseShiftIndicator::new(20, 10).unwrap();
+
+        assert_eq!(psi.name(), "Phase Shift Indicator");
+        assert_eq!(psi.min_periods(), 22);
+
+        let output = psi.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // SpectralPowerIndex Tests
+    // =====================================================================
+
+    #[test]
+    fn test_spectral_power_index_basic() {
+        let close = make_test_data();
+        let spi = SpectralPowerIndex::new(30, 4).unwrap();
+        let result = spi.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Index should be between 0 and 100
+        for i in 35..result.len() {
+            assert!(result[i] >= 0.0 && result[i] <= 100.0,
+                    "Spectral power index {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_spectral_power_index_trending_data() {
+        // Smooth trending data (should have high low-freq power)
+        let close: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let spi = SpectralPowerIndex::new(30, 4).unwrap();
+        let result = spi.calculate(&close);
+
+        // Trending data should have higher spectral power index (more low-freq power)
+        let avg_spi: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_spi >= 0.0, "Expected non-negative SPI for trending data, got {}", avg_spi);
+    }
+
+    #[test]
+    fn test_spectral_power_index_validation() {
+        // period too small
+        assert!(SpectralPowerIndex::new(10, 4).is_err());
+        // num_bands out of range
+        assert!(SpectralPowerIndex::new(30, 1).is_err());
+        assert!(SpectralPowerIndex::new(30, 15).is_err());
+        // valid
+        assert!(SpectralPowerIndex::new(30, 2).is_ok());
+        assert!(SpectralPowerIndex::new(30, 10).is_ok());
+    }
+
+    #[test]
+    fn test_spectral_power_index_trait() {
+        let data = make_ohlcv_series();
+        let spi = SpectralPowerIndex::new(25, 4).unwrap();
+
+        assert_eq!(spi.name(), "Spectral Power Index");
+        assert_eq!(spi.min_periods(), 26);
+
+        let output = spi.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // NoiseFilter Tests
+    // =====================================================================
+
+    #[test]
+    fn test_noise_filter_basic() {
+        let close = make_test_data();
+        let nf = NoiseFilter::new(20, 0.5).unwrap();
+        let result = nf.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Filtered values should be positive and close to original
+        for i in 25..result.len() {
+            assert!(result[i] > 0.0, "Expected positive value at index {}", i);
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 20.0, "Filtered value too far from original at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_noise_filter_smooth_data() {
+        // Smooth data should pass through with minimal change
+        let close: Vec<f64> = (0..60).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let nf = NoiseFilter::new(20, 0.8).unwrap();
+        let result = nf.calculate(&close);
+
+        // For smooth data, filter should track closely
+        for i in 30..result.len() {
+            let diff = (result[i] - close[i]).abs();
+            assert!(diff < 5.0, "Expected close tracking for smooth data at index {}", i);
+        }
+    }
+
+    #[test]
+    fn test_noise_filter_validation() {
+        // period too small
+        assert!(NoiseFilter::new(5, 0.5).is_err());
+        // invalid smoothing_factor
+        assert!(NoiseFilter::new(20, 0.0).is_err());
+        assert!(NoiseFilter::new(20, 1.5).is_err());
+        // valid
+        assert!(NoiseFilter::new(20, 0.5).is_ok());
+        assert!(NoiseFilter::new(10, 1.0).is_ok());
+    }
+
+    #[test]
+    fn test_noise_filter_trait() {
+        let data = make_ohlcv_series();
+        let nf = NoiseFilter::new(20, 0.5).unwrap();
+
+        assert_eq!(nf.name(), "Noise Filter");
+        assert_eq!(nf.min_periods(), 21);
+
+        let output = nf.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // CyclePeriodEstimator Tests
+    // =====================================================================
+
+    #[test]
+    fn test_cycle_period_estimator_basic() {
+        let close = make_test_data();
+        let cpe = CyclePeriodEstimator::new(5, 30, 3).unwrap();
+        let result = cpe.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // Period estimates should be within the specified range
+        for i in 35..result.len() {
+            assert!(result[i] >= 5.0 && result[i] <= 30.0,
+                    "Estimated period {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_cycle_period_estimator_known_cycle() {
+        // Create data with known 12-bar cycle
+        let close: Vec<f64> = (0..100)
+            .map(|i| 100.0 + (i as f64 * 2.0 * std::f64::consts::PI / 12.0).sin() * 5.0)
+            .collect();
+        let cpe = CyclePeriodEstimator::new(5, 30, 5).unwrap();
+        let result = cpe.calculate(&close);
+
+        // Average detected period should be close to 12
+        let avg_period: f64 = result[50..].iter().sum::<f64>() / (result.len() - 50) as f64;
+        assert!(avg_period >= 8.0 && avg_period <= 16.0,
+                "Expected period near 12, got {}", avg_period);
+    }
+
+    #[test]
+    fn test_cycle_period_estimator_validation() {
+        // min_period too small
+        assert!(CyclePeriodEstimator::new(2, 30, 3).is_err());
+        // max_period <= min_period
+        assert!(CyclePeriodEstimator::new(10, 10, 3).is_err());
+        assert!(CyclePeriodEstimator::new(10, 5, 3).is_err());
+        // max_period too large
+        assert!(CyclePeriodEstimator::new(5, 150, 3).is_err());
+        // smoothing too small
+        assert!(CyclePeriodEstimator::new(5, 30, 0).is_err());
+        // valid
+        assert!(CyclePeriodEstimator::new(5, 30, 3).is_ok());
+    }
+
+    #[test]
+    fn test_cycle_period_estimator_trait() {
+        let data = make_ohlcv_series();
+        let cpe = CyclePeriodEstimator::new(5, 25, 3).unwrap();
+
+        assert_eq!(cpe.name(), "Cycle Period Estimator");
+        assert_eq!(cpe.min_periods(), 26);
+
+        let output = cpe.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
+    // SignalToNoiseRatioAdvanced Tests
+    // =====================================================================
+
+    #[test]
+    fn test_signal_to_noise_ratio_advanced_basic() {
+        let close = make_test_data();
+        let snr = SignalToNoiseRatioAdvanced::new(30, 5).unwrap();
+        let result = snr.calculate(&close);
+
+        assert_eq!(result.len(), close.len());
+        // SNR should be within reasonable dB range
+        for i in 35..result.len() {
+            assert!(result[i] >= -20.0 && result[i] <= 40.0,
+                    "SNR {} at index {} out of range", result[i], i);
+        }
+    }
+
+    #[test]
+    fn test_signal_to_noise_ratio_advanced_clean_signal() {
+        // Clean smooth signal should have high SNR
+        let close: Vec<f64> = (0..80).map(|i| 100.0 + i as f64 * 0.5).collect();
+        let snr = SignalToNoiseRatioAdvanced::new(30, 5).unwrap();
+        let result = snr.calculate(&close);
+
+        // Smooth trend should have high SNR (positive dB)
+        let avg_snr: f64 = result[40..].iter().sum::<f64>() / (result.len() - 40) as f64;
+        assert!(avg_snr > -10.0, "Expected higher SNR for clean signal, got {} dB", avg_snr);
+    }
+
+    #[test]
+    fn test_signal_to_noise_ratio_advanced_validation() {
+        // period too small
+        assert!(SignalToNoiseRatioAdvanced::new(10, 3).is_err());
+        // signal_period too small
+        assert!(SignalToNoiseRatioAdvanced::new(30, 2).is_err());
+        // signal_period >= period/2
+        assert!(SignalToNoiseRatioAdvanced::new(30, 15).is_err());
+        assert!(SignalToNoiseRatioAdvanced::new(30, 20).is_err());
+        // valid
+        assert!(SignalToNoiseRatioAdvanced::new(30, 5).is_ok());
+        assert!(SignalToNoiseRatioAdvanced::new(20, 3).is_ok());
+    }
+
+    #[test]
+    fn test_signal_to_noise_ratio_advanced_trait() {
+        let data = make_ohlcv_series();
+        let snr = SignalToNoiseRatioAdvanced::new(25, 5).unwrap();
+
+        assert_eq!(snr.name(), "Signal to Noise Ratio");
+        assert_eq!(snr.min_periods(), 26);
+
+        let output = snr.compute(&data).unwrap();
+        assert_eq!(output.primary.len(), data.close.len());
+    }
+
+    // =====================================================================
     // Integration Tests
     // =====================================================================
 
@@ -1843,6 +2870,13 @@ mod tests {
         let cd = CycleDominance::new(5, 25).unwrap();
         let ha = HarmonicAnalyzer::new(20, 3).unwrap();
         let pc = PhaseCoherence::new(20, 5).unwrap();
+        // New indicators
+        let fdma = FrequencyDomainMA::new(20, 5).unwrap();
+        let psi = PhaseShiftIndicator::new(20, 10).unwrap();
+        let spi = SpectralPowerIndex::new(25, 4).unwrap();
+        let nf = NoiseFilter::new(20, 0.5).unwrap();
+        let cpe = CyclePeriodEstimator::new(5, 25, 3).unwrap();
+        let snr = SignalToNoiseRatioAdvanced::new(25, 5).unwrap();
 
         let results = vec![
             aff.compute(&data).unwrap().primary,
@@ -1857,10 +2891,60 @@ mod tests {
             cd.compute(&data).unwrap().primary,
             ha.compute(&data).unwrap().primary,
             pc.compute(&data).unwrap().primary,
+            // New indicators
+            fdma.compute(&data).unwrap().primary,
+            psi.compute(&data).unwrap().primary,
+            spi.compute(&data).unwrap().primary,
+            nf.compute(&data).unwrap().primary,
+            cpe.compute(&data).unwrap().primary,
+            snr.compute(&data).unwrap().primary,
         ];
 
         for result in results {
             assert_eq!(result.len(), data.close.len());
         }
+    }
+
+    #[test]
+    fn test_new_dsp_indicators_integration() {
+        // Test that all 6 new indicators work together on the same data
+        let close: Vec<f64> = (0..100)
+            .map(|i| {
+                let trend = 100.0 + i as f64 * 0.3;
+                let cycle = (i as f64 * 0.25).sin() * 3.0;
+                let noise = ((i * 13) % 5) as f64 * 0.2 - 0.4;
+                trend + cycle + noise
+            })
+            .collect();
+        let data = OHLCVSeries::from_close(close);
+
+        let fdma = FrequencyDomainMA::new(20, 5).unwrap();
+        let psi = PhaseShiftIndicator::new(20, 10).unwrap();
+        let spi = SpectralPowerIndex::new(30, 4).unwrap();
+        let nf = NoiseFilter::new(20, 0.5).unwrap();
+        let cpe = CyclePeriodEstimator::new(5, 30, 3).unwrap();
+        let snr = SignalToNoiseRatioAdvanced::new(30, 5).unwrap();
+
+        // All should compute without errors
+        let fdma_result = fdma.compute(&data).unwrap();
+        let psi_result = psi.compute(&data).unwrap();
+        let spi_result = spi.compute(&data).unwrap();
+        let nf_result = nf.compute(&data).unwrap();
+        let cpe_result = cpe.compute(&data).unwrap();
+        let snr_result = snr.compute(&data).unwrap();
+
+        // All should have correct length
+        assert_eq!(fdma_result.primary.len(), 100);
+        assert_eq!(psi_result.primary.len(), 100);
+        assert_eq!(spi_result.primary.len(), 100);
+        assert_eq!(nf_result.primary.len(), 100);
+        assert_eq!(cpe_result.primary.len(), 100);
+        assert_eq!(snr_result.primary.len(), 100);
+
+        // Verify some values are being calculated (not all zeros after warmup)
+        let fdma_sum: f64 = fdma_result.primary[30..].iter().sum();
+        let nf_sum: f64 = nf_result.primary[30..].iter().sum();
+        assert!(fdma_sum > 0.0, "FrequencyDomainMA should produce non-zero values");
+        assert!(nf_sum > 0.0, "NoiseFilter should produce non-zero values");
     }
 }

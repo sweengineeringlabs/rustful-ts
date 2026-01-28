@@ -74,4 +74,6 @@ pub use advanced::{
     MomentumPattern, BreakoutPattern, ConsolidationBreak,
     PatternStrength, PatternProbability, MultiTimeframePattern,
     PatternCluster, SequentialPattern, PatternBreakoutStrength,
+    PricePatternRecognizer, ConsolidationDetector, BreakoutPatternStrength,
+    ReversalPatternScore, PatternSymmetry, TrendContinuationStrength,
 };
