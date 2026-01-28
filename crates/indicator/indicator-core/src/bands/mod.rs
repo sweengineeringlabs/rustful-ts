@@ -22,6 +22,7 @@ pub mod fractal_chaos_bands;
 pub mod prime_number_bands;
 pub mod donchian_ext;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use bollinger::BollingerBands;
@@ -49,4 +50,8 @@ pub use donchian_ext::{
 pub use extended::{
     AdaptiveBands, FixedPercentageEnvelope, MomentumBands,
     VolumeWeightedBands, DynamicChannel, LinearRegressionChannel,
+};
+pub use advanced::{
+    VolatilityBands, TrendBands, MomentumBandsAdvanced,
+    PriceEnvelope, DynamicPriceChannel, RangeBands,
 };

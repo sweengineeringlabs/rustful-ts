@@ -46,6 +46,7 @@ pub use filters::{
     DeviationFilteredAverage, StepVhfAdaptiveVMA,
     ExponentialSmoothingFilter, ButterworthFilter, HighPassFilter,
     BandPassFilter, AdaptiveNoiseFilter, TrendFilter,
+    RecursiveFilter, NormalizedPriceFilter,
 };
 
 // ============================================================================
@@ -77,6 +78,8 @@ pub use trend::{
     VerticalHorizontalFilter, VortexIndicator, SafeZoneStop, SafeZoneStopOutput,
     CompositeTrendScore, TrendPersistence, PriceChannelPosition,
     TrendExhaustion, DirectionalMovementQuality, MultiTimeframeTrend,
+    TrendAcceleration, TrendConsistency, AdaptiveTrendLine,
+    TrendStrengthMeter, TrendChangeDetector, MultiScaleTrend,
 };
 
 // ============================================================================
@@ -90,6 +93,8 @@ pub use volatility::{
     KaseDevStops, KaseDevStopsOutput, MarketThermometer,
     VolatilityRatio, RangeExpansionIndex, IntradayIntensityVolatility,
     NormalizedVolatility, VolatilityBreakout, VolatilityRegimeClassifier,
+    VolatilityTrend, VolatilityMomentum, RelativeVolatility,
+    PriceVolatilitySkew, ImpliedVolatilityProxy, VolatilityPersistence,
 };
 
 // ============================================================================
@@ -102,6 +107,8 @@ pub use volume::{
     VolumeProfile, VolumeProfileOutput, MarketProfile, MarketProfileOutput,
     VolumeMomentum, RelativeVolume, VolumeWeightedPriceMomentum,
     VPTExtended, VolumeBuyingPressure, PriceVolumeRank,
+    VolumeAccumulation, VolumeBreakout, RelativeVolumeStrength,
+    VolumeClimaxDetector, SmartMoneyVolume, VolumeEfficiency,
 };
 
 // ============================================================================
@@ -113,6 +120,8 @@ pub use bands::{
     ProjectionBands, STARCBands, StandardErrorBands, TironeLevels, TironeLevelsOutput,
     AdaptiveBands, FixedPercentageEnvelope, MomentumBands,
     VolumeWeightedBands, DynamicChannel, LinearRegressionChannel,
+    VolatilityBands, TrendBands, MomentumBandsAdvanced,
+    PriceEnvelope, DynamicPriceChannel, RangeBands,
 };
 
 // ============================================================================
@@ -136,6 +145,8 @@ pub use statistical::{
     MarketEntropy, EntropyMethod,
     RollingVariance, RollingSkewness, RollingKurtosis,
     PriceDistribution, ReturnDistribution, TailRiskIndicator,
+    RollingCovariance, SerialCorrelation, RunsTest,
+    MeanReversionStrength, DistributionMoments, OutlierDetector,
 };
 
 // ============================================================================
@@ -224,6 +235,8 @@ pub use swing::{
     PivotHighsLows, PivotPoint, PivotType as SwingPivotType,
     SwingMomentum, SwingRange, SwingDirection,
     SwingVelocity, SwingStrength, SwingFailurePattern,
+    SwingTrendStrength, SwingReversal, SwingVolatility,
+    SwingMomentumAdvanced, SwingTargetLevels, SwingDuration,
 };
 
 // ============================================================================
@@ -254,6 +267,8 @@ pub use intermarket::{
     SectorRotation, SectorRank, SectorRotationOutput,
     CrossMarketMomentum, BetaCoefficient, MarketRegimeIndicator,
     SectorRelativePerformance, CorrelationMomentum, RiskAppetiteIndex, DivergenceIndex,
+    LeadLagIndicator, PriceSpreadMomentum, CorrelationTrend,
+    RelativeValueIndex, SpreadMeanReversion, PairsTradingSignal,
 };
 
 // ============================================================================
@@ -279,6 +294,8 @@ pub use sentiment::{
     Capitulation, SmartMoneyConfidence,
     MarketMomentumSentiment, VolatilitySentiment, TrendSentiment,
     ReversalSentiment, ExtremeReadings, SentimentOscillator,
+    PriceActionSentiment, VolumeBasedSentiment, MomentumSentiment,
+    ExtremeSentiment, SentimentDivergence, CompositeSentimentScore,
 };
 
 // ============================================================================

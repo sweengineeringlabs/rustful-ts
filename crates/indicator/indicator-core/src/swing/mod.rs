@@ -16,6 +16,7 @@ pub mod pivot_highs_lows;
 pub mod safezone_stop;
 pub mod kase_dev_stops;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use swing_index::SwingIndex;
@@ -33,4 +34,8 @@ pub use kase_dev_stops::{KaseDevStops, KaseDevStopsOutput, KaseTrailingStops, Ka
 pub use extended::{
     SwingMomentum, SwingRange, SwingDirection,
     SwingVelocity, SwingStrength, SwingFailurePattern,
+};
+pub use advanced::{
+    SwingTrendStrength, SwingReversal, SwingVolatility,
+    SwingMomentumAdvanced, SwingTargetLevels, SwingDuration,
 };

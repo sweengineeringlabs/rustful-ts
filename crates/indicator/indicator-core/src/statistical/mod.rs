@@ -25,6 +25,7 @@ pub mod diagnostics;
 pub mod stationarity;
 pub mod seasonal;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use std_dev::StandardDeviation;
@@ -65,4 +66,9 @@ pub use seasonal::{
 pub use extended::{
     RollingVariance, RollingSkewness, RollingKurtosis,
     PriceDistribution, ReturnDistribution, TailRiskIndicator,
+};
+pub use advanced::{
+    RollingCovariance, SerialCorrelation, RunsTest,
+    MeanReversionStrength, DistributionMoments, DistributionMomentsOutput,
+    OutlierDetector,
 };

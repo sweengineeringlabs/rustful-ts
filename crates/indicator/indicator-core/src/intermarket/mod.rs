@@ -11,6 +11,7 @@ pub mod commodity;
 pub mod fixed_income;
 pub mod forex;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use cointegration::{Cointegration, CointegrationOutput, CointegrationSignal};
@@ -32,6 +33,10 @@ pub use forex::{
 pub use extended::{
     CrossMarketMomentum, BetaCoefficient, MarketRegimeIndicator,
     SectorRelativePerformance, CorrelationMomentum, RiskAppetiteIndex, DivergenceIndex,
+};
+pub use advanced::{
+    LeadLagIndicator, PriceSpreadMomentum, CorrelationTrend,
+    RelativeValueIndex, SpreadMeanReversion, PairsTradingSignal,
 };
 
 // ============================================================================

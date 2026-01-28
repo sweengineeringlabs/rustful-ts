@@ -4,6 +4,7 @@
 
 pub mod market_sentiment;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use market_sentiment::{
@@ -13,4 +14,9 @@ pub use market_sentiment::{
 pub use extended::{
     MarketMomentumSentiment, VolatilitySentiment, TrendSentiment,
     ReversalSentiment, ExtremeReadings, SentimentOscillator,
+};
+pub use advanced::{
+    PriceActionSentiment, VolumeBasedSentiment, MomentumSentiment,
+    ExtremeSentiment, SentimentDivergence, CompositeSentimentScore,
+    SentimentWeights,
 };

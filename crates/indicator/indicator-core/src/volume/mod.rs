@@ -33,6 +33,7 @@ pub mod arms_granville;
 pub mod tick_data;
 pub mod order_flow;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use vwap::VWAP;
@@ -77,4 +78,8 @@ pub use order_flow::{
 pub use extended::{
     VolumeMomentum, RelativeVolume, VolumeWeightedPriceMomentum,
     VPTExtended, VolumeBuyingPressure, PriceVolumeRank,
+};
+pub use advanced::{
+    VolumeAccumulation, VolumeBreakout, RelativeVolumeStrength,
+    VolumeClimaxDetector, SmartMoneyVolume, VolumeEfficiency,
 };

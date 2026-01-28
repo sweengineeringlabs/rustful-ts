@@ -24,6 +24,7 @@ pub mod vortex;
 pub mod safezone_stop;
 pub mod weinstein;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use macd::MACD;
@@ -54,4 +55,8 @@ pub use weinstein::{
 pub use extended::{
     CompositeTrendScore, TrendPersistence, PriceChannelPosition,
     TrendExhaustion, DirectionalMovementQuality, MultiTimeframeTrend,
+};
+pub use advanced::{
+    TrendAcceleration, TrendConsistency, AdaptiveTrendLine,
+    TrendStrengthMeter, TrendChangeDetector, MultiScaleTrend,
 };

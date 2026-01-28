@@ -22,6 +22,7 @@ pub mod kase_dev_stops;
 pub mod vix_derived;
 pub mod implied_vol;
 pub mod extended;
+pub mod advanced;
 
 // Re-exports
 pub use atr::ATR;
@@ -52,4 +53,8 @@ pub use implied_vol::{
 pub use extended::{
     VolatilityRatio, RangeExpansionIndex, IntradayIntensityVolatility,
     NormalizedVolatility, VolatilityBreakout, VolatilityRegimeClassifier,
+};
+pub use advanced::{
+    VolatilityTrend, VolatilityMomentum, RelativeVolatility,
+    PriceVolatilitySkew, ImpliedVolatilityProxy, VolatilityPersistence,
 };
