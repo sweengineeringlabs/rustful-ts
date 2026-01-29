@@ -30,6 +30,17 @@ pub mod price_patterns;
 pub mod extended;
 pub mod r#final;
 pub mod advanced;
+pub mod channel_pattern;
+pub mod rounding_pattern;
+pub mod triple_top_bottom;
+pub mod island_reversal;
+pub mod cup_and_handle;
+pub mod diamond_pattern;
+pub mod wedge_pattern;
+pub mod broadening_formation;
+pub mod flag_pennant;
+pub mod rectangle_pattern;
+pub mod triangle_pattern;
 
 // Re-exports
 pub use zigzag::ZigZag;
@@ -83,3 +94,14 @@ pub use advanced::{
     PriceActionSignal, VolumeSurgePattern, MomentumContinuationPattern,
     TrendPausePattern, BreakoutRetest, SwingFailure,
 };
+pub use channel_pattern::{ChannelPattern, ChannelPatternOutput};
+pub use rounding_pattern::{RoundingPattern, RoundingType, RoundingPatternOutput};
+pub use triple_top_bottom::{TripleTopBottom, TripleTopBottomConfig};
+pub use island_reversal::{IslandReversal, IslandReversalOutput};
+pub use cup_and_handle::{CupAndHandle, CupAndHandleConfig};
+pub use diamond_pattern::{DiamondPattern, DiamondType, DiamondPatternOutput};
+pub use wedge_pattern::{WedgePattern, WedgePatternConfig, WedgeType};
+pub use broadening_formation::{BroadeningFormation, BroadeningType, BroadeningFormationOutput};
+pub use flag_pennant::{FlagPennant, FlagPennantConfig, FlagPennantType};
+pub use rectangle_pattern::{RectanglePattern, RectanglePatternConfig, RectangleBreakout};
+pub use triangle_pattern::{TrianglePattern as TrianglePatternExt, TrianglePatternConfig, TriangleType};

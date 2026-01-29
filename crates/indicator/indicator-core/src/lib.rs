@@ -25,6 +25,19 @@ pub mod intermarket;
 pub mod crypto;
 pub mod sentiment;
 pub mod momentum;
+pub mod wyckoff;
+pub mod order_flow;
+pub mod seasonality;
+pub mod options;
+pub mod factor;
+pub mod ml;
+pub mod rates;
+pub mod forex;
+pub mod economic;
+pub mod gann_cycle;
+pub mod harmonic;
+pub mod commodity;
+pub mod session;
 
 #[cfg(feature = "simd")]
 pub mod simd;

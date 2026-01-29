@@ -12,6 +12,13 @@ pub mod fixed_income;
 pub mod forex;
 pub mod extended;
 pub mod advanced;
+pub mod carry_trade_signal;
+pub mod sector_rotation_model;
+pub mod global_macro_regime;
+pub mod risk_on_risk_off;
+pub mod flight_to_quality;
+pub mod intermarket_divergence_ext;
+pub mod real_asset_allocation;
 
 // Re-exports
 pub use cointegration::{Cointegration, CointegrationOutput, CointegrationSignal};
@@ -54,6 +61,13 @@ pub use advanced::{
     RelativeRotationGraph, CrossMarketBeta, CorrelationBreakdownDetector,
     LeadLagAnalysis, SpreadMomentumIndicator, RelativeValueMomentum,
 };
+pub use carry_trade_signal::CarryTradeSignal;
+pub use sector_rotation_model::{SectorRotationModel, SectorRotationModelOutput, BusinessCyclePhase};
+pub use global_macro_regime::{GlobalMacroRegime, MacroRegime};
+pub use risk_on_risk_off::{RiskOnRiskOff, RiskOnRiskOffOutput, RiskRegime};
+pub use flight_to_quality::FlightToQuality;
+pub use intermarket_divergence_ext::{IntermarketDivergenceExt, IntermarketDivergenceExtOutput, AssetClassDivergence, DivergenceType as ExtDivergenceType};
+pub use real_asset_allocation::{RealAssetAllocation, InflationRegime};
 
 // ============================================================================
 // Dual Series Support

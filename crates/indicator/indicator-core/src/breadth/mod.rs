@@ -17,6 +17,13 @@ pub mod tick_index;
 pub mod trin;
 pub mod extended;
 pub mod advanced;
+pub mod nyse_tick;
+pub mod nyse_trin_arms;
+pub mod vix_fix;
+pub mod cumulative_tick;
+pub mod tick_extreme;
+pub mod add_advance_decline;
+pub mod uvol_dvol_ratio;
 
 // Re-exports - Primary indicators
 pub use advance_decline::AdvanceDeclineLine;
@@ -55,6 +62,14 @@ pub use advanced::{
     SectorBreadthIndex, ParticipationOscillator, BreadthRegimeClassifier, CumulativeParticipation,
     BreadthMomentumOscillator,
 };
+
+pub use nyse_tick::{NYSETick, NYSETickSeries, NYSETickSignal, TickReading, NYSETickStats, SessionBias as NYSETickSessionBias};
+pub use nyse_trin_arms::{NYSETRINArms, NYSETRINArmsConfig, NYSETRINSignal};
+pub use vix_fix::{VIXFix, VIXFixConfig, VIXFixOutput, VIXFixSignal};
+pub use cumulative_tick::{CumulativeTick, CumulativeTickConfig, CumulativeTickSignal, CumulativeTickStats, CumulativeTickSeries};
+pub use tick_extreme::{TickExtreme, TickExtremeConfig, TickExtremeLevel, TickExtremeCount, TickExtremeAnalysis, ExtremeDirection};
+pub use add_advance_decline::{ADDAdvanceDecline, ADDAdvanceDeclineConfig, ADDSignal, ADDSessionAnalysis, ADDBias};
+pub use uvol_dvol_ratio::{UVOLDVOLRatio, UVOLDVOLRatioConfig, UVOLDVOLSignal, UVOLDVOLSessionAnalysis, VolumeBias};
 
 // Re-export SPI types from crate root
 pub use crate::{
